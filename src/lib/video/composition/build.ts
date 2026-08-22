@@ -198,7 +198,12 @@ const TIMELINE_JS = `
     if (!el) return;
     el.textContent = line.text;
     tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: CAPTION_FADE, ease: "none", immediateRender: false }, line.start);
-    tl.to(el, { autoAlpha: 0, duration: CAPTION_FADE, ease: "none" }, Math.max(line.start + CAPTION_FADE + 0.01, line.end - CAPTION_FADE));
+    // A "held" line (the last beat's, i.e. the CTA's) never fades out — there is
+    // nothing after it to cut to, so it stays on screen through the outro tail
+    // instead of going dark at its own beat's end.
+    if (!line.hold) {
+      tl.to(el, { autoAlpha: 0, duration: CAPTION_FADE, ease: "none" }, Math.max(line.start + CAPTION_FADE + 0.01, line.end - CAPTION_FADE));
+    }
   });
 
   var cueEls = document.querySelectorAll(".cue");
@@ -206,8 +211,21 @@ const TIMELINE_JS = `
     var el = cueEls[i];
     if (!el) return;
     tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: CUE_FADE, ease: "none", immediateRender: false }, cue.start);
-    tl.to(el, { autoAlpha: 0, duration: CUE_FADE, ease: "none" }, Math.max(cue.start + CUE_FADE + 0.01, cue.end - CUE_FADE));
+    if (!cue.hold) {
+      tl.to(el, { autoAlpha: 0, duration: CUE_FADE, ease: "none" }, Math.max(cue.start + CUE_FADE + 0.01, cue.end - CUE_FADE));
+    }
   });
+
+  // An explicit tail marker: a zero-duration, no-op set at the declared end of
+  // the composition. Without it, when the last camera key is skipped (the
+  // ordinary "camera settles, then holds for the CTA" shape — see the
+  // zero-distance skip above) and the last cue/caption is held rather than
+  // faded, nothing in the timeline actually reaches \`data.duration\`, and
+  // GSAP's own tl.duration() falls short of what the document declares. A
+  // renderer seeking by data-duration would still see the held state, but the
+  // mismatch is real and misleading on its own, so it is closed here directly
+  // rather than left to depend on some other tween happening to land there.
+  tl.set({}, {}, data.duration);
 
   window.__tl = tl;
 })();
@@ -228,16 +246,26 @@ export function buildComposition(input: CompositionInput): string {
 
   const strokes = flattenStrokes(pkg, sweeps, offsets, pages.length, AUDIO_OFFSET);
   const cameraData = camera.map((k) => ({ t: AUDIO_OFFSET + k.t, y: k.y }));
+
+  // The last beat is the CTA. Its cue (and its caption, if it has one) must
+  // hold through the outro tail rather than fade out at the beat's own clip
+  // end — `beat.end` lands exactly where OUTRO_TAIL begins, so fading out
+  // there produces a video whose entire tail is a blank page. `hold: true`
+  // tells the runtime script to skip that fade-out and leave the element
+  // visible all the way to `duration`.
+  const lastBeatIndex = pkg.beats.length - 1;
+
   const captionData = captions.map((c) => ({
     text: c.text,
     start: AUDIO_OFFSET + c.start,
     end: AUDIO_OFFSET + c.end,
+    hold: c.beatIndex === lastBeatIndex,
   }));
   const cueData = pkg.beats.map((_, i) => {
     const audio: BeatAudio | undefined = beats[i];
     const start = AUDIO_OFFSET + (audio?.start ?? 0);
     const end = AUDIO_OFFSET + (audio?.end ?? audio?.start ?? 0);
-    return { start, end };
+    return { start, end, hold: i === lastBeatIndex };
   });
 
   const data = embed({ strokes, camera: cameraData, captions: captionData, cues: cueData, duration });

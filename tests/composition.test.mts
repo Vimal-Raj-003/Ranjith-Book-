@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chromium } from "playwright-core";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL } from "../src/lib/video/composition/build";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 
@@ -140,5 +141,73 @@ test("two strokes adjacent in time do not overlap", () => {
       data.strokes[i].start >= data.strokes[i - 1].end - 1e-9,
       `stroke ${i} starts (${data.strokes[i].start}) before stroke ${i - 1} ends (${data.strokes[i - 1].end})`,
     );
+  }
+});
+
+// --- Review findings: the CTA must hold through the outro tail -------------
+
+test("the last beat's cue is marked to hold, not to fade out at its own beat's end", () => {
+  const html = buildComposition(input());
+  const match = html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/);
+  assert.ok(match);
+  const data = JSON.parse(match![1]) as {
+    cues: { start: number; end: number; hold: boolean }[];
+    duration: number;
+  };
+
+  const lastCue = data.cues[data.cues.length - 1];
+  assert.equal(lastCue.hold, true, "the CTA's cue must be flagged to hold rather than fade out");
+
+  // The runtime only skips the fade-out `.to()` when `hold` is set — assert
+  // that guard actually exists in the emitted script, not just that the data
+  // says so. A `hold: true` the runtime script ignores would be exactly as
+  // broken as no flag at all.
+  const guard = html.match(/if \(!cue\.hold\)/);
+  assert.ok(guard, "the runtime script must actually check cue.hold before fading a cue out");
+
+  // The fade-IN completes well before the tail begins, so by the time the
+  // held cue reaches `duration - 0.1` it has long since settled at full
+  // opacity — there is no later event that could ever turn it off again.
+  assert.ok(lastCue.start + 0.2 < data.duration - 0.1, "the fade-in must finish before the last tenth of a second");
+});
+
+test("tl.duration() and data-duration agree, and the CTA cue is genuinely visible through the tail (live browser)", async () => {
+  const html = buildComposition(input());
+  const declaredMatch = html.match(/data-duration="([\d.]+)"/);
+  assert.ok(declaredMatch);
+  const declaredDuration = Number(declaredMatch![1]);
+
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+    await page.setContent(html, { waitUntil: "load" });
+    await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+
+    const tlDuration = await page.evaluate(
+      () => (window as unknown as { __tl: { duration(): number } }).__tl.duration(),
+    );
+    assert.ok(
+      Math.abs(tlDuration - declaredDuration) < 0.05,
+      `tl.duration() (${tlDuration}) must match data-duration (${declaredDuration})`,
+    );
+
+    const styleAt = async (t: number) =>
+      page.evaluate((time) => {
+        (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+        const el = document.querySelector('[data-cue="1"]');
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { opacity: cs.opacity, visibility: cs.visibility };
+      }, t);
+
+    const nearEnd = await styleAt(declaredDuration - 0.1);
+    assert.ok(nearEnd, "the CTA cue element must exist in the DOM");
+    assert.equal(nearEnd!.visibility, "visible", "the CTA cue must still be visible just before the video ends");
+    assert.ok(
+      Number(nearEnd!.opacity) > 0.95,
+      `the CTA cue's opacity at duration-0.1 was ${nearEnd!.opacity} — it should be holding near 1, not fading out`,
+    );
+  } finally {
+    await browser.close();
   }
 });
