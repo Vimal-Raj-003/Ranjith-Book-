@@ -118,3 +118,41 @@ test("buildSystemPrompt(hasAuthor: false) actively forbids inventing an author, 
   assert.match(s, /do not guess|do not invent|never guess|never invent/i);
   assert.match(s, /fabrication|not established/i);
 });
+
+test("buildSystemPrompt(hasAuthor: false) forbids personifying an unnamed writer, not just naming one", () => {
+  const s = buildSystemPrompt({ hasAuthor: false });
+  // Banning the name alone still leaves "the writer believes X" available —
+  // that never names anyone, but it invents a person behind the page and
+  // asserts a belief for them. The rule must close that door explicitly.
+  assert.match(s, /the writer/i);
+  assert.match(s, /whoever wrote this/i);
+  assert.match(s, /attribut(e|es|ing) (belief|argument|intent)/i);
+});
+
+test("sanitized speech strips the prompt's own named parenthetical stage directions", () => {
+  const withDirection: ContentPackage = {
+    ...pkg(),
+    beats: [
+      { id: "hook", voiceover: "He said this (pause) and then continued.", onScreen: "x", sourcePage: 0, startWord: 0, endWord: 1 },
+      { id: "cta", voiceover: "It was funny (laughs) and sad (sighs) at once, a real turn (beat) there.", onScreen: "x", sourcePage: 0, startWord: 2, endWord: 3 },
+    ],
+  };
+  const vo = voScriptFromPackage(withDirection);
+  assert.ok(!/pause|laughs|sighs|beat/i.test(vo), `stage directions must not reach speech: "${vo}"`);
+  assert.ok(!vo.includes("  "), "stripping a stage direction must not leave a double space");
+
+  const texts = beatTexts(withDirection);
+  assert.equal(texts[0], "He said this and then continued.");
+  assert.ok(!/\(|\)/.test(texts[1]), "no stray parens left behind once their contents are removed");
+});
+
+test("sanitized speech leaves an ordinary parenthetical aside alone", () => {
+  const withAside: ContentPackage = {
+    ...pkg(),
+    beats: [
+      { id: "hook", voiceover: "The page (and this is the whole point) never says that.", onScreen: "x", sourcePage: 0, startWord: 0, endWord: 1 },
+    ],
+  };
+  const vo = voScriptFromPackage(withAside);
+  assert.match(vo, /\(and this is the whole point\)/, "a legitimate aside must survive the sanitizer");
+});

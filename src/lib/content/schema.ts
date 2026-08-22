@@ -117,18 +117,29 @@ export interface GenerateInput {
  * URL spelled out letter by letter is a worse failure than a model ignoring
  * the rule would be silent about.
  *
- * Deliberately NOT stripping bare parentheses: a stage direction like
- * "(pause)" is asked for in the prompt instead, because blanket-stripping
- * "(...)" would also eat a legitimate parenthetical aside in the writer's own
- * commentary, and a silently mangled sentence is harder to notice than a
- * stage direction that slipped through.
+ * Deliberately NOT stripping bare parentheses in general: a blanket
+ * "(...)" strip would also eat a legitimate parenthetical aside in the
+ * writer's own commentary, and a silently mangled sentence is harder to
+ * notice than a stage direction that slipped through.
+ *
+ * The one exception is the exact, narrow set of parenthesised stage
+ * directions the prompt itself names as forbidden ("(pause)", "(beat)",
+ * "(laughs)", "(sighs)") — those aren't ordinary parenthetical prose, they
+ * are literally the words the prompt tells the writer never to write, so a
+ * model that writes one anyway would otherwise have it read aloud verbatim
+ * ("...and then, pause, he continued."). Stripping only this named set
+ * closes that specific gap without touching any other parenthetical.
  */
+const STAGE_DIRECTION_RE = /\((?:pause|beat|laughs?|sighs?)\)/gi;
+
 function sanitizeForSpeech(text: string): string {
   return text
     // URLs: a speech engine reads "h t t p s colon slash slash" aloud.
     .replace(/\bhttps?:\/\/\S+/gi, "")
     // Bracketed asides ("[pause]", "[laughs]") are stage directions, not lines.
     .replace(/\[[^\]]*\]/g, "")
+    // The prompt's own named parenthesised stage directions — see doc comment.
+    .replace(STAGE_DIRECTION_RE, "")
     // Emoji and pictographic symbols: not speakable, and Pocket TTS/other
     // engines either skip them silently (dead air) or mispronounce them.
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}️]/gu, "")

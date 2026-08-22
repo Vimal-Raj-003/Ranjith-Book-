@@ -65,7 +65,37 @@ For every beat:
 
 A wrong index is worse than no highlight: the marker will sweep words that
 have nothing to do with what is being said, and that mismatch is the first
-thing a viewer notices.`;
+thing a viewer notices.
+
+The word list below is laid out about a dozen words per line, and the number
+in [brackets] at the start of each line is that line's first word index. Use
+it to find your place without having to recount from word 0 every time —
+count on from the bracketed number instead of guessing.`;
+
+/**
+ * A real book page runs 200-400 words. Laid out as one unbroken line of
+ * `n:word` tokens, that line has no visual anchor at all — the exact
+ * condition under which a model is good at "approximately here" and bad at
+ * "exactly this word", which is the single likeliest way a beat's indices
+ * drift from what it is actually discussing (see the doc comment on
+ * `Beat.startWord` in `./schema`).
+ *
+ * Breaking every `perLine` tokens onto their own line, and restating that
+ * line's first index in `[brackets]` at its left edge (redundant with the
+ * inline `n:word` numbering, deliberately) gives the model two independent
+ * anchors to count from instead of one long wall of tokens.
+ */
+function numberedWordLines(words: string[], perLine = 12): string {
+  const lines: string[] = [];
+  for (let i = 0; i < words.length; i += perLine) {
+    const tokens = words
+      .slice(i, i + perLine)
+      .map((w, j) => `${i + j}:${w}`)
+      .join(" ");
+    lines.push(`[${i}] ${tokens}`);
+  }
+  return lines.join("\n");
+}
 
 export function buildSystemPrompt(opts: { hasAuthor: boolean }): string {
   return `You write 60-to-90-second vertical video scripts, each about a single passage of a book.
@@ -82,7 +112,8 @@ SPOKEN, NOT WRITTEN. Every beat's voiceover is read aloud by a neural speech
 engine, one beat at a time, with nothing else on the page:
 - No markdown (no asterisks, no underscores, no backticks, no headings).
 - No bracketed or parenthetical stage directions — no "[pause]", no
-  "(laughs)", no "(beat)". If a pause matters, end the sentence instead.
+  "(laughs)", no "(beat)", no "(sighs)". If a pause matters, end the
+  sentence instead.
 - No emoji, no URLs, no hashtags inside voiceover.
 - Write the way a real person talks: contractions, short sentences, commas
   and full stops placed where a breath goes.
@@ -92,11 +123,26 @@ ${
     ? `You may name the author where it helps.`
     : `The author of this book has NOT been established. Do not name an author,
 do not guess at one, do not write "the author of" as a stand-in for a name, and
-do not write any sentence whose sense depends on knowing who wrote this. Refer to
-"the page", "the passage", or "the book" instead. This is not a formatting
-preference — a name here would be a fabrication. Decide this BEFORE you write a
-single beat: never compose a sentence that needs a name and then try to patch
-around the hole afterwards.`
+do not write any sentence whose sense depends on knowing who wrote this.
+
+That ban covers more than a name. "The writer believes second chances matter"
+never names anyone, but it still invents a person behind the page and asserts
+what they believe — that is the same fabrication with the name filed off.
+Forbidden phrasings include, but are not limited to: "the writer",
+"whoever wrote this", "the author" used as a generic stand-in, and any
+other construction that attributes belief, argument, or intent to an
+unnamed authorial figure.
+
+Refer only to "the page", "the passage", or "the book" — never to a person,
+named or implied. "The page argues" and "the book makes the case that" are
+fine; "the writer argues" is not, for the same reason a name is not. Those
+three nouns are not a starting suggestion — they are the ONLY sanctioned
+subjects for this kind of sentence.
+
+This is not a formatting preference — a name, or a stand-in for one, would be
+a fabrication. Decide this BEFORE you write a single beat: never compose a
+sentence that needs a person behind the page and then try to patch around the
+hole afterwards.`
 }
 
 Rules that are not negotiable:
@@ -112,7 +158,7 @@ export function buildUserPrompt(input: GenerateInput, revisionBrief?: string): s
   const pages = input.pages
     .map((p) => {
       const heading = p.chapterHeading ? `Heading: ${p.chapterHeading}\n` : "";
-      const numbered = p.words.map((w, i) => `${i}:${w}`).join(" ");
+      const numbered = numberedWordLines(p.words);
       return `--- PAGE ${p.pageIndex} ---\n${heading}${numbered}`;
     })
     .join("\n\n");
@@ -127,6 +173,7 @@ export function buildUserPrompt(input: GenerateInput, revisionBrief?: string): s
       : "",
     ``,
     `Each word below is prefixed with its index, restarting at 0 on every new page.`,
+    `The list is broken into lines of about a dozen words; the [bracketed] number at the start of a line is that line's first index — use it to count from instead of the top of the page.`,
     `Use those exact indices for sourcePage / startWord / endWord — do not renumber, estimate, or count on your own.`,
     ``,
     pages,
