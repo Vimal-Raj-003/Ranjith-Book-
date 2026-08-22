@@ -1,0 +1,217 @@
+@import "tailwindcss";
+
+/* Dark is the default. Light is a full repaint of the same token set, so every
+   component follows without knowing which theme is active. */
+:root,
+:root[data-theme="dark"] {
+  --void: #0b0d12;
+  --slab: #12151d;
+  --slab-2: #171b25;
+  --line: #222835;
+  --line-soft: #1a1f2a;
+  --ink: #e8ecf4;
+  --mute: #7e8a9e;
+  --mute-2: #556072;
+  --amber: #f5a524;
+  --cyan: #35d0ce;
+  --rose: #ff6b6b;
+  --violet: #9d8bff;
+  --field: #0b0d12;
+  --scrim: rgba(6, 8, 12, 0.75);
+  --glow-a: rgba(245, 165, 36, 0.07);
+  --glow-b: rgba(53, 208, 206, 0.06);
+  --on-accent: #0b0d12;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --void: #f6f7fa;
+  --slab: #ffffff;
+  --slab-2: #eef1f6;
+  --line: #d9dfe9;
+  --line-soft: #e6eaf1;
+  --ink: #131822;
+  --mute: #5c6779;
+  --mute-2: #8a94a6;
+  --amber: #b26a00;
+  --cyan: #0f7a78;
+  --rose: #c0392b;
+  --violet: #6b53d6;
+  --field: #ffffff;
+  --scrim: rgba(19, 24, 34, 0.35);
+  --glow-a: rgba(245, 165, 36, 0.12);
+  --glow-b: rgba(15, 122, 120, 0.09);
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --void: #f6f7fa;
+    --slab: #ffffff;
+    --slab-2: #eef1f6;
+    --line: #d9dfe9;
+    --line-soft: #e6eaf1;
+    --ink: #131822;
+    --mute: #5c6779;
+    --mute-2: #8a94a6;
+    --amber: #b26a00;
+    --cyan: #0f7a78;
+    --rose: #c0392b;
+    --violet: #6b53d6;
+    --field: #ffffff;
+    --scrim: rgba(19, 24, 34, 0.35);
+    --glow-a: rgba(245, 165, 36, 0.12);
+    --glow-b: rgba(15, 122, 120, 0.09);
+    --on-accent: #ffffff;
+    color-scheme: light;
+  }
+}
+
+@theme inline {
+  --color-void: var(--void);
+  --color-slab: var(--slab);
+  --color-slab-2: var(--slab-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-mute: var(--mute);
+  --color-amber: var(--amber);
+  --color-cyan: var(--cyan);
+  --color-rose: var(--rose);
+  --font-display: var(--font-space-grotesk);
+  --font-body: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--void);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(900px 600px at 12% -5%, var(--glow-a), transparent 60%),
+    radial-gradient(800px 600px at 95% 5%, var(--glow-b), transparent 55%);
+  background-attachment: fixed;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--on-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.font-display {
+  font-family: var(--font-space-grotesk), system-ui, sans-serif;
+}
+.font-mono {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+/* Hairline panel used across the app */
+.slab {
+  background: var(--slab);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+:root[data-theme="dark"] .slab,
+:root:not([data-theme]) .slab {
+  background: linear-gradient(180deg, var(--slab-2), var(--slab));
+}
+
+.eyebrow {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute-2);
+}
+
+/* Pipeline rail ---------------------------------------------------------- */
+@keyframes railPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 165, 36, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(245, 165, 36, 0);
+  }
+}
+.node-active {
+  animation: railPulse 1.6s ease-out infinite;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(245, 165, 36, 0.22), transparent);
+  animation: sweep 1.8s linear infinite;
+}
+
+/* Toasts ------------------------------------------------------------------
+   Every popup in the app is one of these, and every one leaves inside two and
+   a half seconds. The entrance is short on purpose: an animation long enough
+   to notice eats a third of the time the notice has to be read in. */
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.toast-in {
+  animation: toastIn 0.18s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-active,
+  .sweep::after {
+    animation: none;
+  }
+  .toast-in {
+    animation: none;
+  }
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 99px;
+  border: 3px solid var(--void);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mute-2);
+}
