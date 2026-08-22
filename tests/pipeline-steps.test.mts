@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { INGEST_STEPS, EPISODE_STEPS } from "../src/lib/pipeline";
-import { STEPS } from "../src/components/PipelineRail";
+import { STEPS } from "../src/lib/pipeline-steps";
+import { STEPS as RAIL_STEPS } from "../src/components/PipelineRail";
 
 test("every pipeline stage is known to the rail", () => {
   const known = new Set(STEPS);
@@ -27,13 +28,24 @@ test("the stages are in pipeline order in the rail", () => {
   assert.deepEqual(STEPS, ordered, "the rail's order is the order the operator watches");
 });
 
-// Guards the guard: `STEPS` must be DERIVED from the pipeline module, never a
-// hand-copied literal array sitting in the component file. A future edit that
-// reintroduces a literal array would still pass the three tests above as long
+// `pipeline-steps.ts` (the single source of truth) must itself agree with the
+// pipeline module's own re-exports, and `PipelineRail.tsx` must import STEPS
+// from it directly rather than through `@/lib/pipeline` — `pipeline.ts` pulls
+// in sharp, Prisma, the CLI spawner and ffmpeg, none of which resolve in a
+// client bundle. Importing through it would reintroduce the exact bug this
+// split fixed, even though the values would still match today.
+test("PipelineRail imports the same STEPS pipeline-steps.ts exports", () => {
+  assert.deepEqual(RAIL_STEPS, STEPS, "the rail's STEPS must be the pipeline-steps module's STEPS, not a copy");
+});
+
+// Guards the guard: `STEPS` must be DERIVED from a dependency-free module,
+// never a hand-copied literal array sitting in the component file, and it
+// must not be imported from the server-only pipeline module. A future edit
+// that reintroduces a literal array would still pass the tests above as long
 // as the literal happens to match today's steps — this test fails the moment
 // the source text itself regresses, before the arrays ever have a chance to
-// drift apart again.
-test("PipelineRail.tsx derives STEPS from the pipeline rather than restating it", async () => {
+// drift apart again, and before the client bundle breaks again.
+test("PipelineRail.tsx derives STEPS from pipeline-steps.ts rather than restating it", async () => {
   const source = await fs.readFile(
     fileURLToPath(new URL("../src/components/PipelineRail.tsx", import.meta.url)),
     "utf8",
@@ -41,13 +53,19 @@ test("PipelineRail.tsx derives STEPS from the pipeline rather than restating it"
 
   assert.match(
     source,
-    /import\s*\{[^}]*INGEST_STEPS[^}]*EPISODE_STEPS[^}]*\}\s*from\s*["']@\/lib\/pipeline["']|import\s*\{[^}]*EPISODE_STEPS[^}]*INGEST_STEPS[^}]*\}\s*from\s*["']@\/lib\/pipeline["']/,
-    "STEPS must import INGEST_STEPS and EPISODE_STEPS from @/lib/pipeline",
+    /import\s*\{[^}]*STEPS[^}]*\}\s*from\s*["']@\/lib\/pipeline-steps["']/,
+    "STEPS must be imported from @/lib/pipeline-steps (dependency-free), not restated or pulled from @/lib/pipeline",
+  );
+
+  assert.doesNotMatch(
+    source,
+    /from\s*["']@\/lib\/pipeline["']/,
+    "PipelineRail.tsx (a \"use client\" component) must never import from @/lib/pipeline — that module pulls in sharp, Prisma, the CLI spawner and ffmpeg, which cannot resolve in the browser bundle",
   );
 
   assert.doesNotMatch(
     source,
     /export const STEPS\s*=\s*\[\s*["']/,
-    "STEPS must be derived (e.g. [...INGEST_STEPS, ...EPISODE_STEPS]), not a literal array of step-name strings",
+    "STEPS must be derived, not a literal array of step-name strings",
   );
 });

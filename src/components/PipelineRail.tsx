@@ -1,6 +1,6 @@
 "use client";
 
-import { INGEST_STEPS, EPISODE_STEPS } from "@/lib/pipeline";
+import { STEPS } from "@/lib/pipeline-steps";
 
 /**
  * The full, ordered list of stages a run passes through: every ingest stage,
@@ -10,8 +10,13 @@ import { INGEST_STEPS, EPISODE_STEPS } from "@/lib/pipeline";
  * run had not started at all. `tests/pipeline-steps.test.mts` both checks
  * this against the pipeline and greps this file for a reintroduced literal
  * array, so that trap cannot come back even from a future edit here.
+ *
+ * Imported from `@/lib/pipeline-steps` — NOT `@/lib/pipeline` — because this
+ * is a `"use client"` component: `@/lib/pipeline` pulls in sharp, Prisma, the
+ * CLI spawner and ffmpeg, none of which can resolve in the browser bundle.
+ * `@/lib/pipeline-steps` has no imports at all, so it is safe here.
  */
-export const STEPS = [...INGEST_STEPS, ...EPISODE_STEPS];
+export { STEPS };
 
 export type RunStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | string;
 

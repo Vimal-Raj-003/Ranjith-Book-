@@ -41,29 +41,15 @@ const MOOD_TO_STYLE: Record<BookTheme["mood"], string> = {
 };
 
 /**
- * The full, ordered set of stage names each pipeline runs through. `PipelineRail`
- * imports these rather than restating them — see the doc comment there for why
- * a literal copy is the specific bug this split prevents.
+ * Re-exported from `./pipeline-steps`, which is the actual source of truth.
+ * That module has zero imports; this one imports sharp, Prisma, ffmpeg, the
+ * CLI spawner, etc., so `PipelineRail.tsx` (a `"use client"` component) must
+ * import the step names from `./pipeline-steps` directly, never from here —
+ * importing this module from client code drags all of the above into the
+ * browser bundle, where `child_process` (among others) cannot resolve.
  */
-export const INGEST_STEPS = [
-  "Reading the pages",
-  "Measuring the pages",
-  "Aligning text to geometry",
-  "Identifying the book",
-  "Planning the episodes",
-] as const;
-
-export const EPISODE_STEPS = [
-  "Reserving the idea",
-  "Writing the script",
-  "Grounding check",
-  "Preparing page assets",
-  "Recording the voiceover",
-  "Timing the captions",
-  "Building the composition",
-  "Checking the composition",
-  "Rendering the video",
-] as const;
+export { INGEST_STEPS, EPISODE_STEPS } from "./pipeline-steps";
+import { INGEST_STEPS, EPISODE_STEPS } from "./pipeline-steps";
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
