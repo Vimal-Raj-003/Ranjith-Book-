@@ -23,6 +23,16 @@ export const RENDER_DIR = path.join(WORK_ROOT, "renders");
 /** Photographs live beside the renders, outside `public/`, for the same reason. */
 export const UPLOAD_DIR = path.join(WORK_ROOT, "uploads");
 
+/**
+ * Where `tesseract.js` caches its downloaded language data. Left at its
+ * default, that download lands as `./eng.traineddata` in whatever the process
+ * cwd happens to be — the repo root, in dev — which is both messy and outside
+ * anything already gitignored. Pointing it at `WORK_ROOT` keeps it beside the
+ * other working files this app already excludes from version control, and
+ * means the ~5MB download happens once per machine, not once per process.
+ */
+export const OCR_CACHE_DIR = path.join(WORK_ROOT, "ocr-cache");
+
 export function uploadDir(uploadId: string): string {
   return path.join(UPLOAD_DIR, uploadId);
 }
