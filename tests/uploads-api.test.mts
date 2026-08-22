@@ -26,23 +26,27 @@ test("an upload creates a book, an upload and one page per photo, in order", asy
 
   const body = await createUpload(form, null);
 
-  assert.equal(body.pages.length, 2);
-  assert.deepEqual(body.pages.map((p) => p.pageIndex), [0, 1],
-    "page order is the order they were sent — it is the reading order");
+  try {
+    assert.equal(body.pages.length, 2);
+    assert.deepEqual(body.pages.map((p) => p.pageIndex), [0, 1],
+      "page order is the order they were sent — it is the reading order");
 
-  const book = await prisma.book.findUniqueOrThrow({ where: { id: body.bookId } });
-  assert.equal(book.author, null, "an upload never sets an author");
-  assert.equal(book.authorVerified, false);
+    const book = await prisma.book.findUniqueOrThrow({ where: { id: body.bookId } });
+    assert.equal(book.author, null, "an upload never sets an author");
+    assert.equal(book.authorVerified, false);
 
-  const pages = await prisma.page.findMany({ where: { uploadId: body.uploadId }, orderBy: { pageIndex: "asc" } });
-  for (const page of pages) {
-    assert.ok(page.derivedPath, "derivedPath is populated at upload time, not deferred to ingest");
-    assert.equal(page.width, 80, "width/height describe the ORIGINAL, not the derived image");
-    assert.equal(page.height, 120);
+    const pages = await prisma.page.findMany({ where: { uploadId: body.uploadId }, orderBy: { pageIndex: "asc" } });
+    for (const page of pages) {
+      assert.ok(page.derivedPath, "derivedPath is populated at upload time, not deferred to ingest");
+      assert.equal(page.width, 80, "width/height describe the ORIGINAL, not the derived image");
+      assert.equal(page.height, 120);
+    }
+  } finally {
+    // Always clean up, even when an assertion above throws — otherwise a
+    // failed run leaves this fixture book (and its uploaded files) behind.
+    await prisma.book.delete({ where: { id: body.bookId } });
+    await fs.rm(uploadDir(body.uploadId), { recursive: true, force: true });
   }
-
-  await prisma.book.delete({ where: { id: body.bookId } });
-  await fs.rm(uploadDir(body.uploadId), { recursive: true, force: true });
 });
 
 test("a non-image is refused with a named error, not an empty 500, and leaves nothing behind", async () => {
@@ -116,26 +120,29 @@ test("if cleanup's own count() read fails, the original per-photo error still re
   };
 
   try {
-    await assert.rejects(
-      () => createUpload(form, null),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.equal((err as { code?: string }).code, "bad_upload");
-        assert.ok(
-          err.message.includes("bad.jpg"),
-          "the original BadUpload survives cleanup's own failure, not the simulated database fault",
-        );
-        return true;
-      },
-    );
+    try {
+      await assert.rejects(
+        () => createUpload(form, null),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.equal((err as { code?: string }).code, "bad_upload");
+          assert.ok(
+            err.message.includes("bad.jpg"),
+            "the original BadUpload survives cleanup's own failure, not the simulated database fault",
+          );
+          return true;
+        },
+      );
+    } finally {
+      prisma.upload.count = originalCount;
+    }
   } finally {
-    prisma.upload.count = originalCount;
+    // count() failing means cleanup could not safely tell whether the Book
+    // was left orphaned, so it deliberately leaves it rather than guessing —
+    // clean it up here so the suite doesn't leak it. This runs even if the
+    // assertion above throws, so a failed run can't leave it behind either.
+    await prisma.book.deleteMany({ where: { title: "Count Fails" } });
   }
-
-  // count() failing means cleanup could not safely tell whether the Book
-  // was left orphaned, so it deliberately leaves it rather than guessing —
-  // clean it up here so the suite doesn't leak it.
-  await prisma.book.deleteMany({ where: { title: "Count Fails" } });
 });
 
 test("if upload.create itself fails, a Book created for this call is still cleaned up", async () => {
@@ -153,13 +160,20 @@ test("if upload.create itself fails, a Book created for this call is still clean
   };
 
   try {
-    await assert.rejects(() => createUpload(form, null));
-  } finally {
-    prisma.upload.create = originalCreate;
-  }
+    try {
+      await assert.rejects(() => createUpload(form, null));
+    } finally {
+      prisma.upload.create = originalCreate;
+    }
 
-  const book = await prisma.book.findFirst({ where: { title: "Create Fails" } });
-  assert.equal(book, null, "the Book created for this call was cleaned up even though upload.create itself failed");
+    const book = await prisma.book.findFirst({ where: { title: "Create Fails" } });
+    assert.equal(book, null, "the Book created for this call was cleaned up even though upload.create itself failed");
+  } finally {
+    // Safety net: if the assertion above ever fails (a regression in the
+    // cleanup path being tested), don't let the orphan it caught survive
+    // into the next run.
+    await prisma.book.deleteMany({ where: { title: "Create Fails" } });
+  }
 });
 
 
