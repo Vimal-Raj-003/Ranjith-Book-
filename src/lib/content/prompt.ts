@@ -85,7 +85,7 @@ count on from the bracketed number instead of guessing.`;
  * inline `n:word` numbering, deliberately) gives the model two independent
  * anchors to count from instead of one long wall of tokens.
  */
-function numberedWordLines(words: string[], perLine = 12): string {
+export function numberedWordLines(words: string[], perLine = 12): string {
   const lines: string[] = [];
   for (let i = 0; i < words.length; i += perLine) {
     const tokens = words
