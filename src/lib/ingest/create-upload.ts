@@ -74,10 +74,18 @@ export async function createUpload(form: FormData, userId: string | null): Promi
     book = await prisma.book.create({ data: { title, rightsStatus } });
   }
 
-  const upload = await prisma.upload.create({ data: { bookId: book.id, userId: userId ?? undefined } });
-  const dir = uploadDir(upload.id);
+  // `upload` starts null and is set the moment `prisma.upload.create`
+  // resolves. `upload.create` itself is INSIDE the protected region: if it
+  // throws (a transient DB fault), the catch below still sees
+  // `bookCreatedHere` and can clean up the Book — the same leak the review
+  // originally found, just through a narrower door when the row was never
+  // created at all.
+  let upload: { id: string } | null = null;
 
   try {
+    upload = await prisma.upload.create({ data: { bookId: book.id, userId: userId ?? undefined } });
+    const dir = uploadDir(upload.id);
+
     const pages: CreateUploadPage[] = [];
     for (let i = 0; i < entries.length; i++) {
       const stem = `page-${String(i).padStart(2, "0")}`;
@@ -124,11 +132,25 @@ export async function createUpload(form: FormData, userId: string | null): Promi
     // fails often (a blurred page, a thumb over the text) — without this,
     // every rejected batch in production would permanently accumulate
     // private photographs with no garbage collection.
-    await prisma.upload.delete({ where: { id: upload.id } }).catch(() => {});
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    //
+    // Every step here is independently guarded with `.catch()` so that a
+    // cleanup failure — the row already gone, a transient DB fault reading
+    // the remaining count — can never replace or mask `err`, the actual
+    // reason the upload failed. The caller must always see `err`, never a
+    // database error from tidying up after it.
+    if (upload) {
+      const uploadId = upload.id;
+      await prisma.upload.delete({ where: { id: uploadId } }).catch(() => {});
+      await fs.rm(uploadDir(uploadId), { recursive: true, force: true }).catch(() => {});
+    }
 
     if (bookCreatedHere) {
-      const remaining = await prisma.upload.count({ where: { bookId: book.id } });
+      // If the count itself can't be read, do nothing rather than guess:
+      // deleting the book on a guess could remove one that in fact gained
+      // another upload concurrently. Leaving one orphaned book behind on a
+      // database fault is a far smaller cost than losing `err` to a cleanup
+      // exception.
+      const remaining = await prisma.upload.count({ where: { bookId: book.id } }).catch(() => null);
       if (remaining === 0) {
         await prisma.book.delete({ where: { id: book.id } }).catch(() => {});
       }

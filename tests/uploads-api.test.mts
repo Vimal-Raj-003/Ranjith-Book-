@@ -100,6 +100,69 @@ test("a corrupt-but-correctly-signed image is refused with the file named, not a
   assert.equal(book, null, "cleanup runs for this failure path too");
 });
 
+test("if cleanup's own count() read fails, the original per-photo error still reaches the caller", async () => {
+  // Simulates finding 4(a): a transient database fault inside the cleanup
+  // path itself, at the exact read used to decide whether the Book it
+  // created is now orphaned. The caller must still see why their upload
+  // failed (which photo was bad), never a database error from tidying up.
+  const form = new FormData();
+  form.set("title", "Count Fails");
+  form.append("photos", new Blob([new Uint8Array(Buffer.from("not an image"))], { type: "image/jpeg" }), "bad.jpg");
+
+  const originalCount = prisma.upload.count.bind(prisma.upload);
+  // @ts-expect-error -- deliberately swapped in for the duration of this test to simulate a transient DB fault
+  prisma.upload.count = async () => {
+    throw new Error("simulated transient database fault");
+  };
+
+  try {
+    await assert.rejects(
+      () => createUpload(form, null),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal((err as { code?: string }).code, "bad_upload");
+        assert.ok(
+          err.message.includes("bad.jpg"),
+          "the original BadUpload survives cleanup's own failure, not the simulated database fault",
+        );
+        return true;
+      },
+    );
+  } finally {
+    prisma.upload.count = originalCount;
+  }
+
+  // count() failing means cleanup could not safely tell whether the Book
+  // was left orphaned, so it deliberately leaves it rather than guessing —
+  // clean it up here so the suite doesn't leak it.
+  await prisma.book.deleteMany({ where: { title: "Count Fails" } });
+});
+
+test("if upload.create itself fails, a Book created for this call is still cleaned up", async () => {
+  // Simulates finding 4(b): the original code ran `upload.create` before
+  // the protected region, so a fault here left a freshly-created Book
+  // behind with no upload ever attached to it.
+  const form = new FormData();
+  form.set("title", "Create Fails");
+  form.append("photos", await photo(80, 120), "page-1.jpg");
+
+  const originalCreate = prisma.upload.create.bind(prisma.upload);
+  // @ts-expect-error -- deliberately swapped in for the duration of this test to simulate a transient DB fault
+  prisma.upload.create = async () => {
+    throw new Error("simulated transient database fault");
+  };
+
+  try {
+    await assert.rejects(() => createUpload(form, null));
+  } finally {
+    prisma.upload.create = originalCreate;
+  }
+
+  const book = await prisma.book.findFirst({ where: { title: "Create Fails" } });
+  assert.equal(book, null, "the Book created for this call was cleaned up even though upload.create itself failed");
+});
+
+
 test("a batch bigger than MAX_PHOTOS is refused before any bytes are read", async () => {
   const form = new FormData();
   form.set("title", "Too Many");
