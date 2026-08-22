@@ -19,16 +19,20 @@ export const ALIGNMENT_FLOOR = 0.55;
  * and printed text carries diacritics ("Márquez") that a phone-camera OCR pass
  * often flattens to plain ASCII ("Marquez"). `NFKD` splits an accented letter
  * into its base letter plus a combining mark; the following `replace` strips
- * just the combining marks (U+0300 - U+036F, written as an explicit escape
- * rather than pasted literal combining characters, which do not survive
- * round-tripping through plain text reliably), leaving the bare base letter so
- * the two spellings normalize to the same token.
+ * just the combining marks (U+0300 - U+036F) using the explicit `\u0300-\u036f`
+ * escape below, not literal combining characters pasted into source — a literal
+ * combining mark sitting in this file is exactly the kind of thing an editor, a
+ * merge, a lint autofix, or any tool that normalizes Unicode on write can mangle
+ * silently, and the only symptom would be accented words quietly failing to
+ * match their boxes. The escape keeps this file's source ASCII-only in this
+ * region, leaving the bare base letter after the strip so the two spellings
+ * normalize to the same token.
  */
 export function normalizeToken(s: string): string {
   return s
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]/g, "");
 }
 
