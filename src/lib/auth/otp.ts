@@ -32,7 +32,7 @@ export async function requestCode(rawEmail: string) {
   if (!EMAIL_RE.test(email)) throw new AuthError("That doesn't look like an email address.");
   if (!isAllowed(email)) {
     throw new AuthError(
-      "This address isn't approved for RepoReel. Ask the owner to add it to the allowlist.",
+      "This address isn't approved for BookReel. Ask the owner to add it to the allowlist.",
       403,
     );
   }

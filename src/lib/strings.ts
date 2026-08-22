@@ -11,5 +11,6 @@ export const strings = {
     loading: "Loading episodes…",
     loadError: "Could not load your episodes. Try reloading the page.",
     empty: "No episodes yet — upload some book pages to make your first one.",
+    untitled: "Untitled",
   },
 } as const;

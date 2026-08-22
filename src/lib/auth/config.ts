@@ -24,7 +24,7 @@ export function mailConfig(): MailConfig | null {
     secure: port === 465,
     user,
     pass,
-    from: process.env.SMTP_FROM?.trim() || `RepoReel <${user}>`,
+    from: process.env.SMTP_FROM?.trim() || `BookReel <${user}>`,
   };
 }
 
@@ -62,7 +62,7 @@ export function isAllowed(email: string): boolean {
   );
 }
 
-export const SESSION_COOKIE = "reporeel_session";
+export const SESSION_COOKIE = "bookreel_session";
 export const SESSION_DAYS = 30;
 export const CODE_TTL_MS = 10 * 60_000;
 export const MAX_ATTEMPTS = 5;

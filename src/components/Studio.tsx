@@ -63,7 +63,7 @@ function EpisodeList() {
           className="slab flex flex-col gap-1 px-4 py-3"
         >
           <span className="font-display text-[15px]" style={{ color: "var(--ink)" }}>
-            {ep.title || "Untitled"}
+            {ep.title || strings.studio.untitled}
           </span>
           <span className="font-mono text-[12px]" style={{ color: "var(--mute)" }}>
             {ep.bookTitle} · {ep.status}

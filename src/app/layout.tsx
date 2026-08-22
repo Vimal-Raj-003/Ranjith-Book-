@@ -30,7 +30,7 @@ export const metadata: Metadata = {
 const THEME_BOOTSTRAP = `
 (function () {
   try {
-    var stored = localStorage.getItem("reporeel-theme");
+    var stored = localStorage.getItem("bookreel-theme");
     var system = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", stored || system);
   } catch (e) {}

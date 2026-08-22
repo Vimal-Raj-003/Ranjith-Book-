@@ -95,7 +95,7 @@ export default function SignIn() {
             className="font-mono text-[11px] font-semibold uppercase tracking-[0.2em]"
             style={{ color: "var(--mute)" }}
           >
-            RepoReel
+            BookReel
           </div>
           <h1 className="mt-2 text-[26px] font-semibold leading-tight">
             {stage === "email" ? "Sign in" : "Check your inbox"}

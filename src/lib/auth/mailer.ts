@@ -28,11 +28,11 @@ function transport(): Transporter {
 function codeEmail(code: string) {
   const spaced = code.split("").join(" ");
   return {
-    text: `Your RepoReel sign-in code is ${code}.\n\nIt expires in 10 minutes. If you didn't ask for it, ignore this email.`,
+    text: `Your BookReel sign-in code is ${code}.\n\nIt expires in 10 minutes. If you didn't ask for it, ignore this email.`,
     html: `<!doctype html>
 <div style="font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b0d10;padding:40px 20px">
   <div style="max-width:440px;margin:0 auto;background:#14181d;border:1px solid #232a31;border-radius:14px;padding:32px">
-    <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#7d8794;font-weight:600">RepoReel</div>
+    <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:#7d8794;font-weight:600">BookReel</div>
     <h1 style="margin:14px 0 8px;font-size:20px;line-height:1.35;color:#e8edf2;font-weight:650">Your sign-in code</h1>
     <p style="margin:0 0 24px;font-size:14px;line-height:1.6;color:#9aa5b1">Enter this code to finish signing in. It expires in 10 minutes.</p>
     <div style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:30px;letter-spacing:.34em;color:#f2b544;background:#0b0d10;border:1px solid #232a31;border-radius:10px;padding:18px;text-align:center;font-weight:600">${spaced}</div>
@@ -53,7 +53,7 @@ export async function sendLoginCode(to: string, code: string) {
   await transport().sendMail({
     from: cfg.from,
     to,
-    subject: `${code} is your RepoReel sign-in code`,
+    subject: `${code} is your BookReel sign-in code`,
     ...body,
   });
 }
