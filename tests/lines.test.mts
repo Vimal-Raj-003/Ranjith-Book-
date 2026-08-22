@@ -48,29 +48,6 @@ test("an unmatched word inherits the line its neighbours are on", () => {
   assert.equal(filled[1].box!.y0, lines[0].box.y0, "and it sits on their line, not somewhere else");
 });
 
-test("a dropped run is recognized as known data loss and never split, no matter how narrow the page is", () => {
-  // This is the fix for a real gap the gutter split otherwise had: a gap
-  // between two boxed words is exempt from the gutter test entirely when
-  // every vision-index slot between them is present in the input but
-  // unboxed — that's not page structure, it's data loss `aligned` already
-  // told us about. Proven here on a deliberately TINY page (a 3-word line,
-  // 260px total) with a 2-word dropped run, which the pixel-only version of
-  // this heuristic (median-gap + block-fraction alone) got wrong: on a page
-  // this narrow, a dropped run's inflated neighbour-gap is a huge fraction
-  // of the whole block, and would misread as a gutter on pixels alone.
-  const words: AlignedWord[] = [
-    { visionIndex: 0, word: "before", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
-    { visionIndex: 1, word: "one", ocrIndex: null, box: null },
-    { visionIndex: 2, word: "two", ocrIndex: null, box: null },
-    { visionIndex: 3, word: "after", ocrIndex: 3, box: { x0: 190, y0: 0, x1: 270, y1: 40 } },
-  ];
-
-  const lines = clusterLineRuns(words);
-
-  assert.equal(lines.length, 1, "the dropped run must not read as a gutter, however narrow the page");
-  assert.deepEqual(lines[0].wordIndices, [0, 3]);
-});
-
 test("a word range spanning two lines yields both strokes, clipped to the range", () => {
   const lines = clusterLineRuns(twoLines());
   const runs = runsForRange(lines, 1, 4);
@@ -188,20 +165,31 @@ test("re-clustering after inheritBoxes folds the inherited box into wordBoxes, s
   assert.deepEqual(runs[0].box, inheritedBox);
 });
 
-test("two-column pages: the gutter split stops a stroke bridging the gutter, but line order is still not reading order", () => {
-  // Clustering groups purely on vertical centre. A two-column layout (e.g. a
-  // dictionary or reference page) commonly has a row in the left column and
-  // a row in the right column sitting at the very same baseline, separated
-  // by a wide empty gutter rather than a vertical offset. The gutter split
-  // (requiring both a large-relative-to-typical-gap AND a large-relative-to-
-  // block-width signal) now stops those two rows' hull from bridging that
-  // gutter into one stroke.
+test("two-column pages: a stroke bridges the gutter, and line order is not reading order — a documented limitation, not an oversight", () => {
+  // Three rounds of a gutter-split heuristic were tried here and reverted:
+  // a median-word-width anchor, then a median-gap-plus-block-fraction
+  // anchor, then a presence-based drop exemption, then a magnitude-aware
+  // exemption with a minimum gap-sample floor. A parameter sweep against the
+  // live function (dropped-run length 1-8, three word widths, gap ratios
+  // 5-30%, gutter ratios 1x-8x) showed the failure is structural, not a
+  // tuning miss: the bound on how large a gap N dropped words can plausibly
+  // explain grows linearly and unboundedly with N, while a real gutter's
+  // width is fixed. Past a small, page-dependent number of consecutively
+  // dropped words at the gutter — as few as ONE, for a gutter only about as
+  // wide as a single word — any slack constant chosen to guard the
+  // exemption is itself defeated, and the two columns merge back into one
+  // stroke. No constant removes this; it only moves where it happens.
   //
-  // What it does NOT do: reorder lines into column-major reading order. Two
-  // rows of a two-column page still come out row-major (left row 1, right
-  // row 1, left row 2, right row 2) rather than column-major (all of the
-  // left column, then all of the right column) — a real, separate gap,
-  // documented here rather than hidden.
+  // And even a perfect split would only have fixed stroke SHAPE:
+  // `clusterLineRuns` sorts lines by vertical centre alone, so a two-column
+  // page's lines come back interleaved by row (left row 1, right row 1,
+  // left row 2, ...), never in column-major reading order (all of the left
+  // column, then all of the right column). Fixing shape on a page whose
+  // sequence is still wrong doesn't make the page usable, so this was not
+  // worth carrying further. This is a documented limitation, measured and
+  // chosen, not something later work overlooked — see the report for the
+  // sweep. Column-major reordering, if this page shape needs to work, is a
+  // separate, larger piece of work.
   const twoColumnTwoRows: AlignedWord[] = [
     // Row 1: left column, then right column, same baseline.
     { visionIndex: 0, word: "left", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
@@ -217,226 +205,19 @@ test("two-column pages: the gutter split stops a stroke bridging the gutter, but
 
   const lines = clusterLineRuns(twoColumnTwoRows);
 
-  assert.equal(lines.length, 4, "each row now yields two lines, one per column, not one bridging both");
-  assert.deepEqual(lines[0].wordIndices, [0, 1], "row one, left column");
-  assert.deepEqual(lines[1].wordIndices, [2, 3], "row one, right column");
-  assert.deepEqual(lines[2].wordIndices, [4, 5], "row two, left column");
-  assert.deepEqual(lines[3].wordIndices, [6, 7], "row two, right column");
-  assert.equal(lines[0].box.x1, 180, "left column's stroke stays inside the left column");
-  assert.equal(lines[1].box.x0, 500, "right column's stroke does not start until the right column");
+  // Half one: the stroke bridges the gutter. Each row's two columns merge
+  // into a single line rather than staying separate.
+  assert.equal(lines.length, 2, "each row's two columns merge into one line, not two");
+  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3], "row one: left AND right column in one stroke");
+  assert.deepEqual(lines[1].wordIndices, [4, 5, 6, 7], "row two: left AND right column in one stroke");
+  assert.equal(lines[0].box.x0, 10, "the stroke starts at the left column");
+  assert.equal(lines[0].box.x1, 670, "and runs all the way across the gutter into the right column");
 
-  // Documenting the remaining gap: this is row-major order, not the
-  // column-major reading order a two-column page actually needs.
-  assert.deepEqual(
-    lines.map((l) => l.wordIndices[0]),
-    [0, 2, 4, 6],
-    "order is row-major (left, right, left, right) — not column-major reading order",
-  );
-});
-
-// --- FINDING 3 / FINDING 5: the gutter split needs two signals, not one,
-// validated across all four classes: justified text (below), dialogue with
-// an em-dash (below), a modest real gutter, and a wide real gutter (the
-// existing two-column test above). Real numbers for all four are in the
-// report. ---
-
-test("Class A: a short justified line's stretched inter-word gap does not trigger the gutter split", () => {
-  // The one input class that genuinely resembles a gutter is justified text,
-  // where the last gap on a short line is stretched to fill the margin. A
-  // real gutter is typically as wide as a whole word or more; ordinary
-  // justification stretch is nowhere near that.
-  //
-  // 6 words (5 gaps) rather than 4/3, so this fixture clears MIN_GAP_SAMPLES
-  // (5) and signal 1 is judged on its actual threshold rather than being
-  // disabled by the low-sample floor — keeping the isolation story literal.
-  //
-  // Measured: gaps are 10, 10, 10, 10, 40. Median gap = 10, so signal 1's
-  // threshold is 10*5 = 50 — the 40px stretch (4x normal, a generous
-  // stretch) stays under it. Block width = 440, so signal 2's threshold is
-  // 440*0.08 = 35.2 — 40 clears THIS one alone, which is exactly why both
-  // signals are required: signal 1 alone correctly vetoes the split here.
-  const justifiedLine: AlignedWord[] = [
-    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 70, y1: 40 } },
-    { visionIndex: 1, word: "short", ocrIndex: 1, box: { x0: 80, y0: 0, x1: 140, y1: 40 } },
-    { visionIndex: 2, word: "line", ocrIndex: 2, box: { x0: 150, y0: 0, x1: 210, y1: 40 } },
-    { visionIndex: 3, word: "of", ocrIndex: 3, box: { x0: 220, y0: 0, x1: 280, y1: 40 } },
-    { visionIndex: 4, word: "prose", ocrIndex: 4, box: { x0: 290, y0: 0, x1: 350, y1: 40 } },
-    // Justification stretches this gap to reach the right margin.
-    { visionIndex: 5, word: "here", ocrIndex: 5, box: { x0: 390, y0: 0, x1: 450, y1: 40 } },
-  ];
-
-  const lines = clusterLineRuns(justifiedLine);
-
-  assert.equal(lines.length, 1, "the stretched gap must not split the justified line in two");
-  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3, 4, 5]);
-  assert.equal(lines[0].box.x1, 450);
-});
-
-test("Class B: short-word dialogue with an em-dash-scale gap does not trigger the gutter split", () => {
-  // This is the case that broke under the word-width anchor: short words
-  // ("I", "am") shrink median word WIDTH but not the space between them, so
-  // a width-anchored threshold shrinks along with the words and an ordinary
-  // em-dash-scale gap ends up looking huge by comparison. Anchoring to
-  // median GAP instead of median word width fixes that directly.
-  //
-  // 40 words, 12px wide, normal 6px gaps, with one 45px em-dash-scale gap
-  // (word count chosen to give a realistically wide block — a handful of
-  // short words alone would make even a modest stretch look huge in
-  // isolation, which would be an artifact of the fixture, not of real text).
-  //
-  // Measured: median gap = 6, so signal 1's threshold is 6*5 = 30 — the 45px
-  // gap DOES clear this (45 > 30), reproducing the reviewer's false-positive
-  // report if this were the only signal. Block width = 753, so signal 2's
-  // threshold is 753*0.08 = 60.24 — 45 does NOT clear this. Requiring both
-  // signals is exactly what saves this case.
-  const words: AlignedWord[] = [];
-  let x = 10;
-  const EM_DASH_AFTER_WORD = 20;
-  for (let i = 0; i < 40; i++) {
-    words.push({
-      visionIndex: i,
-      word: i % 2 === 0 ? "I" : "am",
-      ocrIndex: i,
-      box: { x0: x, y0: 0, x1: x + 12, y1: 20 },
-    });
-    x += 12 + (i === EM_DASH_AFTER_WORD ? 45 : 6);
-  }
-
-  const lines = clusterLineRuns(words);
-
-  assert.equal(lines.length, 1, "the em-dash-scale gap must not split an ordinary dialogue line");
-  assert.equal(lines[0].wordIndices.length, 40);
-});
-
-test("Class C: a modest gutter roughly one word's width still triggers the gutter split", () => {
-  // The finding's own framing: a real gutter is "typically as wide as a
-  // whole word or more". This is the failure the width-anchored threshold
-  // missed in the other direction — a 2x-median-width threshold refused to
-  // split at exactly this scale. The gap-and-block-fraction anchor must
-  // still catch it.
-  //
-  // Two columns of four 80px words each, separated by an 80px gutter (1x the
-  // page's own word width). Measured: median gap = 10 (the ordinary 10px
-  // in-column gaps dominate), so signal 1's threshold is 10*5 = 50 — 80
-  // clears it. Block width = 780, so signal 2's threshold is 780*0.08 = 62.4
-  // — 80 clears that too. Both signals agree: split.
-  const words: AlignedWord[] = [
-    { visionIndex: 0, word: "left", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
-    { visionIndex: 1, word: "col", ocrIndex: 1, box: { x0: 100, y0: 0, x1: 180, y1: 40 } },
-    { visionIndex: 2, word: "words", ocrIndex: 2, box: { x0: 190, y0: 0, x1: 270, y1: 40 } },
-    { visionIndex: 3, word: "here", ocrIndex: 3, box: { x0: 280, y0: 0, x1: 360, y1: 40 } },
-    { visionIndex: 4, word: "right", ocrIndex: 4, box: { x0: 440, y0: 0, x1: 520, y1: 40 } },
-    { visionIndex: 5, word: "col", ocrIndex: 5, box: { x0: 530, y0: 0, x1: 610, y1: 40 } },
-    { visionIndex: 6, word: "words", ocrIndex: 6, box: { x0: 620, y0: 0, x1: 700, y1: 40 } },
-    { visionIndex: 7, word: "here", ocrIndex: 7, box: { x0: 710, y0: 0, x1: 790, y1: 40 } },
-  ];
-
-  const lines = clusterLineRuns(words);
-
-  assert.equal(lines.length, 2, "a modest, roughly-one-word-wide gutter must still split");
-  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3]);
-  assert.deepEqual(lines[1].wordIndices, [4, 5, 6, 7]);
-});
-
-// --- FINDING 6: the drop exemption must be magnitude-aware, not just
-// presence-aware, or a single stray unboxed token landing at a gutter
-// disables the split for the whole row. ---
-
-test("a stray unboxed token at the gutter does not disable the split — a single drop, or a run of three", () => {
-  // A 6-row, two-column page: 70px words, 10px normal in-column gaps, a
-  // 300px gutter. Rows 0-3 are ordinary (nothing dropped at the gutter).
-  // Row 4 has a run of THREE unboxed stray tokens landing, in vision-index
-  // order, between the last left-column word and the first right-column
-  // word — e.g. the vision model reading a row across the full page width
-  // and emitting a few tokens from gutter whitespace or an artifact that
-  // OCR never boxes. Row 5 has a single such stray token. This is exactly
-  // the presence-only exemption's failure mode: every intervening
-  // vision-index slot IS unboxed, so a presence-only check would exempt an
-  // arbitrarily large gutter gap.
-  //
-  // Measured: median gap = 10 (18 total gap samples: 12 ordinary 10s, 6
-  // gutter-sized 300s — comfortably robust, and >= MIN_GAP_SAMPLES). Block
-  // width = 600. Both pixel signals clear for every row's gutter gap
-  // (300 > 50 and 300 > 48). The magnitude check is what must reject the
-  // exemption on rows 4 and 5: with max word width 70,
-  //   row 5 (1 drop):  plausible max = 1.15 * (1*70 + 2*10) = 103.5 — 300 far exceeds it.
-  //   row 4 (3 drops): plausible max = 1.15 * (3*70 + 4*10) = 287.5 — 300 still exceeds it.
-  // So neither row's gutter gap is exempted, and both split like the rest.
-  const words: AlignedWord[] = [];
-  let vi = 0;
-  const W = 70;
-  const GAP = 10;
-  const GUTTER = 300;
-  for (let row = 0; row < 6; row++) {
-    const y0 = row * 60;
-    const y1 = y0 + 40;
-    const l1x0 = 10;
-    const l1x1 = l1x0 + W;
-    const l2x0 = l1x1 + GAP;
-    const l2x1 = l2x0 + W;
-    const r1x0 = l2x1 + GUTTER;
-    const r1x1 = r1x0 + W;
-    const r2x0 = r1x1 + GAP;
-    const r2x1 = r2x0 + W;
-
-    words.push({ visionIndex: vi++, word: "left1", ocrIndex: vi, box: { x0: l1x0, y0, x1: l1x1, y1 } });
-    words.push({ visionIndex: vi++, word: "left2", ocrIndex: vi, box: { x0: l2x0, y0, x1: l2x1, y1 } });
-
-    if (row === 4) {
-      words.push({ visionIndex: vi++, word: "stray1", ocrIndex: null, box: null });
-      words.push({ visionIndex: vi++, word: "stray2", ocrIndex: null, box: null });
-      words.push({ visionIndex: vi++, word: "stray3", ocrIndex: null, box: null });
-    } else if (row === 5) {
-      words.push({ visionIndex: vi++, word: "stray", ocrIndex: null, box: null });
-    }
-
-    words.push({ visionIndex: vi++, word: "right1", ocrIndex: vi, box: { x0: r1x0, y0, x1: r1x1, y1 } });
-    words.push({ visionIndex: vi++, word: "right2", ocrIndex: vi, box: { x0: r2x0, y0, x1: r2x1, y1 } });
-  }
-
-  const lines = clusterLineRuns(words);
-
-  assert.equal(lines.length, 12, "all 6 rows split into a left and right line — none bridge the gutter");
-  // Rows 0-3: ordinary.
-  assert.deepEqual(lines[0].wordIndices, [0, 1]);
-  assert.deepEqual(lines[1].wordIndices, [2, 3]);
-  assert.deepEqual(lines[6].wordIndices, [12, 13]);
-  assert.deepEqual(lines[7].wordIndices, [14, 15]);
-  // Row 4 (visionIndex 16,17 left; 18,19,20 dropped; 21,22 right): the
-  // 3-drop run must NOT merge the row into one stroke.
-  assert.deepEqual(lines[8].wordIndices, [16, 17], "row 4 left column, despite the 3-drop run beside it");
-  assert.deepEqual(lines[9].wordIndices, [21, 22], "row 4 right column, not merged with the left");
-  // Row 5 (visionIndex 23,24 left; 25 dropped; 26,27 right): the 1-drop
-  // case must not merge either.
-  assert.deepEqual(lines[10].wordIndices, [23, 24], "row 5 left column, despite the single stray drop beside it");
-  assert.deepEqual(lines[11].wordIndices, [26, 27], "row 5 right column, not merged with the left");
-});
-
-// --- FINDING 7: the gap median must not be trusted on too few samples, or
-// the gutter gap itself can become the "typical" gap it's being measured
-// against. ---
-
-test("a low-sample single line does not let the gutter gap contaminate its own threshold", () => {
-  // Only 3 words, 2 gaps: [8, 300]. With MIN_GAP_SAMPLES = 5, this page has
-  // too few gap samples for the median to be trusted, so signal 1 is
-  // disabled (threshold = Infinity) rather than computed from a median that
-  // the 300px gap itself would dominate (median of [8, 300] is 300 — the
-  // gutter gap becomes the "typical" gap, inflating the threshold to 1500
-  // and completely suppressing detection of the very gutter it measures).
-  // The pre-existing behaviour for "no data" was to fail closed (never
-  // split); this extends that same failure direction to "not enough data",
-  // which is what actually fixes the contamination rather than leaving it
-  // to accidentally happen to still not-split on this particular fixture.
-  const words: AlignedWord[] = [
-    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 80, y1: 40 } },
-    { visionIndex: 1, word: "b", ocrIndex: 1, box: { x0: 88, y0: 0, x1: 158, y1: 40 } },
-    { visionIndex: 2, word: "c", ocrIndex: 2, box: { x0: 458, y0: 0, x1: 528, y1: 40 } },
-  ];
-
-  const lines = clusterLineRuns(words);
-
-  assert.equal(lines.length, 1, "too few gap samples to trust the median — never split on it");
-  assert.deepEqual(lines[0].wordIndices, [0, 1, 2]);
+  // Half two: line order is not reading order. A real two-column page reads
+  // the WHOLE left column top-to-bottom, then the whole right column — but
+  // these lines are sorted purely by vertical centre (row by row), so this
+  // list is not narration order for a two-column source page. Fixing the
+  // bridging above does not fix this, and nothing here attempts to.
 });
 
 // --- FINDING 1: a run of consecutive unboxed words must not all claim the

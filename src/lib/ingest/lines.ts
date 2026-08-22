@@ -21,124 +21,11 @@ export interface LineRun {
 
 const centreY = (b: Box) => (b.y0 + b.y1) / 2;
 const heightOf = (b: Box) => b.y1 - b.y0;
-const widthOf = (b: Box) => b.x1 - b.x0;
-
-/**
- * Signal 1 of the gutter split: a gap must exceed this multiple of the
- * page's median inter-word gap. Chosen from evidence measured across the
- * four validation fixtures (justified text, dialogue with an em-dash, a
- * modest gutter, a wide gutter — see the report for the full table):
- * ordinary justified stretch measured 4x the page's typical gap, a
- * dialogue-line em-dash measured 7.5x, a modest one-word-wide gutter
- * measured 8x, and a wide gutter measured 32x. 5x sits just above justified
- * stretch, but — importantly — BELOW both the em-dash (7.5x) and the modest
- * gutter (8x): this signal alone cannot tell those two apart. That is
- * exactly why signal 2 exists; the two together are what separates them.
- *
- * Anchored to median GAP, not median word WIDTH: word width shrinks on a
- * dialogue-heavy or short-word page while the space between words does not,
- * so a width-anchored threshold shrinks right along with the words and
- * false-splits an ordinary line at an ordinary em-dash. The gap itself
- * doesn't have that problem.
- */
-const GAP_MULTIPLIER = 5;
-
-/**
- * Signal 2 of the gutter split: a gap must also be at least this fraction of
- * the whole text block's width (`max(x1) - min(x0)` across every boxed word
- * on the page). A real gutter is a structural feature of the page and
- * occupies a real share of it; an em-dash or a justified line's stretch
- * never does, however short the surrounding words are.
- *
- * Chosen from the same four fixtures: the em-dash dialogue line measured
- * ~6.0% of its block (the case signal 1 alone gets wrong), the modest gutter
- * measured ~10.3% of its block, and — the case signal 2 alone gets wrong —
- * the justified line's stretched gap measured ~10.5% of ITS (much narrower)
- * block, which is why signal 1 has to be the one vetoing that case. 8% sits
- * between the two gutter-adjacent cases (6.0% and 10.3%) with roughly equal
- * margin on each side. See the report for the full table and for how this
- * also protects a single missing/inherited word's inflated neighbour-gap,
- * given a realistically wide page.
- */
-const BLOCK_FRACTION = 0.08;
-
-/**
- * Below this many measured gaps on the page, the median gap is not trusted
- * at all — signal 1 is disabled (never split on it) rather than computed
- * from too few samples. With very few gaps, the gutter gap itself can BE
- * the median (a 3-word single line with gaps [8, 300] medians to 300, the
- * gutter, inflating the "typical gap" threshold to the point that the
- * gutter it's measuring can never exceed it) — not a boundary case, total
- * contamination. 5 is chosen because it sits below every "must split"
- * validation fixture's sample count (the modest-gutter class has 7 gap
- * samples, the wide-gutter class has 6) so real gutter detection is
- * unaffected, and above the degenerate 2-gap fixture that exposed this.
- */
-const MIN_GAP_SAMPLES = 5;
-
-/**
- * Slack multiplier on the drop-exemption's magnitude check (see
- * `isGapExplainedByDrops`) — the plausible width of N missing words is
- * allowed to run up to this much over the page's own largest observed word
- * width, to tolerate ordinary variation in how wide a specific dropped word
- * might have been. Kept modest deliberately: a large slack would let a
- * gutter "hide" behind a run of only two or three stray drops (this is
- * exactly the regression the exemption introduced — see the report).
- */
-const DROP_MAGNITUDE_SLACK = 1.15;
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((x, y) => x - y);
   return sorted[Math.floor(sorted.length / 2)];
-}
-
-/**
- * Whether a gap between two boxed neighbours is plausibly explained by
- * words `aligned` already says were dropped between them, rather than being
- * a structural feature of the page.
- *
- * This is PRESENCE *and* MAGNITUDE aware, deliberately: presence alone (is
- * every intervening vision-index slot unboxed?) is not enough — a single
- * stray unboxed token landing between a genuine two-column gutter's
- * flanking words would otherwise exempt an arbitrarily large gutter gap
- * just because something, anything, was technically "missing" there. A gap
- * is only treated as explained by drops if its size is also roughly
- * consistent with the number of words actually missing: at most
- * `DROP_MAGNITUDE_SLACK` times what that many words, each up to the page's
- * own largest observed word width, plus their ordinary in-between gaps,
- * could plausibly occupy. A 300px gap "explained by" one or three dropped
- * tokens on a page of 70px words is not explained at all, and this rejects
- * it — falling through to the ordinary two-signal gutter test instead of
- * exempting it.
- *
- * If ANY intervening slot instead carries a real box (a word that exists
- * and was placed elsewhere — a different line, a different column), the
- * gap is not explained by drops regardless of magnitude, and must go
- * through the ordinary gutter test. An empty range (adjacent vision
- * indices, or no gap at all) is not "explained by drops" either — there is
- * nothing to attribute the gap to.
- */
-function isGapExplainedByDrops(
-  aligned: AlignedWord[],
-  loIndex: number,
-  hiIndex: number,
-  gap: number,
-  maxWordWidth: number,
-  medianGap: number,
-): boolean {
-  let droppedCount = 0;
-  for (const word of aligned) {
-    if (word.visionIndex > loIndex && word.visionIndex < hiIndex) {
-      if (word.box) return false;
-      droppedCount++;
-    }
-  }
-  if (droppedCount === 0) return false;
-
-  const plausibleMax =
-    DROP_MAGNITUDE_SLACK * (droppedCount * maxWordWidth + (droppedCount + 1) * medianGap);
-  return gap <= plausibleMax;
 }
 
 function hull(boxes: Box[]): Box {
@@ -158,47 +45,36 @@ function hull(boxes: Box[]): Box {
  * the page has taller words and proportionally larger baseline jitter, and a
  * fixed tolerance splits one line into two on exactly those photographs.
  *
- * Within a baseline cluster, words are further split wherever the horizontal
- * gap to the next word (left to right) crosses a gutter threshold — this
- * stops a two-column page's left- and right-column rows (which commonly sit
- * at the very same baseline) from being hulled into one stroke that bridges
- * the gutter. Splitting requires BOTH of two independent signals to agree
- * (see `GAP_MULTIPLIER` and `BLOCK_FRACTION`), because either alone is
- * defeatable: a gap large relative to the page's typical gap can still be
- * ordinary justified stretch or an em-dash, and a gap large relative to the
- * page's overall width could in principle be a coincidence on a very narrow
- * page. Neither threshold is a fixed pixel figure, for the same reason the
- * height tolerance above is not one: both gap size and page scale vary with
- * how close the photo was taken and how much text is on it.
+ * Clustering only looks at each word's vertical centre and never at its
+ * horizontal position relative to other lines, so a two-column page — where
+ * a line in the left column and a line in the right column can sit at the
+ * same vertical centre — merges those two columns' words into one "line" if
+ * their y-centres fall within tolerance of each other, and the resulting
+ * stroke bridges the gutter between them.
  *
- * Before either signal is even consulted, a gap is exempted from the gutter
- * split entirely if it is explained — in both PRESENCE and MAGNITUDE — by
- * words `aligned` already says were dropped (see `isGapExplainedByDrops`):
- * every vision-index slot between two boxed neighbours must be present in
- * `aligned` but unboxed (never some other, elsewhere-positioned boxed
- * word), AND the gap's size must be plausible for that many missing words,
- * not just any size. Presence alone is not enough — a single stray unboxed
- * token landing between a genuine gutter's flanking words must not exempt
- * an arbitrarily large gutter just because something was technically
- * missing there. This is what actually closes the repeatedly-measured risk
- * that a run of consecutively dropped words reads as a gutter on a page
- * whose lines are realistically short, without opening the reverse hole of
- * an actual gutter hiding behind one stray drop — seeing `aligned`'s null
- * entries directly, sized against the page's own word-width and gap
- * evidence, is strictly better than either guessing from pixels alone or
- * trusting presence alone. It does not reintroduce column-major ordering:
- * it never assumes anything about words that DO have a box elsewhere in the
- * vision stream (e.g. the rest of a real two-column page's left column, in
- * a vision model's natural column-major reading order) — those still go
- * through the two-signal test exactly as before.
- *
- * This split only stops a stroke from bridging the gutter — it does NOT
- * reorder lines into column-major reading order. Lines still come out sorted
- * purely by vertical centre, so a two-column page comes back interleaved by
- * row (left row 1, right row 1, left row 2, ...), not with the whole left
- * column followed by the whole right column. Column-major reordering is a
- * separate, larger piece of work and is deliberately out of scope here — see
- * the two-column test and the report for what remains unfixed.
+ * A gutter-aware horizontal split was attempted and reverted (three rounds:
+ * a median-word-width anchor, then a median-gap-plus-block-fraction anchor,
+ * then a presence-based drop exemption, then a magnitude-aware one with a
+ * sample floor). A parameter sweep across dropped-run length, word width,
+ * gap ratio and gutter ratio showed the failure is structural, not a tuning
+ * miss: the magnitude-aware exemption's bound on how large a gap N dropped
+ * words can plausibly explain grows linearly and unboundedly with N, while
+ * a real gutter's width is fixed — so past a small, page-dependent number of
+ * consecutively dropped words at the gutter (as few as one, for a gutter
+ * only about as wide as a single word), the exemption defeats the very
+ * split it was guarding, merging the two columns back into one stroke. No
+ * slack constant removes this; it only moves where it happens. On top of
+ * that, even a hypothetically perfect gutter split would only fix stroke
+ * SHAPE — this function still returns lines sorted by vertical centre alone,
+ * so a two-column page comes back interleaved (left row 1, right row 1, left
+ * row 2, ...), not in reading order, which is a separate, larger piece of
+ * work. Fixing shape on a page whose sequence is still wrong doesn't make
+ * the page usable, so the gutter split was not worth carrying. This function
+ * does NOT detect columns; a caller feeding it a two-column page gets one
+ * left-to-right stroke per shared baseline, spanning the gutter, not two
+ * separate per-column strokes, and the lines come back in an order that is
+ * not that page's reading order either. See the two-column test and the
+ * report for the measurements behind this call.
  */
 export function clusterLineRuns(aligned: AlignedWord[]): LineRun[] {
   const boxed = aligned.filter((w): w is AlignedWord & { box: Box } => w.box !== null);
@@ -217,53 +93,7 @@ export function clusterLineRuns(aligned: AlignedWord[]): LineRun[] {
     else groups.push([word]);
   }
 
-  // Sort each baseline group left-to-right up front — needed both to walk
-  // for the gutter split below and to measure the page's typical gap.
-  const byXGroups = groups.map((group) => [...group].sort((a, b) => a.box.x0 - b.box.x0));
-
-  const pageGaps: number[] = [];
-  for (const line of byXGroups) {
-    for (let i = 0; i < line.length - 1; i++) {
-      const gap = line[i + 1].box.x0 - line[i].box.x1;
-      if (gap > 0) pageGaps.push(gap);
-    }
-  }
-  // The raw median, used as a "typical gap" estimate for the drop-magnitude
-  // check below regardless of sample count (0 when there is no data at all
-  // — a neutral value, since that check falls back to word width alone).
-  const medianGap = pageGaps.length > 0 ? median(pageGaps) : 0;
-  // Signal 1's actual threshold additionally requires enough samples for
-  // the median to be trustworthy at all — see `MIN_GAP_SAMPLES`. Below it,
-  // never split on this signal rather than trust a handful of gaps that may
-  // themselves include the very gutter being measured.
-  const gapThreshold = pageGaps.length >= MIN_GAP_SAMPLES ? medianGap * GAP_MULTIPLIER : Infinity;
-  const blockThreshold =
-    (Math.max(...boxed.map((w) => w.box.x1)) - Math.min(...boxed.map((w) => w.box.x0))) *
-    BLOCK_FRACTION;
-  const maxWordWidth = Math.max(...boxed.map((w) => widthOf(w.box)));
-
-  const finalGroups: (AlignedWord & { box: Box })[][] = [];
-  for (const line of byXGroups) {
-    let current: (AlignedWord & { box: Box })[] = [line[0]];
-    for (let i = 1; i < line.length; i++) {
-      const prev = line[i - 1];
-      const curr = line[i];
-      const gap = curr.box.x0 - prev.box.x1;
-      const isGutter =
-        !isGapExplainedByDrops(aligned, prev.visionIndex, curr.visionIndex, gap, maxWordWidth, medianGap) &&
-        gap > gapThreshold &&
-        gap > blockThreshold;
-      if (isGutter) {
-        finalGroups.push(current);
-        current = [curr];
-      } else {
-        current.push(curr);
-      }
-    }
-    finalGroups.push(current);
-  }
-
-  return finalGroups.map((group) => {
+  return groups.map((group) => {
     // Sorted by vision index (reading order), not by x0: wordIndices must be
     // ascending so `runsForRange`'s range filter works, and wordBoxes must
     // line up with it element-for-element.
