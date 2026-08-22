@@ -284,7 +284,7 @@ export default function UploadDropzone() {
                     onClick={() => move(index, index - 1)}
                     disabled={index === 0}
                     aria-label={strings.upload.moveUp(page)}
-                    className="rounded border px-1.5 py-1 text-[12px] disabled:opacity-30"
+                    className="flex h-6 w-6 items-center justify-center rounded border text-[12px] disabled:opacity-30"
                     style={{ borderColor: "var(--line)", color: "var(--ink)" }}
                   >
                     ↑
@@ -294,7 +294,7 @@ export default function UploadDropzone() {
                     onClick={() => move(index, index + 1)}
                     disabled={index === items.length - 1}
                     aria-label={strings.upload.moveDown(page)}
-                    className="rounded border px-1.5 py-1 text-[12px] disabled:opacity-30"
+                    className="flex h-6 w-6 items-center justify-center rounded border text-[12px] disabled:opacity-30"
                     style={{ borderColor: "var(--line)", color: "var(--ink)" }}
                   >
                     ↓
@@ -303,7 +303,7 @@ export default function UploadDropzone() {
                     type="button"
                     onClick={() => removeAt(index)}
                     aria-label={strings.upload.removePage(page)}
-                    className="rounded border px-1.5 py-1 text-[12px]"
+                    className="flex h-6 w-6 items-center justify-center rounded border text-[12px]"
                     style={{ borderColor: "var(--line)", color: "var(--rose)" }}
                   >
                     ✕

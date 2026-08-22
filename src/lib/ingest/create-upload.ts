@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../db";
 import { uploadDir } from "../paths";
@@ -18,6 +19,20 @@ export interface CreateUploadResult {
   uploadId: string;
   bookId: string;
   pages: CreateUploadPage[];
+}
+
+/**
+ * Any failure processing one photo — an unrecognised container from
+ * `normalizePhoto`, or sharp choking while decoding a correctly-signed but
+ * corrupt/truncated body — is the same "which file?" problem: the file's
+ * own signature carries no name, so a 20-photo batch needs the name
+ * attached at the call site regardless of which stage or error type raised
+ * it. Always renamed as a `BadUpload`: whatever broke, the fix is the
+ * operator retaking that one photo.
+ */
+function namedPhotoError(name: string, err: unknown): BadUpload {
+  const message = err instanceof Error ? err.message : String(err);
+  return new BadUpload(`${name}: ${message}`);
 }
 
 /**
@@ -49,51 +64,76 @@ export async function createUpload(form: FormData, userId: string | null): Promi
   checkPhotoBatch(entries.map((f, i) => ({ name: f.name, bytes: buffers[i].length })));
 
   // Looked up by title so a second upload of the same book adds to it rather
-  // than forking a parallel series with its own used-idea history.
-  const book =
-    (await prisma.book.findFirst({ where: { title } })) ??
-    (await prisma.book.create({ data: { title, rightsStatus } }));
+  // than forking a parallel series with its own used-idea history. Tracked
+  // separately so a failure below knows whether it is safe to remove the
+  // book too, or whether the book pre-dates this call and has other uploads
+  // riding on it.
+  let book = await prisma.book.findFirst({ where: { title } });
+  const bookCreatedHere = !book;
+  if (!book) {
+    book = await prisma.book.create({ data: { title, rightsStatus } });
+  }
 
   const upload = await prisma.upload.create({ data: { bookId: book.id, userId: userId ?? undefined } });
   const dir = uploadDir(upload.id);
 
-  const pages: CreateUploadPage[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const stem = `page-${String(i).padStart(2, "0")}`;
-    const filePath = path.join(dir, `${stem}.jpg`);
-    const derivedPath = path.join(dir, `${stem}-derived.jpg`);
+  try {
+    const pages: CreateUploadPage[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const stem = `page-${String(i).padStart(2, "0")}`;
+      const filePath = path.join(dir, `${stem}.jpg`);
+      const derivedPath = path.join(dir, `${stem}-derived.jpg`);
 
-    let width: number;
-    let height: number;
-    try {
-      ({ width, height } = await normalizePhoto(buffers[i], filePath));
-    } catch (err) {
-      // normalizePhoto's own signature carries no filename, so the error is
-      // rethrown here with the file's name attached — in a 20-photo batch,
-      // "a file was not an image" is useless without saying which one.
-      if (err instanceof BadUpload) throw new BadUpload(`${entries[i].name}: ${err.message}`);
-      throw err;
+      let width: number;
+      let height: number;
+      try {
+        ({ width, height } = await normalizePhoto(buffers[i], filePath));
+      } catch (err) {
+        throw namedPhotoError(entries[i].name, err);
+      }
+
+      // Derived from the normalised original (already EXIF-stripped and
+      // rotated), never from the raw upload buffer, so the derivative and the
+      // original agree on orientation.
+      try {
+        await deriveForComposition(filePath, derivedPath);
+      } catch (err) {
+        throw namedPhotoError(entries[i].name, err);
+      }
+
+      const page = await prisma.page.create({
+        data: {
+          uploadId: upload.id,
+          pageIndex: i,
+          filePath,
+          derivedPath,
+          // The ORIGINAL's dimensions, not the derivative's: they describe the
+          // source photo. The derivative's own size is recoverable from its file.
+          width,
+          height,
+        },
+      });
+      pages.push({ id: page.id, pageIndex: page.pageIndex, width: page.width, height: page.height });
     }
 
-    // Derived from the normalised original (already EXIF-stripped and
-    // rotated), never from the raw upload buffer, so the derivative and the
-    // original agree on orientation.
-    await deriveForComposition(filePath, derivedPath);
+    return { uploadId: upload.id, bookId: book.id, pages };
+  } catch (err) {
+    // A failed batch must leave nothing behind: no orphaned Upload/Page rows,
+    // no orphaned photographs on disk under WORK_ROOT, and no Book that
+    // exists only because this failed call created it. Book photography
+    // fails often (a blurred page, a thumb over the text) — without this,
+    // every rejected batch in production would permanently accumulate
+    // private photographs with no garbage collection.
+    await prisma.upload.delete({ where: { id: upload.id } }).catch(() => {});
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
 
-    const page = await prisma.page.create({
-      data: {
-        uploadId: upload.id,
-        pageIndex: i,
-        filePath,
-        derivedPath,
-        // The ORIGINAL's dimensions, not the derivative's: they describe the
-        // source photo. The derivative's own size is recoverable from its file.
-        width,
-        height,
-      },
-    });
-    pages.push({ id: page.id, pageIndex: page.pageIndex, width: page.width, height: page.height });
+    if (bookCreatedHere) {
+      const remaining = await prisma.upload.count({ where: { bookId: book.id } });
+      if (remaining === 0) {
+        await prisma.book.delete({ where: { id: book.id } }).catch(() => {});
+      }
+    }
+
+    throw err;
   }
-
-  return { uploadId: upload.id, bookId: book.id, pages };
 }
