@@ -51,11 +51,17 @@ export function validatePlan(
 
   // The largest valid word index on a given page. Defaults to "one word,
   // index 0" when `wordsPerPage` doesn't cover that page at all (it is
-  // shorter than `pageCount`, or `pageCount` itself is 0) — mirroring the
-  // `?? 1` already used in the whole-upload fallback below, so a caller
-  // passing inconsistent arrays gets a defined, non-NaN answer everywhere,
-  // not just in the fallback branch.
-  const maxWordIndexOn = (page: number) => Math.max(0, (wordsPerPage[page] ?? 1) - 1);
+  // shorter than `pageCount`, `pageCount` itself is 0, or the element there
+  // is not usable) — mirroring the `?? 1` already used in the whole-upload
+  // fallback below, so a caller passing inconsistent arrays gets a defined,
+  // non-NaN answer everywhere, not just in the fallback branch. `??` alone
+  // only rejects null/undefined — a NaN or Infinity element is neither, and
+  // poisons `Math.max`/`clamp` right through to the output, so the guard
+  // has to be "is this a finite number", not just "is this present".
+  const maxWordIndexOn = (page: number) => {
+    const count = wordsPerPage[page];
+    return Math.max(0, (Number.isFinite(count) ? count : 1) - 1);
+  };
 
   for (const raw of plan) {
     const key = typeof raw.ideaKey === "string" ? raw.ideaKey.trim() : "";
@@ -101,7 +107,9 @@ export function validatePlan(
       startPage: 0,
       endPage: Math.max(0, pageCount - 1),
       startWord: 0,
-      endWord: Math.max(0, (wordsPerPage[pageCount - 1] ?? 1) - 1),
+      // Same finite-number guard as maxWordIndexOn above, for the same reason:
+      // a NaN/Infinity element here must not leak into the one guaranteed episode.
+      endWord: maxWordIndexOn(Math.max(0, pageCount - 1)),
     },
   ];
 }

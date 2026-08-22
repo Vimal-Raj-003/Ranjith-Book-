@@ -193,6 +193,32 @@ test("wordsPerPage shorter than pageCount does not leak NaN into the output (rev
   assert.equal(only.endWord, 0);
 });
 
+test("a NaN element in wordsPerPage does not leak NaN into the output (review finding 6)", () => {
+  // `??` only substitutes for null/undefined. A NaN element is neither, so
+  // `wordsPerPage[page] ?? 1` returns the NaN itself, and NaN then poisons
+  // Math.max and clamp all the way through to the output. The guard has to
+  // check "is this actually a usable finite number", not just "is this
+  // present".
+  const [only] = validatePlan([plan({ startPage: 0, endPage: 0, startWord: 0, endWord: 5 })], 1, [NaN]);
+  assert.ok(!Number.isNaN(only.startWord), "startWord must never be NaN");
+  assert.ok(!Number.isNaN(only.endWord), "endWord must never be NaN");
+  assert.equal(only.startWord, 0);
+  assert.equal(only.endWord, 0);
+});
+
+test("an Infinity element in wordsPerPage does not leak Infinity into the output (review finding 6)", () => {
+  // Infinity is also neither null nor undefined, so `?? 1` alone would let
+  // it straight through. It is treated the same as any other unusable word
+  // count — as if the page had one word, index 0 — rather than being read
+  // as "this page has no upper bound," which would make every endWord
+  // requested for it look valid no matter how large.
+  const [only] = validatePlan([plan({ startPage: 0, endPage: 0, startWord: 0, endWord: 5 })], 1, [Infinity]);
+  assert.ok(Number.isFinite(only.startWord), "startWord must never be Infinity");
+  assert.ok(Number.isFinite(only.endWord), "endWord must never be Infinity");
+  assert.equal(only.startWord, 0);
+  assert.equal(only.endWord, 0, "an unusable word count is treated as 'one word, index 0', not as 'no bound at all'");
+});
+
 test("pageCount 0 never produces a negative page index (review finding 3)", () => {
   // pageCount - 1 = -1 as the upper clamp bound, with a lower bound of 0,
   // is an inverted range. The clamp helper must collapse that to 0 rather
