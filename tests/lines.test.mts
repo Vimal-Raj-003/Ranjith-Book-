@@ -190,34 +190,53 @@ test("two-column pages: a stroke bridges the gutter, and line order is not readi
   // chosen, not something later work overlooked — see the report for the
   // sweep. Column-major reordering, if this page shape needs to work, is a
   // separate, larger piece of work.
+  // Vision indices reflect a real vision model's natural reading order for a
+  // two-column page: the WHOLE left column first (top to bottom), then the
+  // whole right column — not row by row. This is what makes "line order is
+  // not reading order" concretely assertable below, rather than merely true
+  // in prose.
   const twoColumnTwoRows: AlignedWord[] = [
-    // Row 1: left column, then right column, same baseline.
+    // Left column, both rows, read first.
     { visionIndex: 0, word: "left", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
     { visionIndex: 1, word: "column", ocrIndex: 1, box: { x0: 100, y0: 0, x1: 180, y1: 40 } },
-    { visionIndex: 2, word: "right", ocrIndex: 2, box: { x0: 500, y0: 1, x1: 580, y1: 41 } },
-    { visionIndex: 3, word: "column", ocrIndex: 3, box: { x0: 590, y0: 0, x1: 670, y1: 40 } },
-    // Row 2: same layout, lower on the page.
-    { visionIndex: 4, word: "second", ocrIndex: 4, box: { x0: 10, y0: 60, x1: 90, y1: 100 } },
-    { visionIndex: 5, word: "row", ocrIndex: 5, box: { x0: 100, y0: 60, x1: 180, y1: 100 } },
+    { visionIndex: 2, word: "second", ocrIndex: 2, box: { x0: 10, y0: 60, x1: 90, y1: 100 } },
+    { visionIndex: 3, word: "row", ocrIndex: 3, box: { x0: 100, y0: 60, x1: 180, y1: 100 } },
+    // Right column, both rows, read second.
+    { visionIndex: 4, word: "right", ocrIndex: 4, box: { x0: 500, y0: 1, x1: 580, y1: 41 } },
+    { visionIndex: 5, word: "column", ocrIndex: 5, box: { x0: 590, y0: 0, x1: 670, y1: 40 } },
     { visionIndex: 6, word: "second", ocrIndex: 6, box: { x0: 500, y0: 61, x1: 580, y1: 101 } },
     { visionIndex: 7, word: "row", ocrIndex: 7, box: { x0: 590, y0: 60, x1: 670, y1: 100 } },
   ];
 
   const lines = clusterLineRuns(twoColumnTwoRows);
 
-  // Half one: the stroke bridges the gutter. Each row's two columns merge
-  // into a single line rather than staying separate.
+  // Half one: the stroke bridges the gutter. Baseline clustering groups
+  // each row's left- and right-column words into a single line rather than
+  // keeping them separate, regardless of how far apart their vision indices
+  // are.
   assert.equal(lines.length, 2, "each row's two columns merge into one line, not two");
-  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3], "row one: left AND right column in one stroke");
-  assert.deepEqual(lines[1].wordIndices, [4, 5, 6, 7], "row two: left AND right column in one stroke");
+  assert.deepEqual(lines[0].wordIndices, [0, 1, 4, 5], "row one: left AND right column in one stroke");
+  assert.deepEqual(lines[1].wordIndices, [2, 3, 6, 7], "row two: left AND right column in one stroke");
   assert.equal(lines[0].box.x0, 10, "the stroke starts at the left column");
   assert.equal(lines[0].box.x1, 670, "and runs all the way across the gutter into the right column");
 
-  // Half two: line order is not reading order. A real two-column page reads
-  // the WHOLE left column top-to-bottom, then the whole right column — but
-  // these lines are sorted purely by vertical centre (row by row), so this
-  // list is not narration order for a two-column source page. Fixing the
-  // bridging above does not fix this, and nothing here attempts to.
+  // Half two: line order is not reading order — asserted concretely, not
+  // just described. In true reading order (left column top-to-bottom, then
+  // right column), vision index 2 (row two, left column) comes right after
+  // 0 and 1, before anything in the right column. But it lands in `lines[1]`
+  // here, AFTER `lines[0]` already contains 4 and 5 (row one, right column)
+  // — content read later ends up narrated earlier. Flattening every line's
+  // wordIndices in line order must therefore NOT be sorted ascending; if it
+  // ever becomes sorted, either clustering started producing genuine
+  // reading order (great — this assertion should then be revisited) or it
+  // broke in some other way that happens to look sorted, either of which is
+  // exactly the kind of change this tripwire exists to catch.
+  const flattenedOrder = lines.flatMap((l) => l.wordIndices);
+  assert.deepEqual(flattenedOrder, [0, 1, 4, 5, 2, 3, 6, 7]);
+  assert.ok(
+    flattenedOrder.some((idx, i) => i > 0 && idx < flattenedOrder[i - 1]),
+    "line order is not ascending by vision index — concrete proof this is not reading order",
+  );
 });
 
 // --- FINDING 1: a run of consecutive unboxed words must not all claim the
