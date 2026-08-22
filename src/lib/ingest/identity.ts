@@ -42,7 +42,7 @@ export function resolveAuthor(e: AuthorEvidence): AuthorResolution {
   if (e.works.length === 0) return absent("no-catalogue-match");
   if (e.works.length > 1) return absent("multiple-works");
 
-  const authors = e.works[0].authors.filter((a) => a.trim());
+  const authors = e.works[0].authors.map((a) => a.trim()).filter((a) => a.length > 0);
   if (authors.length === 0) return absent("no-catalogue-author");
   if (authors.length > 1) return absent("multiple-authors");
 
@@ -81,6 +81,16 @@ interface OpenLibrarySearchResponse {
 }
 
 const MAX_REDIRECTS = 5;
+/**
+ * A deadline for the WHOLE lookup, not for any single hop. Ingest budgets 35
+ * seconds for six pages, and this lookup is one stage inside that; if each of
+ * up to 6 hops (the original request plus 5 redirects) got its own fresh 8s
+ * timer, a redirecting server could burn 6 x 8s = 48s on its own -- longer
+ * than the entire ingest budget -- and the failure would surface as "ingest
+ * is slow" rather than "one catalogue lookup hung". One `AbortSignal.timeout`
+ * created before the loop starts and reused for every hop's `fetch` enforces
+ * a single deadline across the whole chain instead.
+ */
 const LOOKUP_TIMEOUT_MS = 8000;
 
 /**
@@ -95,13 +105,11 @@ const LOOKUP_TIMEOUT_MS = 8000;
  * address would slip past a single up-front check.
  */
 async function fetchGuardedFollowingRedirects(rawUrl: string): Promise<Response> {
+  const signal = AbortSignal.timeout(LOOKUP_TIMEOUT_MS);
   let current = rawUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const url = await assertPublicUrl(current);
-    const res = await fetch(url, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
-    });
+    const res = await fetch(url, { redirect: "manual", signal });
 
     const isRedirect = res.status >= 300 && res.status < 400;
     const location = res.headers.get("location");

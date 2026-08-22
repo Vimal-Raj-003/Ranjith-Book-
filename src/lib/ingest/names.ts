@@ -37,8 +37,24 @@ export function sameName(a: string, b: string): boolean {
  * a verified byline is exactly the "probably" this whole chain exists to
  * refuse -- it is not a name at all, so no amount of agreement between the
  * catalogue and the model makes it certain.
+ *
+ * This is deliberately a full-string denylist, not a "last word looks
+ * organisational" heuristic. An earlier version of this file rejected any
+ * two-or-more-word name ending in a bare word like "house", "press", "media"
+ * or "group" -- which is exactly the ordinary shape of a real English surname
+ * plus a given name: `isNonPersonAuthor("Silas House")` came back `true`, and
+ * Silas House is a real, awarded novelist (Kentucky Poet Laureate 2017-18);
+ * so is Christian House. Both would have been permanently blocked from ever
+ * being verified, no matter how strongly the catalogue, the model and the
+ * adversarial pass all agreed. A false rejection is far cheaper than a false
+ * attribution, but "cheaper" is not "free" -- a rule that reliably erases a
+ * working author's byline is not an acceptable trade. So the check only ever
+ * matches the FULL normalised author string against known catalogue
+ * conventions and specific, named publisher imprints below; it never infers
+ * "this looks like an organisation" from a word shape.
  */
 const NON_PERSON_TOKENS = new Set([
+  // Catalogue conventions for "no identifiable single author".
   "various",
   "various authors",
   "anonymous",
@@ -58,39 +74,25 @@ const NON_PERSON_TOKENS = new Set([
   "na",
   "not available",
   "staff",
-]);
-
-/**
- * A conservative, curated check -- not a heuristic that tries to catch every
- * publisher imprint in existence. A two-or-more-word name ending in a bare
- * corporate/organisational word ("Penguin Random House", "HarperCollins
- * Publishers") is refused; a single-word surname that happens to be one of
- * these words ("House", "Press") is not, because the false-negative there
- * (an imprint slipping through) is far cheaper than the false-positive (a
- * real person's only name being erased).
- */
-const ORG_LAST_WORDS = new Set([
-  "press",
-  "publishing",
-  "publishers",
-  "publications",
-  "editions",
-  "house",
-  "media",
-  "group",
-  "inc",
-  "llc",
-  "ltd",
-  "co",
+  // Specific, named publisher imprints, matched as whole strings only --
+  // never as "any name ending in one of these words".
+  "penguin random house",
+  "penguin books",
+  "penguin classics",
+  "harpercollins",
+  "harpercollins publishers",
+  "simon schuster",
+  "macmillan publishers",
+  "hachette book group",
+  "scholastic inc",
+  "oxford university press",
+  "cambridge university press",
+  "random house",
+  "vintage books",
 ]);
 
 export function isNonPersonAuthor(raw: string): boolean {
   const normalized = normalizePersonName(raw);
   if (!normalized) return true;
-  if (NON_PERSON_TOKENS.has(normalized)) return true;
-
-  const words = normalized.split(" ");
-  if (words.length >= 2 && ORG_LAST_WORDS.has(words[words.length - 1])) return true;
-
-  return false;
+  return NON_PERSON_TOKENS.has(normalized);
 }

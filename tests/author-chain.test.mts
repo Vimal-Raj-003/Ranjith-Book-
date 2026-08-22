@@ -126,17 +126,24 @@ test("'Anonymous', 'Editor' and a publisher imprint are all refused as non-perso
   }
 });
 
-test("a real single-word surname that happens to share a word with a publisher term is not refused", () => {
-  // "House" alone is a real surname (Silas House); only a multi-word name
-  // ending in a bare corporate word gets treated as an organisation.
-  const r = resolveAuthor({
-    works: [{ authors: ["House"] }],
-    modelGuess: "House",
-    adversarialConfirmed: true,
-  });
-  assert.equal(r.reason, null);
-  assert.equal(r.verified, true);
-  assert.equal(r.author, "House");
+test("real authors whose name happens to end in a word an organisation-heuristic would flag are never refused", () => {
+  // A previous version of isNonPersonAuthor rejected any two-or-more-word
+  // name ending in a bare organisational word ("house", "press", "media",
+  // "group", ...). That is exactly the shape of an ordinary "First Last"
+  // name, and it silently blocked real, working authors -- Silas House
+  // (Kentucky Poet Laureate 2017-18) and Christian House among them. The
+  // check is now a full-string denylist only, so every one of these resolves
+  // normally when the rest of the chain agrees.
+  for (const realAuthor of ["Silas House", "Christian House", "House"]) {
+    const r = resolveAuthor({
+      works: [{ authors: [realAuthor] }],
+      modelGuess: realAuthor,
+      adversarialConfirmed: true,
+    });
+    assert.equal(r.reason, null, `"${realAuthor}" should verify cleanly`);
+    assert.equal(r.verified, true, `"${realAuthor}" should verify cleanly`);
+    assert.equal(r.author, realAuthor);
+  }
 });
 
 test("leading/trailing whitespace and empty-string authors in the array are cleaned before counting", () => {
@@ -146,7 +153,7 @@ test("leading/trailing whitespace and empty-string authors in the array are clea
     adversarialConfirmed: true,
   });
   assert.equal(r.verified, true);
-  assert.equal(r.author, "  Cal Newport  ", "the catalogue's exact string is preserved verbatim once it is the only real one");
+  assert.equal(r.author, "Cal Newport", "the survivor is trimmed, not just the blanks removed — a rendered byline must not carry padding");
 });
 
 test("an author string that is only whitespace is treated as no catalogue author", () => {
@@ -228,6 +235,39 @@ test("a redirect toward a private address is refused, and the failure is still n
     const result = await lookupBook("Deep Work");
     assert.deepEqual(result, { openLibraryId: null, year: null, subjects: [], works: [] });
     assert.equal(calls, 1, "the redirect target must be checked and refused before a second fetch is ever made");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("the redirect chain shares one deadline across every hop, not a fresh one per hop", async () => {
+  // Regression for a per-hop AbortSignal.timeout: with MAX_REDIRECTS = 5, a
+  // fresh timer per hop could let a slow, redirecting server burn roughly
+  // 6x the intended budget (original request plus five redirects) before
+  // failing -- longer than ingest's entire 35s-for-six-pages budget, on one
+  // catalogue lookup. Captured signals across three hops must all be the
+  // exact same object, proving one deadline covers the whole chain.
+  const original = globalThis.fetch;
+  const seenSignals: (AbortSignal | null | undefined)[] = [];
+  let calls = 0;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    calls++;
+    seenSignals.push(init?.signal);
+    if (calls < 3) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://openlibrary.org/search.json?hop=${calls}` },
+      });
+    }
+    return new Response(JSON.stringify({ docs: [] }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await lookupBook("Deep Work");
+    assert.equal(calls, 3, "expected exactly two redirects followed by a final response");
+    assert.ok(seenSignals[0], "a signal must be attached to every fetch call");
+    assert.equal(seenSignals[0], seenSignals[1], "hop 2 must reuse hop 1's deadline");
+    assert.equal(seenSignals[1], seenSignals[2], "hop 3 must reuse the same deadline too");
   } finally {
     globalThis.fetch = original;
   }
