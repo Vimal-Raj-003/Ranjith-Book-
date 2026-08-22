@@ -205,7 +205,38 @@ test("a hard CLI failure releases the idea reservation", async () => {
   });
 });
 
-test("the quotation budget rejects reading the page aloud and releases the idea reservation", async () => {
+// --- The quotation budget joins the revision loop instead of throwing on
+//     the first over-budget draft --------------------------------------------
+
+test("an over-budget first draft is rewritten instead of thrown immediately, and the fixed draft is accepted", async () => {
+  await withBook(async ({ bookId }) => {
+    const ideaKey = `idea-${randomUUID()}`;
+    const result = await generateContent({
+      bookId,
+      bookTitle: "A Book SCENARIO:quotation-budget-recovers",
+      author: null,
+      authorVerified: false,
+      archetype: "motivation",
+      rightsStatus: "in-copyright",
+      ideaKey,
+      pages,
+      provider: "claude-cli",
+    });
+    assert.equal(
+      result.revised,
+      true,
+      "the over-budget first draft must have triggered a rewrite rather than an immediate throw",
+    );
+    assert.equal(
+      await ideaRowExists(bookId, ideaKey),
+      true,
+      "a run that recovers via rewrite keeps its idea reservation, same as any other successful run",
+    );
+    await prisma.usedHook.deleteMany({ where: { bookId } });
+  });
+});
+
+test("an over-budget draft that never recovers still fails with ContentRejectedError once the rewrite ceiling is reached, and releases the idea reservation", async () => {
   await withBook(async ({ bookId }) => {
     const ideaKey = `idea-${randomUUID()}`;
     await assert.rejects(
@@ -221,9 +252,22 @@ test("the quotation budget rejects reading the page aloud and releases the idea 
           pages,
           provider: "claude-cli",
         }),
-      ContentRejectedError,
+      (err: unknown) => {
+        assert.ok(err instanceof ContentRejectedError);
+        // The budget must never become advisory: it still fails after the
+        // ceiling, and the message must help — how far over it ran, and that
+        // the book's rights status is what drives the limit at all.
+        assert.match(err.message, /longest run \d+ words/i);
+        assert.match(err.message, /rights status is "in-copyright"/i);
+        assert.match(err.message, /public-domain or own-work/i);
+        return true;
+      },
     );
-    assert.equal(await ideaRowExists(bookId, ideaKey), false);
+    assert.equal(
+      await ideaRowExists(bookId, ideaKey),
+      false,
+      "the budget ceiling must still release the reservation",
+    );
   });
 });
 

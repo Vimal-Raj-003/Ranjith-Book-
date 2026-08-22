@@ -126,6 +126,27 @@ if (scenario === "quotation-budget") {
   process.exit(0);
 }
 
+// Same over-budget first draft as "quotation-budget" above, but this one
+// listens for the revision brief the gate now feeds back (the same shape a
+// grounding-check brief takes — "The checker rejected your previous draft.
+// Fix this:" — see buildUserPrompt) and returns a clean, paraphrased draft
+// once it sees one. Used to prove the quotation budget joins the SAME
+// rewrite loop instead of throwing on the first over-budget draft.
+if (scenario === "quotation-budget-recovers") {
+  if (/rejected your previous draft/.test(input)) {
+    process.stdout.write(envelope(cleanScript(scenario)));
+    process.exit(0);
+  }
+  const pkg = cleanScript(scenario);
+  pkg.beats[0].voiceover =
+    "Discipline is not the same as motivation. Motivation is a feeling and feelings " +
+    "are weather. Discipline is a decision you made once and keep. The page argues " +
+    "that starting smaller than feels useful is the only reliable way through the " +
+    "first fortnight of any new habit whatsoever.";
+  process.stdout.write(envelope(pkg));
+  process.exit(0);
+}
+
 // clean-pass / verified-author-ok / always-revise-flags-* / usedhook-fail /
 // anything else — a clean, unproblematic script.
 process.stdout.write(envelope(cleanScript(scenario)));

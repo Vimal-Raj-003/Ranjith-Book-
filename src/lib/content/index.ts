@@ -6,7 +6,13 @@ import type { Archetype, ContentPackage, GenerateInput } from "./schema";
 import { voScriptFromPackage } from "./schema";
 import { generateWithCli, runCliJson } from "./cli-provider";
 import type { CliProvider } from "./cli";
-import { checkQuotationBudget, type RightsStatus } from "./quotation";
+import {
+  checkQuotationBudget,
+  MAX_QUOTE_WORDS,
+  MAX_VERBATIM_SHARE,
+  type QuotationReport,
+  type RightsStatus,
+} from "./quotation";
 import {
   findAuthorMentions,
   revisionBrief,
@@ -69,7 +75,7 @@ export interface GenerateResult {
   revised: boolean;
 }
 
-const MAX_REVISIONS = 2;
+const MAX_REVISIONS: number = 2;
 
 /**
  * Writes a script, then hands it to a SEPARATE, adversarial grounding pass
@@ -83,11 +89,18 @@ const MAX_REVISIONS = 2;
  * this function produces: `findAuthorMentions` (an unverified author must
  * never be named, or stood in for, and that must not depend on a checker
  * noticing) and `checkQuotationBudget` (the narration must not reproduce too
- * much of the page). Both throw `ContentRejectedError` inside the same `try`
- * that wraps the model calls, so every failing path — the author gate, the
- * quotation budget, a rejected verdict, a CLI failure, anything — releases
- * the idea reservation. An angle burned by a failed run is an angle no
- * future episode of that book could ever use.
+ * much of the page). Neither throws on a first offense: a model brushing the
+ * quotation budget or naming the wrong author on a first draft is an
+ * ordinary, correctable event — exactly the kind of thing a specific,
+ * actionable brief fixes in one pass — not a reason to burn the whole run.
+ * Both feed the SAME rewrite loop the grounding checker uses (`gateCheck`
+ * below), sharing its `MAX_REVISIONS` budget, and only throw
+ * `ContentRejectedError` once that ceiling is reached with the problem still
+ * present. Every failing path — the gate ceiling, a rejected grounding
+ * verdict, a CLI failure, anything — sits inside the same outer `try` that
+ * wraps every model call, so all of them release the idea reservation. An
+ * angle burned by a failed run is an angle no future episode of that book
+ * could ever use.
  */
 export async function generateContent(opts: GenerateContentOpts): Promise<GenerateResult> {
   const {
@@ -163,11 +176,66 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     r.verdict === "revise" || !r.indicesGrounded || (!authorVerified && r.authorNamed);
 
   /**
-   * Deterministic gate run on every fresh draft, before it ever reaches the
-   * model-based grounding check — both throws sit inside the caller's `try`,
-   * so the idea reservation is always released on rejection.
+   * A gate failure that the SAME loop `needsRevision`/`revisionBrief` drive
+   * for the grounding checker can also fix: a concrete, actionable brief for
+   * the writer, plus the message to use if the problem is still present once
+   * `MAX_REVISIONS` is exhausted (`gate` below never lets that ceiling
+   * message escape early — see `MAX_REVISIONS` handling in the main loop).
    */
-  const gate = (candidate: ContentPackage): void => {
+  interface GateIssue {
+    kind: "author" | "quotation";
+    /** Fed back to the writer exactly like `revisionBrief(report)` is. */
+    brief: string;
+    /** Used only once the rewrite ceiling is reached with this still failing. */
+    finalMessage: string;
+    data: unknown;
+  }
+
+  const rewriteNote = ` even after ${MAX_REVISIONS} rewrite${MAX_REVISIONS === 1 ? "" : "s"}, so no voiceover was recorded.`;
+
+  /**
+   * Concrete, actionable feedback — vague feedback wastes a rewrite. Names
+   * the offending passage (`quotation.excerpt`), the exact numbers the draft
+   * ran to versus the limit, and what to change. Also tells the model the
+   * book's rights status, since that is what decides how tight the budget
+   * actually is — a brief that omits it lets the model guess wrong about how
+   * much room it has.
+   */
+  function quotationBrief(q: QuotationReport, rights: RightsStatus): string {
+    const lines = [
+      `A quotation-budget check found this draft reproduces too much of the source page verbatim.`,
+    ];
+    if (q.excerpt) {
+      lines.push(
+        q.longestRun > MAX_QUOTE_WORDS
+          ? `The longest verbatim run is ${q.longestRun} words — over the ${MAX_QUOTE_WORDS}-word limit for a single quote: "${q.excerpt}"`
+          : `The longest verbatim run (${q.longestRun} words, within the per-quote limit) is: "${q.excerpt}"`,
+      );
+    }
+    lines.push(
+      `Overall about ${Math.round(q.verbatimShare * 100)}% of the narration is quoted verbatim from the page, against an ${Math.round(MAX_VERBATIM_SHARE * 100)}% limit for this book's rights status ("${rights}").`,
+      `Rewrite the whole package: paraphrase that passage in your own words instead of quoting it, keep AT MOST ONE short quote (well under ${MAX_QUOTE_WORDS} words) only if a quote is truly essential, and make sure every other sentence is your own commentary — not the page's phrasing — so the total quoted share drops well under the limit.`,
+    );
+    return lines.join("\n");
+  }
+
+  function authorBrief(mentions: string[], forAuthor: string | null): string {
+    return forAuthor
+      ? `An author-identity check found this draft named "${mentions[0]}", which does not match this book's verified author, "${forAuthor}". Rewrite the whole package: use "${forAuthor}" wherever the book's author is referenced, and remove every mention of any other name.`
+      : `An author-identity check found this draft named or implied an author ("${mentions[0]}") for a book whose author has NOT been verified. Rewrite the whole package: remove that name and any stand-in for one ("the writer", "the author", "whoever wrote this") — refer only to "the page", "the passage", or "the book", never to a person.`;
+  }
+
+  /**
+   * Deterministic gate run on every fresh draft, before it ever reaches the
+   * model-based grounding check. Returns an issue instead of throwing — the
+   * caller feeds it into the SAME rewrite loop the grounding checker drives,
+   * so a first-draft slip is corrected rather than terminal (see the doc
+   * comment on `generateContent`). Naming the wrong author is judged
+   * correctable the same way: the model is simply told the right name and
+   * asked to fix it, rather than the run being failed outright for a mistake
+   * a rewrite reliably fixes.
+   */
+  const gate = (candidate: ContentPackage): GateIssue | null => {
     const mentions = findAuthorMentions(candidate, safeAuthor);
     if (mentions.length) {
       // Two different fabrications, and the message must not conflate them:
@@ -176,21 +244,32 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       // "has not been established" wording is simply false in the second case,
       // and a message that misdescribes what actually went wrong is worse than
       // a generic one (same principle as `reserveIdea`'s error-naming comment).
-      throw new ContentRejectedError(
-        safeAuthor
-          ? `The script named an author (${mentions[0]}) that does not match this book's verified author (${safeAuthor}).`
-          : `The script named an author (${mentions[0]}) for a book whose author has not been established.`,
-        { authorNamed: true, mentions },
-      );
+      return {
+        kind: "author",
+        brief: authorBrief(mentions, safeAuthor),
+        finalMessage:
+          (safeAuthor
+            ? `The script named an author (${mentions[0]}) that does not match this book's verified author (${safeAuthor})`
+            : `The script named an author (${mentions[0]}) for a book whose author has not been established`) +
+          rewriteNote,
+        data: { authorNamed: true, mentions },
+      };
     }
 
     const quotation = checkQuotationBudget(voScriptFromPackage(candidate), sourceText, rightsStatus);
     if (!quotation.withinBudget) {
-      throw new ContentRejectedError(
-        `The narration reproduces too much of the page (longest run ${quotation.longestRun} words, ${Math.round(quotation.verbatimShare * 100)}% verbatim).`,
-        quotation,
-      );
+      return {
+        kind: "quotation",
+        brief: quotationBrief(quotation, rightsStatus),
+        finalMessage:
+          `The narration reproduces too much of the page (longest run ${quotation.longestRun} words vs the ${MAX_QUOTE_WORDS}-word limit, ${Math.round(quotation.verbatimShare * 100)}% verbatim vs the ${Math.round(MAX_VERBATIM_SHARE * 100)}% limit)` +
+          rewriteNote +
+          ` This book's rights status is "${rightsStatus}", which is what caps quotation at all — a public-domain or own-work book has no quotation budget. If you own this material or it is out of copyright, set that rights status on the book to remove this limit entirely.`,
+        data: quotation,
+      };
     }
+
+    return null;
   };
 
   let pkg: ContentPackage;
@@ -199,42 +278,62 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
 
   try {
     pkg = await write([]);
-    gate(pkg);
 
     // Cheap local guard before spending a second model call: a hook too close
     // to a previous one is regenerated with that hook explicitly forbidden.
     const tooClose = avoidHooks.find((h) => similarity(h, pkg.hook) > 0.6);
     if (tooClose) {
       pkg = await write([pkg.hook]);
-      gate(pkg);
     }
 
-    // Independent grounding check. Nothing is spoken until the script is
-    // validated, so a blocker is rewritten and re-checked rather than shipped.
-    await onStep?.("Checking the script against the page");
-    report = await check(pkg);
+    // One shared rewrite budget for every kind of fixable problem: the
+    // deterministic gate (author identity, quotation budget) and the
+    // model-based grounding check. Each round checks the gate first — no
+    // point spending a second model call on grounding a draft the gate has
+    // already rejected — and only reaches the grounding check once the gate
+    // passes clean. Either kind of failure, on the final round, throws
+    // `ContentRejectedError` instead of rewriting again; the budget and the
+    // author gate are legal/factual safety rails and must never become
+    // advisory just because a rewrite was available.
+    for (let round = 0; ; round++) {
+      const issue = gate(pkg);
+      if (issue) {
+        if (round >= MAX_REVISIONS) {
+          throw new ContentRejectedError(issue.finalMessage, issue.data);
+        }
+        await onStep?.(
+          issue.kind === "quotation"
+            ? "Rewriting after the quotation-budget check"
+            : "Rewriting after the author check",
+        );
+        pkg = await write([], issue.brief);
+        revised = true;
+        continue;
+      }
 
-    for (let round = 0; round < MAX_REVISIONS && needsRevision(report); round++) {
+      // Independent grounding check. Nothing is spoken until the script is
+      // validated, so a blocker is rewritten and re-checked rather than shipped.
+      await onStep?.("Checking the script against the page");
+      report = await check(pkg);
+      if (!needsRevision(report)) break;
+
+      if (round >= MAX_REVISIONS) {
+        const blockers = report.issues.filter((i) => i.severity === "blocker");
+        const detail = (blockers.length ? blockers : report.issues)
+          .slice(0, 3)
+          .map((i) => `${i.field}: ${i.problem}`)
+          .join(" | ");
+        throw new ContentRejectedError(
+          `The grounding check rejected the script after ${MAX_REVISIONS} rewrites, so no voiceover was recorded. ${detail}`,
+          report,
+        );
+      }
+
       await onStep?.(
         round === 0 ? "Rewriting after the grounding check" : "Rewriting after the grounding check (2 of 2)",
       );
       pkg = await write([], revisionBrief(report));
       revised = true;
-      gate(pkg);
-      await onStep?.("Checking the script against the page");
-      report = await check(pkg);
-    }
-
-    if (needsRevision(report)) {
-      const blockers = report.issues.filter((i) => i.severity === "blocker");
-      const detail = (blockers.length ? blockers : report.issues)
-        .slice(0, 3)
-        .map((i) => `${i.field}: ${i.problem}`)
-        .join(" | ");
-      throw new ContentRejectedError(
-        `The grounding check rejected the script after ${MAX_REVISIONS} rewrites, so no voiceover was recorded. ${detail}`,
-        report,
-      );
     }
 
     // Inside the same protected region as everything else: a failure here
