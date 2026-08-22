@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clusterLineRuns, inheritBoxes, runsForRange } from "../src/lib/ingest/lines";
+import { clusterLineRuns, inheritBoxes, runsForRange, buildLineRuns } from "../src/lib/ingest/lines";
 import type { AlignedWord } from "../src/lib/ingest/align";
+import type { Box } from "../src/lib/ingest/ocr";
 
 /** Three words on line one at y 0-40, three on line two at y 60-100. */
 const twoLines = (): AlignedWord[] =>
@@ -164,28 +165,180 @@ test("re-clustering after inheritBoxes folds the inherited box into wordBoxes, s
   assert.deepEqual(runs[0].box, inheritedBox);
 });
 
-test("two-column pages do not cluster correctly — same-baseline rows across the gutter merge into one stroke", () => {
+test("two-column pages: the gutter split stops a stroke bridging the gutter, but line order is still not reading order", () => {
   // Clustering groups purely on vertical centre. A two-column layout (e.g. a
   // dictionary or reference page) commonly has a row in the left column and
   // a row in the right column sitting at the very same baseline, separated
-  // by a wide empty gutter rather than a vertical offset. This function has
-  // no notion of columns, so it merges them into a single "line" whose hull
-  // spans the gutter — which would paint a highlight stroke bridging two
-  // unrelated columns. This is a real limitation, not a hypothetical: any
-  // two-column source page will trigger it. It would need explicit
-  // column-detection (e.g. splitting on a large horizontal gap before
-  // clustering) to handle correctly, which is out of scope for this task.
-  const twoColumn: AlignedWord[] = [
+  // by a wide empty gutter rather than a vertical offset. The gutter split
+  // (derived from the page's median word width) now stops those two rows'
+  // hull from bridging that gutter into one stroke.
+  //
+  // What it does NOT do: reorder lines into column-major reading order. Two
+  // rows of a two-column page still come out row-major (left row 1, right
+  // row 1, left row 2, right row 2) rather than column-major (all of the
+  // left column, then all of the right column) — a real, separate gap,
+  // documented here rather than hidden.
+  const twoColumnTwoRows: AlignedWord[] = [
+    // Row 1: left column, then right column, same baseline.
     { visionIndex: 0, word: "left", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
     { visionIndex: 1, word: "column", ocrIndex: 1, box: { x0: 100, y0: 0, x1: 180, y1: 40 } },
     { visionIndex: 2, word: "right", ocrIndex: 2, box: { x0: 500, y0: 1, x1: 580, y1: 41 } },
     { visionIndex: 3, word: "column", ocrIndex: 3, box: { x0: 590, y0: 0, x1: 670, y1: 40 } },
+    // Row 2: same layout, lower on the page.
+    { visionIndex: 4, word: "second", ocrIndex: 4, box: { x0: 10, y0: 60, x1: 90, y1: 100 } },
+    { visionIndex: 5, word: "row", ocrIndex: 5, box: { x0: 100, y0: 60, x1: 180, y1: 100 } },
+    { visionIndex: 6, word: "second", ocrIndex: 6, box: { x0: 500, y0: 61, x1: 580, y1: 101 } },
+    { visionIndex: 7, word: "row", ocrIndex: 7, box: { x0: 590, y0: 60, x1: 670, y1: 100 } },
   ];
 
-  const lines = clusterLineRuns(twoColumn);
+  const lines = clusterLineRuns(twoColumnTwoRows);
 
-  assert.equal(lines.length, 1, "documenting the merge: two columns become one line run");
+  assert.equal(lines.length, 4, "each row now yields two lines, one per column, not one bridging both");
+  assert.deepEqual(lines[0].wordIndices, [0, 1], "row one, left column");
+  assert.deepEqual(lines[1].wordIndices, [2, 3], "row one, right column");
+  assert.deepEqual(lines[2].wordIndices, [4, 5], "row two, left column");
+  assert.deepEqual(lines[3].wordIndices, [6, 7], "row two, right column");
+  assert.equal(lines[0].box.x1, 180, "left column's stroke stays inside the left column");
+  assert.equal(lines[1].box.x0, 500, "right column's stroke does not start until the right column");
+
+  // Documenting the remaining gap: this is row-major order, not the
+  // column-major reading order a two-column page actually needs.
+  assert.deepEqual(
+    lines.map((l) => l.wordIndices[0]),
+    [0, 2, 4, 6],
+    "order is row-major (left, right, left, right) — not column-major reading order",
+  );
+});
+
+test("a short justified line's stretched inter-word gap does not trigger the gutter split", () => {
+  // The one input class that genuinely resembles a gutter is justified text,
+  // where the last gap on a short line is stretched to fill the margin. A
+  // real gutter is typically as wide as a whole word or more; ordinary
+  // justification stretch is nowhere near that. Normal gaps here are 10px;
+  // the justified stretch is a generous 40px (4x normal) — still well under
+  // the word-width-derived threshold (160px for these 80px-wide words).
+  const justifiedLine: AlignedWord[] = [
+    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
+    { visionIndex: 1, word: "short", ocrIndex: 1, box: { x0: 100, y0: 0, x1: 180, y1: 40 } },
+    { visionIndex: 2, word: "line", ocrIndex: 2, box: { x0: 190, y0: 0, x1: 270, y1: 40 } },
+    // Justification stretches this gap to reach the right margin.
+    { visionIndex: 3, word: "here", ocrIndex: 3, box: { x0: 310, y0: 0, x1: 390, y1: 40 } },
+  ];
+
+  const lines = clusterLineRuns(justifiedLine);
+
+  assert.equal(lines.length, 1, "the stretched gap must not split the justified line in two");
   assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3]);
-  assert.equal(lines[0].box.x0, 10);
-  assert.equal(lines[0].box.x1, 670, "the hull spans the gutter between columns");
+  assert.equal(lines[0].box.x1, 390);
+});
+
+// --- FINDING 1: a run of consecutive unboxed words must not all claim the
+// identical full gap between their outer neighbours. ---
+
+test("two consecutive unboxed words divide their gap proportionally to character count, not identically", () => {
+  // Boundary words are 80px wide (this file's usual word scale) with a 140px
+  // gap between them — comfortably below the gutter-split threshold (160px,
+  // 2x the page's 80px median word width) so this reads as one ordinary line,
+  // not a column break.
+  const words: AlignedWord[] = [
+    { visionIndex: 0, word: "I", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
+    { visionIndex: 1, word: "extraordinarily", ocrIndex: null, box: null }, // 15 chars
+    { visionIndex: 2, word: "am", ocrIndex: null, box: null }, // 2 chars
+    { visionIndex: 3, word: "great", ocrIndex: 3, box: { x0: 230, y0: 0, x1: 310, y1: 40 } },
+  ];
+
+  const lines = clusterLineRuns(words);
+  assert.equal(lines.length, 1, "the run's neighbours stay on one line, not split as a false gutter");
+
+  const filled = inheritBoxes(words, lines);
+
+  const b1 = filled[1].box!;
+  const b2 = filled[2].box!;
+  assert.ok(b1, "word 1 gets a box");
+  assert.ok(b2, "word 2 gets a box");
+
+  // Not identical — the bug this fixes gave both the full {x0:90, x1:230} gap.
+  assert.notDeepEqual(b1, b2);
+
+  // Contiguous and non-overlapping: word 1 ends exactly where word 2 starts.
+  assert.ok(Math.abs(b1.x1 - b2.x0) < 1e-9, "the two slices tile the gap with no gap or overlap between them");
+  assert.ok(Math.abs(b1.x0 - 90) < 1e-9, "the run starts exactly at the left neighbour's x1");
+  assert.ok(Math.abs(b2.x1 - 230) < 1e-9, "the run ends exactly at the right neighbour's x0");
+
+  // Proportional to character count: "extraordinarily" (15 chars) gets a much
+  // larger share of the 140px gap than "am" (2 chars).
+  const share1 = b1.x1 - b1.x0;
+  const share2 = b2.x1 - b2.x0;
+  assert.ok(share1 > share2 * 5, "the longer word claims proportionally more of the gap");
+  assert.ok(Math.abs(share1 + share2 - 140) < 1e-9, "the two shares exactly fill the 140px gap");
+});
+
+test("a three-word unboxed run divides its gap into three non-overlapping, proportional slices", () => {
+  // Same 80px-word scale; a 100px gap stays below the 160px gutter threshold.
+  const words: AlignedWord[] = [
+    { visionIndex: 0, word: "start", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
+    { visionIndex: 1, word: "a", ocrIndex: null, box: null }, // 1 char
+    { visionIndex: 2, word: "middle", ocrIndex: null, box: null }, // 6 chars
+    { visionIndex: 3, word: "b", ocrIndex: null, box: null }, // 1 char
+    { visionIndex: 4, word: "end", ocrIndex: 4, box: { x0: 190, y0: 0, x1: 270, y1: 40 } },
+  ];
+
+  const lines = clusterLineRuns(words);
+  assert.equal(lines.length, 1, "the run's neighbours stay on one line, not split as a false gutter");
+
+  const filled = inheritBoxes(words, lines);
+
+  const boxes = [filled[1].box!, filled[2].box!, filled[3].box!];
+  assert.ok(boxes.every(Boolean), "all three words in the run get a box");
+
+  // Contiguous chain from the left neighbour's x1 to the right neighbour's x0.
+  assert.ok(Math.abs(boxes[0].x0 - 90) < 1e-9);
+  assert.ok(Math.abs(boxes[0].x1 - boxes[1].x0) < 1e-9, "word 1 to word 2: no gap, no overlap");
+  assert.ok(Math.abs(boxes[1].x1 - boxes[2].x0) < 1e-9, "word 2 to word 3: no gap, no overlap");
+  assert.ok(Math.abs(boxes[2].x1 - 190) < 1e-9);
+
+  // The middle word ("middle", 6 chars) gets a bigger share than either
+  // 1-character neighbour in the run.
+  const share = (b: Box) => b.x1 - b.x0;
+  assert.ok(share(boxes[1]) > share(boxes[0]));
+  assert.ok(share(boxes[1]) > share(boxes[2]));
+});
+
+// --- FINDING 2: skipping the re-cluster step after inheritBoxes fails
+// silently in two ways; buildLineRuns avoids both. ---
+
+test("skipping the re-cluster step reproduces both documented failure shapes; buildLineRuns avoids them", () => {
+  const words = twoLines();
+  words[1].box = null;
+  words[1].ocrIndex = null;
+
+  // The natural-but-wrong sequence: cluster, inherit, then keep using the
+  // FIRST-PASS lines instead of re-clustering.
+  const staleLines = clusterLineRuns(words);
+  inheritBoxes(words, staleLines);
+
+  // Failure shape 1: the inherited word's own range vanishes entirely.
+  assert.deepEqual(
+    runsForRange(staleLines, 1, 1),
+    [],
+    "with stale lines, word 1's own range yields nothing — indistinguishable from 'out of range'",
+  );
+
+  // Failure shape 2: a wider range looks fine but silently drops the index.
+  const staleFull = runsForRange(staleLines, 0, 2);
+  assert.deepEqual(
+    staleFull[0].wordIndices,
+    [0, 2],
+    "index 1 is silently missing even though inheritBoxes gave it a real box",
+  );
+
+  // buildLineRuns does the required second cluster internally, so neither
+  // failure shape occurs.
+  const { lines } = buildLineRuns(words);
+  assert.equal(runsForRange(lines, 1, 1).length, 1, "word 1's own range now yields a stroke");
+  assert.deepEqual(
+    runsForRange(lines, 0, 2)[0].wordIndices,
+    [0, 1, 2],
+    "the inherited word's index is present",
+  );
 });
