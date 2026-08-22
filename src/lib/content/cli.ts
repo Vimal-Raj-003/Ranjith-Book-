@@ -1,0 +1,259 @@
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const exec = promisify(execFile);
+
+/**
+ * Run a command, optionally writing the prompt to stdin. Prompts carry a whole
+ * README, so they go through stdin rather than argv.
+ */
+function run(
+  bin: string,
+  args: string[],
+  opts: { cwd: string; input?: string; timeoutMs: number },
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new CliError(`${bin} timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
+    }, opts.timeoutMs);
+
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new CliError(`${bin} could not be started: ${err.message}`));
+    });
+
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // A non-zero exit is not always a failure: the Claude CLI exits 1 when it
+      // stops on a turn limit even though it already produced a full answer.
+      // Let the caller inspect stdout before deciding.
+      if (code === 0 || stdout.trim()) resolve({ stdout, stderr });
+      else reject(new CliError(`${bin} exited with code ${code}: ${stderr.slice(-400) || "no output"}`));
+    });
+
+    if (opts.input !== undefined) child.stdin.write(opts.input);
+    child.stdin.end();
+  });
+}
+
+/**
+ * Subscription-backed providers. These shell out to the Claude Code or Codex
+ * CLI, which authenticate with the desktop login rather than an API key — so the
+ * app works with no key at all, as long as one of those CLIs is signed in.
+ */
+export type CliProvider = "claude-cli" | "codex-cli";
+
+const TIMEOUT_MS = 6 * 60_000;
+
+export class CliError extends Error {}
+
+/**
+ * Which executable backs a provider.
+ *
+ * `CLAUDE_CLI_BIN` / `CODEX_CLI_BIN` win, matching how FFMPEG_PATH and
+ * POCKET_TTS_BIN are overridden elsewhere. Otherwise the bare name is right on
+ * macOS and Linux, but on Windows npm installs these CLIs as a `.cmd` shim and
+ * Node 18.20+ will not spawn a `.cmd` without a shell — so the real `.exe` has
+ * to be found on PATH instead, or named through the env var when (as with
+ * Codex) the binary lives inside the wrapper package rather than on PATH.
+ */
+function cliBin(provider: CliProvider): string {
+  const name = provider === "codex-cli" ? "codex" : "claude";
+  const override =
+    process.env[provider === "codex-cli" ? "CODEX_CLI_BIN" : "CLAUDE_CLI_BIN"]?.trim();
+  if (override) return override;
+  if (process.platform !== "win32") return name;
+
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir.replace(/^"|"$/g, ""), `${name}.exe`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return name;
+}
+
+/** Pull a JSON object out of model prose (fenced blocks, stray commentary). */
+export function extractJson<T>(raw: string): T {
+  const text = raw.trim();
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidates = [fenced?.[1], text].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      const first = trimmed.indexOf("{");
+      const last = trimmed.lastIndexOf("}");
+      if (first !== -1 && last > first) {
+        try {
+          return JSON.parse(trimmed.slice(first, last + 1)) as T;
+        } catch {
+          /* fall through to the next candidate */
+        }
+      }
+    }
+  }
+
+  throw new CliError(
+    `Could not read JSON from the CLI response. First 300 characters:\n${text.slice(0, 300)}`,
+  );
+}
+
+async function scratchDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "reporeel-cli-"));
+}
+
+/**
+ * Claude Code in headless mode. Tools are disabled and the working directory is
+ * a throwaway folder, so the run can only produce text.
+ */
+async function runClaudeCli(system: string, user: string, model?: string): Promise<string> {
+  const cwd = await scratchDir();
+  try {
+    // Tools are disabled, so the run can only produce text — no turn cap needed.
+    const args = [
+      "-p",
+      "--output-format", "json",
+      "--append-system-prompt", system,
+      "--allowed-tools", "",
+      "--permission-mode", "default",
+    ];
+    if (model) args.push("--model", model);
+
+    const { stdout } = await run(cliBin("claude-cli"), args, {
+      cwd,
+      input: user,
+      timeoutMs: TIMEOUT_MS,
+    });
+
+    let envelope: { is_error?: boolean; result?: string; subtype?: string };
+    try {
+      envelope = JSON.parse(stdout);
+    } catch {
+      throw new CliError(
+        `Claude CLI did not return JSON. Run \`claude\` once in a terminal to confirm you are signed in.\n${stdout.slice(0, 200)}`,
+      );
+    }
+
+    // Accept any run that produced text, even one flagged as an error: a turn
+    // limit still yields a complete answer.
+    if (typeof envelope.result === "string" && envelope.result.trim()) return envelope.result;
+
+    throw new CliError(
+      `Claude CLI returned no content (${envelope.subtype ?? "unknown"}). Run \`claude\` once in a terminal to confirm you are signed in.`,
+    );
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+}
+
+/** Codex in non-interactive mode, writing its final message to a file. */
+async function runCodexCli(system: string, user: string, model?: string): Promise<string> {
+  const cwd = await scratchDir();
+  const outFile = path.join(cwd, "message.txt");
+  try {
+    // Codex reads the prompt from stdin when the argument is `-`.
+    const args = ["exec", "--skip-git-repo-check", "-o", outFile];
+    if (model) args.push("-c", `model="${model}"`);
+    args.push("-");
+
+    await run(cliBin("codex-cli"), args, {
+      cwd,
+      input: `${system}\n\n---\n\n${user}`,
+      timeoutMs: TIMEOUT_MS,
+    });
+
+    return await fs.readFile(outFile, "utf8");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/401|Unauthorized|not logged in/i.test(message)) {
+      throw new CliError("Codex is not signed in. Run `codex login` in a terminal, then try again.");
+    }
+    throw new CliError(`Codex CLI failed: ${message.slice(0, 300)}`);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+}
+
+export async function runCli(
+  provider: CliProvider,
+  system: string,
+  user: string,
+  model?: string,
+): Promise<string> {
+  return provider === "codex-cli"
+    ? runCodexCli(system, user, model)
+    : runClaudeCli(system, user, model);
+}
+
+export interface CliStatus {
+  installed: boolean;
+  signedIn: boolean;
+  version: string | null;
+  detail: string;
+}
+
+/** Cheap probe for the Settings screen: is this CLI present and usable? */
+export async function probeCli(provider: CliProvider): Promise<CliStatus> {
+  const bin = cliBin(provider);
+  let version: string | null = null;
+
+  try {
+    const { stdout } = await exec(bin, ["--version"], { timeout: 20_000 });
+    version = stdout.trim().split("\n")[0];
+  } catch {
+    return {
+      installed: false,
+      signedIn: false,
+      version: null,
+      detail:
+        provider === "codex-cli"
+          ? "Codex CLI is not installed."
+          : "Claude Code CLI is not installed.",
+    };
+  }
+
+  try {
+    const reply = await runCli(provider, "Answer with one word.", "Reply with the word: ready");
+    const ok = /ready/i.test(reply);
+    return {
+      installed: true,
+      signedIn: ok,
+      version,
+      detail: ok ? "Signed in and responding." : "Responded, but not as expected.",
+    };
+  } catch (err) {
+    return {
+      installed: true,
+      signedIn: false,
+      version,
+      detail:
+        err instanceof CliError
+          ? err.message
+          : provider === "codex-cli"
+            ? "Not signed in. Run `codex login`."
+            : "Not signed in. Run `claude` once in a terminal.",
+    };
+  }
+}
