@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { AppError } from "../errors";
 
@@ -27,8 +28,18 @@ export async function reserveIdea(bookId: string, ideaKey: string): Promise<stri
   try {
     await prisma.usedIdea.create({ data: { bookId, ideaKey } });
     return ideaKey;
-  } catch {
-    throw new IdeaTakenError(ideaKey);
+  } catch (err) {
+    // Only a real unique-constraint violation on (bookId, ideaKey) means the
+    // idea is taken. A dropped connection, a full disk or any other database
+    // failure is a different problem, and telling the operator "this book
+    // already has an episode about X" when the true cause is unrelated
+    // infrastructure trouble is a specific, plausible-sounding, and false
+    // explanation — worse than a generic one. Named errors are for naming
+    // what actually happened, not for relabelling anything that throws.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      throw new IdeaTakenError(ideaKey);
+    }
+    throw err;
   }
 }
 

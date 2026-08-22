@@ -153,6 +153,58 @@ test("heavily overlapping episodes are not validatePlan's business", () => {
   assert.equal(out.length, 2, "both structurally valid episodes survive even though their word ranges nearly coincide");
 });
 
+// --- Review findings 1-3: fields and shapes the tests above did not cover --
+
+test("a non-string title does not crash validation for the whole plan (review finding 1)", () => {
+  // Previously `raw.title?.trim()` only guarded against null/undefined —
+  // a model returning a bare number for `title` threw `raw.title.trim is
+  // not a function` and took down every OTHER episode in the same plan too,
+  // from a function documented as never crashing on malformed model JSON.
+  const out = validatePlan(
+    [
+      // @ts-expect-error — title is typed as string, but this simulates the
+      // model's raw, unvalidated JSON handing back a non-string value.
+      plan({ ideaKey: "bad-title", title: 123 }),
+      plan({ ideaKey: "good-title", title: "A Real Title" }),
+    ],
+    1,
+    [50],
+  );
+  assert.equal(out.length, 2, "the non-string title must not abort validation of the rest of the plan");
+  const bad = out.find((e) => e.ideaKey === "bad-title");
+  assert.equal(bad?.title, "bad-title", "falls back to the ideaKey when title is not a usable string");
+  const good = out.find((e) => e.ideaKey === "good-title");
+  assert.equal(good?.title, "A Real Title");
+});
+
+test("wordsPerPage shorter than pageCount does not leak NaN into the output (review finding 2)", () => {
+  // wordsPerPage[2] is undefined here even though pageCount says page 2
+  // exists. Math.max(0, undefined - 1) is NaN, and clamp(n, 0, NaN) returns
+  // NaN — a silently corrupted, non-crashing episode with no signal that
+  // anything went wrong. It must come out clamped to a real number instead.
+  const [only] = validatePlan(
+    [plan({ startPage: 2, endPage: 2, startWord: 0, endWord: 5 })],
+    3,
+    [50],
+  );
+  assert.ok(!Number.isNaN(only.startWord), "startWord must never be NaN");
+  assert.ok(!Number.isNaN(only.endWord), "endWord must never be NaN");
+  assert.equal(only.startWord, 0);
+  assert.equal(only.endWord, 0);
+});
+
+test("pageCount 0 never produces a negative page index (review finding 3)", () => {
+  // pageCount - 1 = -1 as the upper clamp bound, with a lower bound of 0,
+  // is an inverted range. The clamp helper must collapse that to 0 rather
+  // than returning -1.
+  const out = validatePlan([plan({ startPage: 0, endPage: 5 })], 0, []);
+  assert.equal(out.length, 1);
+  assert.ok(out[0].startPage >= 0, "startPage must never be negative");
+  assert.ok(out[0].endPage >= 0, "endPage must never be negative");
+  assert.ok(out[0].startWord >= 0, "startWord must never be negative");
+  assert.ok(out[0].endWord >= 0, "endWord must never be negative");
+});
+
 // --- reserveIdea / releaseIdea round trip -----------------------------------
 
 test("reserveIdea and releaseIdea round-trip, and the unique constraint rejects a real duplicate", async () => {
@@ -196,6 +248,30 @@ test("reserveIdea and releaseIdea round-trip, and the unique constraint rejects 
   }
 });
 
+test("reserveIdea does not relabel a generic database failure as idea_taken (review finding 4)", async () => {
+  // Only a real unique-constraint violation on (bookId, ideaKey) should ever
+  // surface as IdeaTakenError. Anything else — a dropped connection, a full
+  // disk — must propagate as itself, not as a false and specific "this idea
+  // is already taken" explanation.
+  const original = prisma.usedIdea.create;
+  (prisma.usedIdea as unknown as { create: unknown }).create = async () => {
+    throw new Error("simulated connection failure");
+  };
+
+  try {
+    await assert.rejects(
+      () => reserveIdea("some-book", "some-idea"),
+      (err: unknown) => {
+        assert.ok(!(err instanceof IdeaTakenError), "a generic failure must not become IdeaTakenError");
+        assert.ok(err instanceof Error && err.message === "simulated connection failure");
+        return true;
+      },
+    );
+  } finally {
+    (prisma.usedIdea as unknown as { create: unknown }).create = original;
+  }
+});
+
 test("releaseIdea is safe to call when nothing was ever reserved", async () => {
   const bookId = `test-book-${randomUUID()}`;
   const book = await prisma.book.create({ data: { id: bookId, title: "Release Nothing Test" } });
@@ -228,15 +304,25 @@ test("releaseIdea is safe to call twice in a row", async () => {
 });
 
 test("the same ideaKey is independently reservable for two different books", async () => {
-  const bookA = await prisma.book.create({ data: { id: `test-book-${randomUUID()}`, title: "Book A" } });
-  const bookB = await prisma.book.create({ data: { id: `test-book-${randomUUID()}`, title: "Book B" } });
+  // Both creates happen INSIDE the try, and each id is only recorded once its
+  // create has actually resolved — otherwise, if bookB's create threw,
+  // bookA would already exist with no path back to deleting it (review
+  // finding: this exact pattern is what made this suite permanently red
+  // once before).
+  let bookAId: string | undefined;
+  let bookBId: string | undefined;
 
   try {
+    const bookA = await prisma.book.create({ data: { id: `test-book-${randomUUID()}`, title: "Book A" } });
+    bookAId = bookA.id;
+    const bookB = await prisma.book.create({ data: { id: `test-book-${randomUUID()}`, title: "Book B" } });
+    bookBId = bookB.id;
+
     // The unique index is on (bookId, ideaKey), not ideaKey alone.
-    await reserveIdea(bookA.id, "shared-angle");
-    await reserveIdea(bookB.id, "shared-angle");
+    await reserveIdea(bookAId, "shared-angle");
+    await reserveIdea(bookBId, "shared-angle");
   } finally {
-    await prisma.book.delete({ where: { id: bookA.id } });
-    await prisma.book.delete({ where: { id: bookB.id } });
+    if (bookBId) await prisma.book.delete({ where: { id: bookBId } });
+    if (bookAId) await prisma.book.delete({ where: { id: bookAId } });
   }
 });
