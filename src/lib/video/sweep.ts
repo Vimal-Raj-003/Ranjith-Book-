@@ -45,14 +45,33 @@ export function sweepForBeat(
   const totalWords = runs.reduce((sum, r) => sum + r.wordIndices.length, 0);
   if (totalWords === 0) return [];
 
-  const span = Math.max(0, speechEnd - speechStart);
+  // A non-finite window (NaN or +/-Infinity) has no honest timing at all. This
+  // is not contrived: `durationOf()` in tts.ts returning NaN for a corrupted or
+  // zero-byte TTS render feeds straight into `speechEnd`'s `Math.max(x, NaN)`,
+  // which is itself NaN. A beat whose audio could not be measured gets no
+  // stroke at all, rather than NaN timestamps propagating into every step and
+  // then into every camera key downstream.
+  if (!Number.isFinite(speechStart) || !Number.isFinite(speechEnd)) return [];
+
+  // An inverted window (speechEnd < speechStart) cannot reach this function
+  // through today's only producer — tts.ts guarantees speechEnd is at least
+  // 0.2s after speechStart — but this is a pure function with its own
+  // contract, not one that trusts its caller. Collapse it to a zero-length
+  // window anchored at speechStart instead of letting the "last step ends
+  // exactly on speechEnd" rule below hand back a step with a negative
+  // duration (start > end).
+  const sane = speechEnd >= speechStart;
+  const windowEnd = sane ? speechEnd : speechStart;
+  const span = sane ? speechEnd - speechStart : 0;
+
   const steps: SweepStep[] = [];
   let t = speechStart;
 
   for (let i = 0; i < runs.length; i++) {
-    // The last step ends exactly on speechEnd rather than on an accumulated sum,
-    // so floating-point drift cannot leave the marker moving after the voice stops.
-    const end = i === runs.length - 1 ? speechEnd : t + (runs[i].wordIndices.length / totalWords) * span;
+    // The last step ends exactly on windowEnd rather than on an accumulated
+    // sum, so floating-point drift cannot leave the marker moving after the
+    // voice stops.
+    const end = i === runs.length - 1 ? windowEnd : t + (runs[i].wordIndices.length / totalWords) * span;
     steps.push({ box: runs[i].box, start: t, end });
     t = end;
   }
@@ -89,12 +108,19 @@ export function cameraTrack(
   frameHeight: number,
   pageHeight: number,
 ): CameraKey[] {
+  // Guards its own contract rather than trusting `sweepForBeat` to have
+  // already filtered non-finite input: `cameraTrack` is exported and callable
+  // on its own, so a NaN frame/page height (or a step smuggled in with a NaN
+  // box/timestamp) must not turn into a NaN camera position with no error.
+  if (!Number.isFinite(frameHeight) || !Number.isFinite(pageHeight)) return [];
+
   const maxY = Math.max(0, pageHeight - frameHeight);
   const clamp = (y: number) => Math.min(maxY, Math.max(0, y));
 
   const keys: CameraKey[] = [];
   for (const step of steps) {
     const centre = (step.box.y0 + step.box.y1) / 2;
+    if (!Number.isFinite(centre) || !Number.isFinite(step.start) || !Number.isFinite(step.end)) continue;
     const y = clamp(centre - frameHeight * MIDDLE);
     // Two keys per stroke: in place when it starts, in place when it ends. The
     // easing between strokes is the timeline's job, not this function's.

@@ -41,6 +41,28 @@ test("with a verified author, the prompt does not forbid it", () => {
   assert.doesNotMatch(s, /do not name the author/i);
 });
 
+test("the prompt tells the model to split a beat at a page boundary, not draw one beat from two pages", () => {
+  // Review finding 3: nothing previously told the model a beat is scoped to
+  // one page, so an idea running from page N onto page N+1 could legally
+  // become one schema-valid beat whose sourcePage/word range name only one
+  // of the two pages while its voiceover draws on both — the marker sweeps
+  // the named page correctly while the narration describes a page the
+  // viewer never sees highlighted. This asserts the fix is actually present
+  // in the prompt the model receives, not just documented in a comment.
+  const s = buildSystemPrompt({ hasAuthor: true });
+  assert.match(
+    s,
+    /one page/i,
+    "the index rule must state a beat covers words on a single page",
+  );
+  assert.match(
+    s,
+    /(two|consecutive) beats/i,
+    "the index rule must instruct writing two consecutive beats when an idea continues onto the next page",
+  );
+  assert.match(s, /page boundary/i, "the split must be described as happening at the page boundary");
+});
+
 test("voScriptFromPackage: an empty or whitespace-only beat contributes no double space or stray edge space", () => {
   const withBlank: ContentPackage = {
     ...pkg(),

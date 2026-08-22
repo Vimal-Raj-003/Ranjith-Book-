@@ -222,3 +222,59 @@ test("a beat cannot span a page boundary in a single call — LineRun word indic
   assert.equal(pageASteps[0].start, beatSpeechStart);
   assert.equal(pageBSteps[pageBSteps.length - 1].end, beatSpeechEnd);
 });
+
+// --- Review findings: non-finite and inverted windows must not reach output. ---
+
+test("a NaN speechStart (a corrupted TTS render's NaN duration) yields no strokes, not NaN timestamps", () => {
+  const steps = sweepForBeat(lines, 0, 9, NaN, 6);
+  assert.deepEqual(steps, [], "unmeasurable audio has no honest timing, so no stroke is emitted");
+});
+
+test("a NaN speechEnd yields no strokes, not NaN timestamps", () => {
+  const steps = sweepForBeat(lines, 0, 9, 2, NaN);
+  assert.deepEqual(steps, [], "unmeasurable audio has no honest timing, so no stroke is emitted");
+});
+
+test("an Infinite window yields no strokes", () => {
+  assert.deepEqual(sweepForBeat(lines, 0, 9, 0, Infinity), []);
+  assert.deepEqual(sweepForBeat(lines, 0, 9, -Infinity, 6), []);
+});
+
+test("cameraTrack never emits a NaN y even if fed NaN steps directly", () => {
+  const nanSteps = [{ box: { x0: 0, y0: NaN, x1: 300, y1: 40 }, start: NaN, end: 6 }];
+  const track = cameraTrack(nanSteps, 1920, 4000);
+  assert.deepEqual(track, [], "a step with non-finite geometry or timing contributes no key");
+});
+
+test("cameraTrack returns no keys for a non-finite frame or page height", () => {
+  const steps = sweepForBeat(lines, 0, 9, 0, 4);
+  assert.deepEqual(cameraTrack(steps, NaN, 4000), []);
+  assert.deepEqual(cameraTrack(steps, 1920, NaN), []);
+  assert.deepEqual(cameraTrack(steps, Infinity, 4000), []);
+});
+
+test("an inverted window (speechEnd < speechStart) collapses to zero duration, never a negative one", () => {
+  // The reviewer's repro: sweepForBeat(lines, 0, 2, 10, 4) — endWord 2 only
+  // reaches into the first line, so this is a single-stroke case; assert it
+  // directly against the full two-line fixture too, where the "last step
+  // ends exactly on speechEnd" rule is the one that used to leak a negative
+  // duration into the final step.
+  const single = sweepForBeat(lines, 0, 2, 10, 4);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].start, 10);
+  assert.equal(single[0].end, 10, "collapses to the (sane) start, not the raw inverted speechEnd");
+  assert.ok(single[0].end - single[0].start >= 0, "never a negative duration");
+
+  const multi = sweepForBeat(lines, 0, 9, 10, 4);
+  assert.equal(multi.length, 2);
+  for (const step of multi) {
+    assert.ok(Number.isFinite(step.start) && Number.isFinite(step.end));
+    assert.ok(step.end - step.start >= 0, "no negative duration on any step");
+  }
+  assert.equal(multi[0].start, 10);
+  assert.equal(multi[multi.length - 1].end, 10);
+
+  // And the camera survives it too — no NaN, no crash.
+  const track = cameraTrack(multi, 1920, 4000);
+  for (const key of track) assert.ok(Number.isFinite(key.y));
+});

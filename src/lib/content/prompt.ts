@@ -62,6 +62,14 @@ For every beat:
 - When two beats in a row discuss the same page, their word ranges should
   themselves move forward (later beats pointing at later words), matching
   the order you actually talk about the passage in.
+- A SINGLE BEAT MAY ONLY COVER WORDS ON ONE PAGE. If the idea you are
+  discussing continues onto the next page, do NOT write one beat whose
+  commentary draws on both — write two consecutive beats instead, split
+  exactly at the page boundary: the first beat's sourcePage and word range
+  cover only the words on the earlier page, and the second beat's sourcePage
+  and word range cover only the words on the next page. Never let a beat's
+  voiceover depend on text from a page other than the single page its
+  sourcePage and word range name.
 
 A wrong index is worse than no highlight: the marker will sweep words that
 have nothing to do with what is being said, and that mismatch is the first
