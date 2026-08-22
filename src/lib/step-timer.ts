@@ -7,23 +7,23 @@ import { prisma } from "./db";
  * whole run with no gaps and no double-counting.
  */
 export class StepTimer {
-  private creationId: string;
+  private episodeId: string;
   private position = 0;
   private current: { id: string; startedAt: number } | null = null;
   private runStartedAt: number;
 
-  constructor(creationId: string) {
-    this.creationId = creationId;
+  constructor(episodeId: string) {
+    this.episodeId = episodeId;
     this.runStartedAt = Date.now();
   }
 
   async begin(): Promise<void> {
-    await prisma.creation.update({
-      where: { id: this.creationId },
+    await prisma.episode.update({
+      where: { id: this.episodeId },
       data: { startedAt: new Date(this.runStartedAt), finishedAt: null, totalMs: null },
     });
-    // A retry of the same creation should not stack old timings on the new run.
-    await prisma.stepRun.deleteMany({ where: { creationId: this.creationId } });
+    // A retry of the same episode should not stack old timings on the new run.
+    await prisma.stepRun.deleteMany({ where: { episodeId: this.episodeId } });
   }
 
   /** Close the open step, then open `name`. */
@@ -33,7 +33,7 @@ export class StepTimer {
     const startedAt = Date.now();
     const row = await prisma.stepRun.create({
       data: {
-        creationId: this.creationId,
+        episodeId: this.episodeId,
         step: name,
         position: this.position++,
         status: "RUNNING",
@@ -42,8 +42,8 @@ export class StepTimer {
     });
     this.current = { id: row.id, startedAt };
 
-    await prisma.creation.update({
-      where: { id: this.creationId },
+    await prisma.episode.update({
+      where: { id: this.episodeId },
       data: { step: name, status: "RUNNING" },
     });
   }
@@ -61,8 +61,8 @@ export class StepTimer {
   async finish(): Promise<number> {
     await this.closeCurrent("DONE");
     const totalMs = Date.now() - this.runStartedAt;
-    await prisma.creation.update({
-      where: { id: this.creationId },
+    await prisma.episode.update({
+      where: { id: this.episodeId },
       data: { finishedAt: new Date(), totalMs },
     });
     return totalMs;
@@ -70,8 +70,8 @@ export class StepTimer {
 
   async fail(): Promise<void> {
     await this.closeCurrent("FAILED");
-    await prisma.creation.update({
-      where: { id: this.creationId },
+    await prisma.episode.update({
+      where: { id: this.episodeId },
       data: { finishedAt: new Date(), totalMs: Date.now() - this.runStartedAt },
     });
   }

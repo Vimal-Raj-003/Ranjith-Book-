@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  sessions  Session[]
+  episodes  Episode[]
+}
+
+/// A one-time email code. Only the hash is stored, so a database leak cannot be
+/// replayed into a login. Rows are deleted once used or expired.
+model LoginCode {
+  id        String   @id @default(cuid())
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// A book the operator photographs, returned to over many uploads.
+model Book {
+  id             String  @id @default(cuid())
+  title          String
+  openLibraryId  String?
+  coverPath      String?
+  year           Int?
+  subjects       String? // JSON string[]
+  /// story | motivation | philosophy | howto | memoir
+  archetype      String  @default("motivation")
+  /// public-domain | in-copyright | own-work — drives the quotation budget.
+  rightsStatus   String  @default("in-copyright")
+
+  /// Null unless every link of the verification chain held. Never a
+  /// placeholder: an unverified author is ABSENT, not "unknown".
+  author               String?
+  authorVerified       Boolean @default(false)
+  /// Which link broke, so the omission is explainable rather than mysterious.
+  authorOmissionReason String?
+
+  uploads   Upload[]
+  episodes  Episode[]
+  usedHooks UsedHook[]
+  usedIdeas UsedIdea[]
+  createdAt DateTime @default(now())
+}
+
+/// One batch of photographs.
+model Upload {
+  id        String  @id @default(cuid())
+  bookId    String
+  book      Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  userId    String?
+  status    String  @default("QUEUED")
+  step      String  @default("Queued")
+  error     String?
+  pages     Page[]
+  episodes  Episode[]
+  createdAt DateTime @default(now())
+
+  @@index([bookId])
+}
+
+/// One photograph of one page.
+model Page {
+  id          String  @id @default(cuid())
+  uploadId    String
+  upload      Upload  @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  /// Reading order. This is what the operator reorders before ingest starts.
+  pageIndex   Int
+  filePath    String  // EXIF-stripped original, under WORK_ROOT
+  derivedPath String? // downscaled derivative used by the composition
+  width       Int
+  height      Int
+
+  visionText          String? // JSON PageText
+  ocrBoxes            String? // JSON OcrWord[]
+  alignment           String? // JSON AlignedWord[]
+  alignmentConfidence Float?
+
+  @@index([uploadId])
+  @@unique([uploadId, pageIndex])
+}
+
+/// One video.
+model Episode {
+  id       String  @id @default(cuid())
+  bookId   String
+  book     Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  uploadId String
+  upload   Upload  @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  partNumber  Int    @default(1)
+  seriesTotal Int    @default(1)
+  theme       String @default("marginalia")
+  ideaKey     String?
+
+  status String  @default("QUEUED")
+  step   String  @default("Queued")
+  error  String?
+  notes  String? // JSON string[] of advisory findings
+
+  title        String?
+  hook         String?
+  script       String? // JSON Beat[]
+  voScript     String?
+  description  String?
+  hashtags     String? // JSON string[]
+  cta          String?
+
+  verification String? // JSON GroundingReport
+  groundedness Int?
+  revised      Boolean @default(false)
+
+  visualPlan  String? // JSON: page, word ranges, sweep timings, cue placements
+  captions    String? // JSON CaptionLine[]
+  srt         String?
+  durationSec Float?
+  audioPath   String?
+  projectPath String?
+  videoPath   String?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  totalMs    Int?
+  steps      StepRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookId])
+  @@index([uploadId])
+  @@index([userId])
+}
+
+model StepRun {
+  id         String   @id @default(cuid())
+  episodeId  String
+  episode    Episode  @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  step       String
+  position   Int
+  status     String   @default("RUNNING") // RUNNING | DONE | FAILED
+  startedAt  DateTime
+  endedAt    DateTime?
+  durationMs Int?
+
+  @@index([episodeId])
+}
+
+model UsedHook {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  hook      String
+  hash      String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([bookId])
+}
+
+/// The "one video, one idea" guarantee, enforceable rather than aspirational.
+model UsedIdea {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  ideaKey   String
+  episodeId String?
+  createdAt DateTime @default(now())
+
+  @@unique([bookId, ideaKey])
+  @@index([bookId])
+}

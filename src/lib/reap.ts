@@ -13,7 +13,7 @@ const STEP_STALE_MS = 12 * 60_000;
 export async function reapStaleRuns(): Promise<number> {
   const cutoff = new Date(Date.now() - STEP_STALE_MS);
 
-  const stale = await prisma.creation.findMany({
+  const stale = await prisma.episode.findMany({
     where: {
       status: { in: ["RUNNING", "QUEUED"] },
       OR: [
@@ -26,10 +26,10 @@ export async function reapStaleRuns(): Promise<number> {
 
   for (const run of stale) {
     await prisma.stepRun.updateMany({
-      where: { creationId: run.id, status: "RUNNING" },
+      where: { episodeId: run.id, status: "RUNNING" },
       data: { status: "FAILED", endedAt: new Date() },
     });
-    await prisma.creation.update({
+    await prisma.episode.update({
       where: { id: run.id },
       data: {
         status: "FAILED",
