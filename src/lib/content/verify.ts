@@ -1,3 +1,4 @@
+import { sameName } from "../ingest/names";
 import { numberedWordLines } from "./prompt";
 import type { ContentPackage, GenerateInput } from "./schema";
 
@@ -72,19 +73,22 @@ Check each of these independently:
 
 3. WORD-INDEX GROUNDING — answer this SEPARATELY from everything else, in the "indicesGrounded" field. For every beat, read its voiceover, then read the page's numbered words at that beat's sourcePage between startWord and endWord. Ask: are these actually the words this beat is talking about? An index range can be in-bounds and forward-moving and still be wrong — it can point at the wrong sentence, a neighboring paragraph, or words several lines away from what the beat actually discusses. That mismatch is invisible to any check that only looks at the numbers; it is only visible to a reader who reads both the beat and the words. Set "indicesGrounded" to false if even one beat's range does not match what it is actually about, and name the beat in "issues" as a blocker. Also confirm ranges move forward across beats that share a page — a later beat pointing at earlier words than a beat before it is also a blocker here.
 
-4. NO AUTHOR NAMED. Set "authorNamed" to true if the script names an author, or stands in for one with any unnamed authorial figure — "the writer", "the author" used generically, "whoever wrote this", or any other construction that attributes belief, argument, or intent to a person behind the page. You will be told whether the author is verified. If the author is NOT verified, any such mention — named or unnamed — is a blocker. If the author IS verified, the verified name may appear and is not itself a problem, but a DIFFERENT name, or a generic unnamed stand-in, is still a blocker.
+4. AUTHOR IDENTITY. You will be told whether an author is verified for this book, and if so, the exact verified name. If NO author is verified: the script must name no one, and must not stand in for one either — "the writer", "the author" used generically, "whoever wrote this", or any other construction that attributes belief, argument, or intent to a person behind the page is a blocker, set "authorNamed" true. If an author IS verified: that exact name may appear and is not a problem — but the WRONG name (anyone else, including a plausible-sounding but different real author) is exactly the same fabrication as naming someone when no author was ever verified, and is a blocker; set "authorNamed" true for that too. A generic unnamed stand-in is also still a blocker even when an author is verified, unless it is unambiguously referring to the verified person.
 
 5. HOOK DISTINCTNESS. The hook must not repeat any of the previously used hooks supplied to you, in wording or in angle.
 
 6. SPEAKABLE VOICEOVER. Every beat's voiceover is read aloud by a neural speech engine, one beat at a time: no markdown, no bracketed or parenthetical stage directions, no emoji, no URLs, no hashtags, nothing a speech engine would mangle.
 
-Set verdict to "revise" if there is any blocker anywhere, including a false "indicesGrounded" or a true "authorNamed" on an unverified book. Warnings ("note" severity) alone are still a "pass". Be specific in every issue: name the field ("beats[2].voiceover", "beats[1].wordRange", "hook") and say exactly what is wrong. Do not rewrite the script yourself. groundedness is 0-100 for how well the whole script is supported by the source pages.`;
+Set verdict to "revise" if there is any blocker anywhere, including a false "indicesGrounded" or a true "authorNamed" that is actually a problem given the author-verification state you were told. Warnings ("note" severity) alone are still a "pass". Be specific in every issue: name the field ("beats[2].voiceover", "beats[1].wordRange", "hook") and say exactly what is wrong. Do not rewrite the script yourself. groundedness is 0-100 for how well the whole script is supported by the source pages.`;
 
 function buildPrompt(
   pkg: ContentPackage,
   pages: GenerateInput["pages"],
   avoidHooks: string[],
-  authorVerified: boolean,
+  /** Null unless verified — the exact same value handed to `findAuthorMentions`
+   *  and to the writer's prompt, so the model has the real name to compare
+   *  against rather than just a yes/no. */
+  verifiedAuthor: string | null,
 ): string {
   const pageText = pages
     .map((p) => {
@@ -94,7 +98,11 @@ function buildPrompt(
     .join("\n\n");
 
   return [
-    `AUTHOR VERIFIED: ${authorVerified ? "yes — the verified name may appear" : "no — the script must name no one, and no unnamed stand-in either"}`,
+    `AUTHOR: ${
+      verifiedAuthor
+        ? `verified as "${verifiedAuthor}" — only this exact name may appear. Any other name, or a generic unnamed stand-in ("the writer", "the author", "whoever wrote this"), is a fabrication just like naming an author when none was verified.`
+        : `NOT verified — the script must name no one, and no unnamed stand-in either.`
+    }`,
     ``,
     `PREVIOUSLY USED HOOKS (the new hook must differ from all of these):`,
     avoidHooks.length ? avoidHooks.map((h) => `- ${h}`).join("\n") : "(none)",
@@ -122,27 +130,59 @@ export function revisionBrief(report: GroundingReport): string {
 
 /**
  * "by <Capitalised Name>" — the shape a fabricated byline takes when it
- * names someone outright.
+ * names someone outright. Captures the name itself so it can be compared
+ * against a verified author, rather than only detected as present.
  */
 const BYLINE_PATTERN =
-  /\b(?:by|written by|author(?:ed)? by|penned by)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z.]+)+/g;
+  /\b(?:by|written by|author(?:ed)? by|penned by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z.]+)+)/g;
 
 /**
- * The prompt (see `./prompt`'s no-author branch) forbids more than a name:
+ * Attributing verbs — the shape that turns a bare noun into an assertion
+ * about what a person behind the page believes, argues, or intends. Review
+ * finding 4: a bare "the author" / "the writer" also matches ordinary,
+ * unrelated prose — "she is the author of her own life" is a legitimate
+ * line about self-determination, not a fabricated byline — and a
+ * deterministic pre-check that can't tell those apart silently blocks a
+ * good run with no actionable reason. Requiring the verb is what the
+ * widened prompt actually forbids: "the writer believes...", not "the
+ * writer" appearing at all.
+ */
+const ATTRIBUTION_VERBS =
+  "believes?|argues?|thinks?|claims?|insists?|suggests?|contends?|says?|" +
+  "wrote|writes?|means?|intends?|maintains?|holds?|feels?|reasons?|" +
+  "disagrees?|agrees?|explains?";
+
+/**
  * "the writer believes second chances matter" never names anyone, but it
  * still invents a person behind the page and asserts what they believe —
- * the same fabrication with the name filed off. This matches the exact
- * unnamed-authorial-figure constructions the prompt calls out: "the writer",
- * "the author" used as a generic stand-in, and "whoever wrote this/it/the
- * page/the book". Word-boundaries keep it from firing on "authority", which
- * contains "author" as a substring but is not a mention of one.
+ * the same fabrication with the name filed off. Matches the unnamed
+ * authorial-figure noun ("the writer" / "the author" / "whoever wrote
+ * this/it/the X") followed, within a short gap, by an attributing verb.
+ * Word-boundaries keep "the author" from firing on "authority", which
+ * contains it as a substring but is not a mention of one; requiring the
+ * verb keeps it from firing on a bare, unattributed use of the noun.
  */
-const PERSONIFICATION_PATTERN =
-  /\b(?:the\s+writer|the\s+author|whoever\s+wrote\s+(?:this|it|the\s+\w+))\b/gi;
+const PERSONIFICATION_PATTERN = new RegExp(
+  `\\b(?:the\\s+writer|the\\s+author|whoever\\s+wrote\\s+(?:this|it|the\\s+\\w+))\\b` +
+    `(?:'s)?(?:\\s+[a-zA-Z']+){0,3}?\\s+(?:${ATTRIBUTION_VERBS})\\b`,
+  "gi",
+);
 
-/** Cheap, certain, and not a matter of model judgement. */
+function bylineNames(text: string): { full: string; name: string }[] {
+  return [...text.matchAll(BYLINE_PATTERN)].map((m) => ({ full: m[0], name: m[1] }));
+}
+
+/**
+ * Cheap, certain, and not a matter of model judgement.
+ *
+ * `author` is null unless verified. When it IS verified, a byline naming
+ * that exact person is fine — the writer was told it may name them — but a
+ * byline naming anyone ELSE is exactly the same fabrication as naming an
+ * author when none was ever verified (review finding 1: a wrong name is not
+ * a lesser problem than no name). `sameName` (case, initials, diacritics)
+ * decides the match, not string equality.
+ */
 export function findAuthorMentions(pkg: ContentPackage, author: string | null): string[] {
-  if (author) return [];
   const fields = [
     pkg.title,
     pkg.hook,
@@ -150,8 +190,15 @@ export function findAuthorMentions(pkg: ContentPackage, author: string | null): 
     pkg.description,
     ...pkg.beats.flatMap((b) => [b.voiceover, b.onScreen]),
   ];
-  return fields.flatMap((f) => [
-    ...(f?.match(BYLINE_PATTERN) ?? []),
-    ...(f?.match(PERSONIFICATION_PATTERN) ?? []),
-  ]);
+
+  const bylines = fields.flatMap((f) => (f ? bylineNames(f) : []));
+
+  if (author) {
+    return bylines.filter((b) => !sameName(b.name, author)).map((b) => b.full);
+  }
+
+  // No verified author: any named byline, plus any construction that stands
+  // in for one, is forbidden.
+  const personifications = fields.flatMap((f) => f?.match(PERSONIFICATION_PATTERN) ?? []);
+  return [...bylines.map((b) => b.full), ...personifications];
 }

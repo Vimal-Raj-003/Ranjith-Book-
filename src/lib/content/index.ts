@@ -22,6 +22,8 @@ export {
   MAX_QUOTE_WORDS,
   MAX_VERBATIM_SHARE,
   RUN_FLOOR,
+  SUBFLOOR_RUN,
+  MAX_SUBFLOOR_SHARE,
   type QuotationReport,
   type RightsStatus,
 } from "./quotation";
@@ -138,10 +140,27 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     runCliJson<GroundingReport>(
       provider,
       GROUNDING_SYSTEM,
-      buildGroundingPrompt(candidate, pages, avoidHooks, authorVerified),
+      // The model is handed the exact verified name (or null), not just a
+      // yes/no, so it can catch a WRONG name — not only an absent one.
+      buildGroundingPrompt(candidate, pages, avoidHooks, safeAuthor),
       GROUNDING_SCHEMA,
       model,
     );
+
+  /**
+   * `report.verdict` alone is not trusted to gate the loop: `indicesGrounded`
+   * and `authorNamed` were split out into their own named fields precisely
+   * so they could be checked on their own (review finding 5) rather than
+   * relying on the model to have already folded them into `verdict`
+   * consistently. `authorNamed` is only a problem when it's a problem GIVEN
+   * verification state — a verified author being named is exactly what the
+   * prompt allows, so that alone must not force a rewrite; the WRONG name is
+   * caught deterministically by `gate` before this is ever reached, and
+   * `authorNamed` here is the model's independent, second layer for the
+   * unverified case (or a case `gate`'s regex missed).
+   */
+  const needsRevision = (r: GroundingReport): boolean =>
+    r.verdict === "revise" || !r.indicesGrounded || (!authorVerified && r.authorNamed);
 
   /**
    * Deterministic gate run on every fresh draft, before it ever reaches the
@@ -187,7 +206,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     await onStep?.("Checking the script against the page");
     report = await check(pkg);
 
-    for (let round = 0; round < MAX_REVISIONS && report.verdict === "revise"; round++) {
+    for (let round = 0; round < MAX_REVISIONS && needsRevision(report); round++) {
       await onStep?.(
         round === 0 ? "Rewriting after the grounding check" : "Rewriting after the grounding check (2 of 2)",
       );
@@ -198,7 +217,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       report = await check(pkg);
     }
 
-    if (report.verdict === "revise") {
+    if (needsRevision(report)) {
       const blockers = report.issues.filter((i) => i.severity === "blocker");
       const detail = (blockers.length ? blockers : report.issues)
         .slice(0, 3)
@@ -209,16 +228,19 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         report,
       );
     }
+
+    // Inside the same protected region as everything else: a failure here
+    // (review finding 3) would otherwise burn the idea reservation for a run
+    // that produced no video at all, with no `catch` to hand it back.
+    await prisma.usedHook.upsert({
+      where: { hash: hookHash(bookId, pkg.hook) },
+      create: { bookId, hook: pkg.hook, hash: hookHash(bookId, pkg.hook) },
+      update: {},
+    });
   } catch (err) {
     await releaseIdea(bookId, ideaKey);
     throw err;
   }
-
-  await prisma.usedHook.upsert({
-    where: { hash: hookHash(bookId, pkg.hook) },
-    create: { bookId, hook: pkg.hook, hash: hookHash(bookId, pkg.hook) },
-    update: {},
-  });
 
   return { pkg, report, revised };
 }

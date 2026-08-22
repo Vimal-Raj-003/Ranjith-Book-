@@ -5,18 +5,41 @@ export const MAX_VERBATIM_SHARE = 0.08;
 /** Runs shorter than this are ordinary shared phrasing, not quotation. */
 export const RUN_FLOOR = 5;
 
+/**
+ * A second, coarser floor purely for `subfloorShare` (see below). RUN_FLOOR
+ * itself cannot be lowered to catch this — RUN_FLOOR exists precisely so
+ * that "one of the most" doesn't count as reproduction — but a narration
+ * built entirely from lifts just BELOW RUN_FLOOR (four-word chunks, say)
+ * reports zero coverage under RUN_FLOOR alone, real reproduction going
+ * completely unmeasured. `SUBFLOOR_RUN` gives that pattern a run length
+ * short enough to catch it, and `MAX_SUBFLOOR_SHARE` is deliberately loose
+ * (validated against original-commentary fixtures at 0% and a legitimate
+ * single-quote fixture at 22%, both far under the 35% cap — see
+ * `tests/quotation.test.mts` and the task report for the measured numbers).
+ */
+export const SUBFLOOR_RUN = 3;
+export const MAX_SUBFLOOR_SHARE = 0.35;
+
 export interface QuotationReport {
   longestRun: number;
   /**
-   * Fraction of the narration accounted for by qualifying runs (>= RUN_FLOOR
-   * words) OTHER THAN the single longest one. The longest run is "the one
-   * quote" the writer is allowed — gated on its own by `longestRun <=
-   * MAX_QUOTE_WORDS` — so it does not itself count against the share. Any
-   * qualifying overlap beyond that one run is exactly the "collage of short
-   * lifts" pattern this second limit exists to catch: no single quote is too
-   * long, but the page is being reproduced piecemeal anyway.
+   * True fraction of the narration covered by qualifying runs (>= RUN_FLOOR
+   * words), INCLUDING the single longest one. This used to exclude the
+   * longest run on the theory that "the one permitted quote" shouldn't count
+   * against a share limit — but that made the share read 0 for a narration
+   * that is nothing BUT a maximal verbatim quote, and let a long quote plus
+   * a below-threshold collage report a misleadingly small number. The share
+   * reported here is simply the truth; the ALLOWANCE for the one permitted
+   * quote is handled separately, in `withinBudget`, as a word-count budget
+   * rather than by hiding words from the numerator.
    */
   verbatimShare: number;
+  /**
+   * Coverage by the coarser `SUBFLOOR_RUN`-word floor — see the doc comment
+   * on `SUBFLOOR_RUN`. A second, independent signal for a collage built from
+   * lifts too short for `verbatimShare` to ever see.
+   */
+  subfloorShare: number;
   withinBudget: boolean;
   /** The offending passage, so the operator can be shown what tripped it. */
   excerpt: string | null;
@@ -37,7 +60,9 @@ export function checkQuotationBudget(
   const n = tokens(narration);
   const s = tokens(source);
 
-  if (n.length === 0) return { longestRun: 0, verbatimShare: 0, withinBudget: true, excerpt: null };
+  if (n.length === 0) {
+    return { longestRun: 0, verbatimShare: 0, subfloorShare: 0, withinBudget: true, excerpt: null };
+  }
 
   const positions = new Map<string, number[]>();
   s.forEach((tok, i) => {
@@ -69,34 +94,53 @@ export function checkQuotationBudget(
     }
   }
 
-  // Pass 2: every DISTINCT qualifying run, found by jumping past a run once
-  // it is counted so its interior positions are never recounted as further
-  // runs of their own. One legitimate quote is not a violation on its own —
-  // see the doc comment on `verbatimShare` — but a scan that only asked
-  // "is any word part of a run?" would flag a lone, permitted quote for the
-  // same reason it flags an actual collage, which is the bug this two-pass
-  // approach avoids.
-  const runs: number[] = [];
-  for (let i = 0; i < n.length; ) {
-    const best = matchLenAt(i);
-    if (best >= RUN_FLOOR) {
-      runs.push(best);
-      i += best;
-    } else {
-      i += 1;
+  /**
+   * Total words covered by DISTINCT qualifying runs at a given floor, found
+   * by jumping past a run once it's counted so its interior positions are
+   * never recounted as further runs of their own.
+   */
+  const qualifyingTotal = (floor: number): number => {
+    let total = 0;
+    for (let i = 0; i < n.length; ) {
+      const best = matchLenAt(i);
+      if (best >= floor) {
+        total += best;
+        i += best;
+      } else {
+        i += 1;
+      }
     }
-  }
+    return total;
+  };
 
-  const secondaryWords = runs.length ? runs.reduce((a, b) => a + b, 0) - Math.max(...runs) : 0;
-  const verbatimShare = secondaryWords / n.length;
+  const totalAtFloor = qualifyingTotal(RUN_FLOOR);
+  const verbatimShare = totalAtFloor / n.length;
+  const subfloorShare = qualifyingTotal(SUBFLOOR_RUN) / n.length;
+
+  // The one permitted quote is folded into the SAME word-count budget as
+  // everything else, rather than exempted from the numerator: a narration
+  // may carry qualifying coverage up to whichever is larger — the ordinary
+  // share cap scaled to this narration's length, or the size of the single
+  // legitimate quote actually present here (itself already bounded by
+  // MAX_QUOTE_WORDS via the check below). That lets one short quote in a
+  // short narration through without ALSO letting a long quote plus a
+  // trailing collage hide behind the same allowance — the two do not stack,
+  // because the allowance is sized to whichever single quote is really
+  // there, not the constant ceiling regardless of what's actually present.
+  const quoteAllowance = Math.min(longestRun, MAX_QUOTE_WORDS);
+  const wordAllowance = Math.max(MAX_VERBATIM_SHARE * n.length, quoteAllowance);
 
   const unlimited = rights !== "in-copyright";
   const withinBudget =
-    unlimited || (longestRun <= MAX_QUOTE_WORDS && verbatimShare <= MAX_VERBATIM_SHARE);
+    unlimited ||
+    (longestRun <= MAX_QUOTE_WORDS &&
+      totalAtFloor <= wordAllowance &&
+      subfloorShare <= MAX_SUBFLOOR_SHARE);
 
   return {
     longestRun,
     verbatimShare,
+    subfloorShare,
     withinBudget,
     excerpt: longestRun >= RUN_FLOOR ? n.slice(longestAt, longestAt + longestRun).join(" ") : null,
   };
