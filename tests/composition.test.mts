@@ -91,17 +91,22 @@ test("escaping holds everywhere embedded data is written, not just in the JSON p
   assert.equal(opens.length, 3, "gsap cdn + composition-data + timeline js");
   assert.equal(closes.length, 3);
 
-  // The on-screen label is written directly as markup (the cue card), not
-  // through textContent — a raw "<tag>" appearing verbatim means that site's
-  // escaping is missing even though the JSON site (checked below) is fine.
-  assert.ok(!html.includes("<tag>"), "onScreen text must be HTML-escaped where it is written as literal markup");
+  // Both the on-screen cue label AND the caption line are written directly
+  // as markup — captions are no longer populated later via .textContent
+  // (see captionMarkup's own doc comment: a real hyperframes render left an
+  // empty-at-load .caption-line stuck at its rest state forever, while a cue
+  // — text present in the DOM from the start — animated correctly). A raw
+  // "<tag>" appearing verbatim in either site means that site's escaping is
+  // missing even though the JSON payload (checked below) is fine.
+  assert.ok(!html.includes("<tag>"), "onScreen/caption text must be HTML-escaped where it is written as literal markup");
   assert.ok(html.includes("data-cue=\"0\""), "the cue card for beat 0 must still exist");
+  assert.ok(html.includes("data-caption=\"0\""), "the caption line for beat 0 must still exist");
 
-  // The caption text travels through the JSON payload instead (read back by
-  // the runtime script and assigned via .textContent). That site's escaping
-  // is what the brief's own test exercises for onScreen; this asserts the
-  // SAME escaping covers a caption's text too, closing the "only one site"
-  // gap the task called out by name.
+  // The SAME nasty text also travels through the JSON payload (read back by
+  // the runtime script to time the fade, though no longer to set the text
+  // itself). This asserts that site's escaping independently of the markup
+  // site above — the two are separate injection surfaces and one being safe
+  // says nothing about the other.
   const payload = html.split("id=\"composition-data\"")[1] ?? "";
   assert.ok(!payload.slice(0, 4000).includes("</script><tag>"), "caption text must be escaped inside the JSON payload too");
 });

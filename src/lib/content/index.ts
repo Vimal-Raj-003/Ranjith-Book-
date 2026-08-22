@@ -170,8 +170,16 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
   const gate = (candidate: ContentPackage): void => {
     const mentions = findAuthorMentions(candidate, safeAuthor);
     if (mentions.length) {
+      // Two different fabrications, and the message must not conflate them:
+      // naming someone when NO author was ever verified is one failure; naming
+      // the WRONG person when an author WAS verified is a different one — the
+      // "has not been established" wording is simply false in the second case,
+      // and a message that misdescribes what actually went wrong is worse than
+      // a generic one (same principle as `reserveIdea`'s error-naming comment).
       throw new ContentRejectedError(
-        `The script named an author (${mentions[0]}) for a book whose author has not been established.`,
+        safeAuthor
+          ? `The script named an author (${mentions[0]}) that does not match this book's verified author (${safeAuthor}).`
+          : `The script named an author (${mentions[0]}) for a book whose author has not been established.`,
         { authorNamed: true, mentions },
       );
     }

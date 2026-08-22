@@ -29,12 +29,19 @@ function newId(): string {
  * with no way to fix a misordered page. Every thumbnail gets move-up /
  * move-down buttons alongside the drag handle for exactly that reason.
  */
-export default function UploadDropzone() {
+export default function UploadDropzone({
+  onIngestStarted,
+}: {
+  /** Called once `POST /api/uploads/[id]/ingest` has been accepted, so the
+   *  parent can start showing that run's progress. */
+  onIngestStarted?: (uploadId: string) => void;
+}) {
   const { show } = useToast();
   const [items, setItems] = useState<PhotoItem[]>([]);
   const [title, setTitle] = useState("");
   const [rights, setRights] = useState<string>("in-copyright");
   const [busy, setBusy] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -147,6 +154,32 @@ export default function UploadDropzone() {
       show(strings.upload.genericError, "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleIngest() {
+    if (!uploadId || ingesting) return;
+    setIngesting(true);
+    try {
+      const res = await fetch(`/api/uploads/${uploadId}/ingest`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || strings.upload.ingestError);
+
+      show(strings.upload.ingestStarted, "ok");
+      onIngestStarted?.(uploadId);
+
+      // The run now lives under its own id; clear the dropzone so the
+      // operator can start a fresh batch while this one processes.
+      for (const it of items) URL.revokeObjectURL(it.url);
+      setItems([]);
+      setTitle("");
+      setUploadId(null);
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : strings.upload.ingestError;
+      setBannerError(messageText);
+      show(messageText, "error");
+    } finally {
+      setIngesting(false);
     }
   }
 
@@ -341,11 +374,12 @@ export default function UploadDropzone() {
         {uploadId && (
           <button
             type="button"
-            onClick={() => show(strings.upload.ingestNotReady, "warn")}
-            className="rounded-lg border px-4 py-2 text-[13px] font-semibold"
+            onClick={handleIngest}
+            disabled={ingesting}
+            className="rounded-lg border px-4 py-2 text-[13px] font-semibold disabled:opacity-50"
             style={{ borderColor: "var(--line)", color: "var(--ink)" }}
           >
-            {strings.upload.ingestButton}
+            {ingesting ? strings.upload.ingestStarting : strings.upload.ingestButton}
           </button>
         )}
       </div>

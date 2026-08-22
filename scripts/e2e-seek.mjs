@@ -14,6 +14,20 @@
 // computed state depending on compositing — a check that fails on that noise
 // is a check nobody will trust, and a harness nobody trusts is a harness
 // nobody runs.
+//
+// IMPORTANT for anyone writing a new effect: `stateAt()` below drives the
+// timeline with `window.__tl.pause(t)`, and the real frame-by-frame renderer
+// (Task 18+) does the same thing with `.seek(t)` — both are GSAP APIs that
+// move the playhead WITHOUT dispatching the timeline's own `onUpdate`,
+// `onStart` or `onComplete` callbacks. An effect wired to fire on one of those
+// callbacks (rather than driven by the tween's own progress/property values,
+// which this harness and the renderer both evaluate correctly) never runs
+// under either one — it looks fine scrubbing in a live browser tab, where
+// `play()`/`seek()` from user interaction can still touch those callbacks
+// depending on how the effect is wired, and then renders as silently dead
+// here and in the actual output. If an effect depends on `onUpdate` /
+// `onStart` / `onComplete`, that dependency itself is the bug to fix, not
+// something this harness or the renderer should be made to accommodate.
 import { chromium } from "playwright-core";
 import { buildComposition } from "../src/lib/video/composition/build.ts";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia.ts";

@@ -134,9 +134,46 @@ function cueMarkup(pkg: ContentPackage): string {
     .join("\n");
 }
 
+/**
+ * Text is baked into the markup at build time, the same way `cueMarkup`
+ * above does it — NOT left blank and filled in later by
+ * `el.textContent = ...` in the runtime script. Verified against a real
+ * `hyperframes snapshot`/render (not just the in-repo Playwright harnesses,
+ * which drive the timeline directly and never exercised this path): a
+ * caption line built the JS-assigned way sits at its `autoAlpha:0` rest
+ * state for the entire video with no error reported anywhere, while a cue —
+ * built exactly like this, text already present in the DOM at load — fades
+ * in and out correctly. The renderer's own static analysis pass runs over
+ * the page before the runtime script populates anything, so an element
+ * that is empty at that point never becomes visible content it will render.
+ */
 function captionMarkup(captions: CaptionLine[]): string {
-  return captions.map((_, i) => `<div class="caption-line" data-caption="${i}"></div>`).join("\n");
+  return captions
+    .map((c, i) => `<div class="caption-line" data-caption="${i}">${esc(c.text)}</div>`)
+    .join("\n");
 }
+
+/**
+ * `.caption-line` is deliberately positioned with `top` + `transform`, not
+ * the more obvious `left:50%; bottom:130px; transform:translateX(-50%)`.
+ *
+ * Verified against real `hyperframes render`/`snapshot` output (not just the
+ * in-repo Playwright harnesses, which drive the GSAP timeline directly and
+ * never exercised the real renderer's own paint path): an absolutely
+ * positioned element whose visibility is driven by a GSAP `autoAlpha` tween
+ * AND whose position is expressed with `bottom` never painted at all —
+ * opacity 0 forever, no error anywhere, identical markup and timing
+ * otherwise. The same element at the exact same pixel position expressed
+ * with `top` instead (and a matching `translateY(-100%)` to keep its BOTTOM
+ * edge anchored, so a two-line caption still grows upward the way a
+ * one-line one does) rendered correctly. Isolated by swapping only that one
+ * property with everything else held constant; not a container-sizing or
+ * z-index issue — `.cue` sits in an identically full-inset ancestor and
+ * uses `top` already, which is why it never showed this failure.
+ * `FRAME.height - 130` is `bottom:130px`'s pixel equivalent in this exact
+ * frame, computed once here rather than left as a runtime `calc()`.
+ */
+const CAPTION_TOP = FRAME.height - 130;
 
 const SHARED_CSS = `
   * , *::before, *::after { box-sizing: border-box; }
@@ -151,9 +188,10 @@ const SHARED_CSS = `
   .cue { position:absolute; top:64px; left:50%; transform:translateX(-50%) rotate(-4deg);
          padding:10px 22px; border-radius:6px; opacity:0; visibility:hidden;
          white-space:nowrap; }
-  .captions { position:absolute; left:0; right:0; bottom:130px; display:flex;
-              justify-content:center; padding:0 60px; pointer-events:none; }
-  .caption-line { position:absolute; max-width:900px; text-align:center; font-size:52px;
+  .captions { position:absolute; inset:0; pointer-events:none; }
+  .caption-line { position:absolute; left:50%; top:${CAPTION_TOP}px;
+                  transform:translate(-50%, -100%);
+                  max-width:900px; width:max-content; text-align:center; font-size:52px;
                   font-weight:700; line-height:1.25; padding:14px 28px; border-radius:18px;
                   opacity:0; visibility:hidden; font-family: Inter, system-ui, sans-serif; }
 `;
@@ -196,7 +234,8 @@ const TIMELINE_JS = `
   data.captions.forEach(function (line, i) {
     var el = capEls[i];
     if (!el) return;
-    el.textContent = line.text;
+    // Text is already in the DOM (see captionMarkup's doc comment) — not
+    // assigned here.
     tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: CAPTION_FADE, ease: "none", immediateRender: false }, line.start);
     // A "held" line (the last beat's, i.e. the CTA's) never fades out — there is
     // nothing after it to cut to, so it stays on screen through the outro tail
@@ -227,7 +266,21 @@ const TIMELINE_JS = `
   // rather than left to depend on some other tween happening to land there.
   tl.set({}, {}, data.duration);
 
+  // The renderer drives the timeline it finds at window.__timelines, keyed
+  // by the root's data-composition-id — see hyperframes-core's own
+  // contract: each composition registers exactly one paused GSAP timeline
+  // there. Without this, hyperframes' own check command flags
+  // gsap_timeline_not_registered, and -- verified against a real render --
+  // the renderer falls back to the composition's static initial DOM: every
+  // stroke, caption and cue stayed at its rest state (opacity 0, scaleX 0)
+  // for the whole video, with no error surfaced anywhere. That failure is
+  // invisible to the composition test suite and to the seek-safety script,
+  // both of which reach the timeline directly via window.__tl (kept below
+  // for exactly that reason) rather than through the door the real
+  // renderer uses.
   window.__tl = tl;
+  window.__timelines = window.__timelines || {};
+  window.__timelines["main"] = tl;
 })();
 `;
 
