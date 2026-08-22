@@ -38,6 +38,8 @@ voice, and the visual language are replaced.
 | Deployment | Local Mac now, VPS-ready |
 | Thumbnails | 9:16 and 16:9, three variants each |
 | First milestone | Vertical slice to one watchable video |
+| Book language | English only; alignment layer stays script-agnostic |
+| Speed priority | Time to finished video |
 
 ---
 
@@ -552,3 +554,103 @@ becomes a video worth watching. That question gets answered first.
 5. **DNS rebinding is not defeated.** Inherited. The SSRF guard checks
    resolved addresses but does not pin the connection to the address it
    verified.
+
+---
+
+## 14. Quality bar
+
+The operator's requirement: international-standard polish, smooth and clean
+front and back, and fast output. Stated as targets that can be measured,
+because a bar nobody can check is a wish.
+
+### Performance budget
+
+Reference run: a 6-page upload producing one 90-second video, on an
+M-series Mac.
+
+| Stage group | Budget |
+|---|---|
+| Ingest — vision read, OCR geometry, alignment (6 pages) | 35 s |
+| Book identity + episode plan | 20 s |
+| Script + grounding check + rewrites | 45 s |
+| Voiceover + mastering + music bed | 40 s |
+| Composition + seek check + thumbnails | 25 s |
+| Render (2,700 frames at 30 fps) | 90 s |
+| **Total** | **under 4 minutes** |
+
+A performance harness runs the reference upload and **fails** if the total
+exceeds the budget. Budgets are revised deliberately, not silently.
+
+### How the budget is met
+
+1. **Vision and OCR run concurrently, not in sequence.** They are
+   independent — only alignment needs both. The pipeline listing in §4 is
+   dependency order, not execution order.
+2. **Pages are processed in parallel**, concurrency capped at 4, so a
+   ten-page upload is not ten times a one-page upload.
+3. **Photographs are downscaled to 1,600 px on the long edge** before
+   entering the composition. Phone photographs arrive at 4,000 px; the frame
+   is 1,080 px wide. Full-resolution originals are kept for alignment
+   geometry only.
+4. **30 fps, not 60.** Halves the frame count; indistinguishable on a Shorts
+   surface.
+5. **Hardware H.264 encoding** via VideoToolbox on macOS, with the software
+   encoder as fallback so the VPS path still works.
+6. **One pre-warmed Chromium**, reused across the composition check, both
+   thumbnail sets and the render, rather than three cold starts.
+7. **Voiceover beats are synthesised in parallel**, then mastered as one pass.
+8. **The music bed generates concurrently with caption timing** — the bed
+   needs the finished voiceover, the captions need the same file, and
+   neither needs the other.
+
+### Front end
+
+- **Responsive to 390 px.** The operator reviews episodes on a phone.
+- **WCAG 2.2 AA contrast** in both themes, visible focus rings, full
+  keyboard navigation, correct landmarks and labels.
+- **`prefers-reduced-motion` respected** throughout the UI. The video is
+  unaffected; the interface is.
+- **Light and dark by token swap**, with the inherited pre-paint bootstrap
+  so there is no flash.
+- **Upload is drag-and-drop**, with instant local thumbnails, per-file
+  progress, drag-to-reorder page sequence, and a clear per-file error state.
+  Page order is the reading order; getting it wrong ruins the video, so it
+  is shown and editable before ingest starts.
+- **No spinner without context.** Every wait names the stage and shows
+  elapsed time — the inherited pipeline rail, extended.
+- **Toast is the only transient-notice path.** One mechanism, not three.
+- **Optimistic where safe, never optimistic about the pipeline.** Polling
+  stays at 1.5 s.
+- **UI strings live in one module**, no sentences assembled from fragments,
+  so translation is later a data change rather than a refactor.
+
+### Back end
+
+- **TypeScript strict.** Ten stages passing structured objects is exactly
+  where the compiler earns its keep.
+- **One purpose per file**, split when a file passes roughly 400 lines. Large
+  files are a signal of tangled responsibility, and they are also harder to
+  edit reliably.
+- **Logic in pure functions, I/O at the edges** — this is what makes the
+  unit tests in §10 possible at all.
+- **Named errors, never an empty 500.** The client cannot distinguish an
+  empty body from a dropped connection.
+- **Secrets are one-way** in the settings API; saving an untouched mask is a
+  no-op.
+- **Long work returns immediately** and the client polls; no request waits on
+  a render.
+
+### Correctness of output
+
+"The output has to work properly" is enforced by gates, not by inspection:
+
+- the grounding check must pass before a word is spoken;
+- the quotation budget must be within limits;
+- no author name may appear while unverified;
+- the highlight must overlap its target words by at least 90%;
+- audio energy must exist in the final second of the render;
+- the rendered file must exist and exceed 200 KB;
+- platform field limits must be clean on the exact payload being sent.
+
+A run that fails any of these does not quietly ship a worse video. It stops,
+or it degrades in a way that is recorded and visible.
