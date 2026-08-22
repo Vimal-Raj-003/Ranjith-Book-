@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env
+.env.local
+*.db
+*.db-journal
+work/
+renders/
+tools/bin/
