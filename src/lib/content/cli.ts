@@ -10,8 +10,11 @@ const exec = promisify(execFile);
 /**
  * Run a command, optionally writing the prompt to stdin. Prompts carry a whole
  * README, so they go through stdin rather than argv.
+ *
+ * Exported so the vision-capable sibling in `./cli-vision` can reuse this
+ * spawn/timeout/SIGKILL plumbing instead of forking a second copy of it.
  */
-function run(
+export function run(
   bin: string,
   args: string[],
   opts: { cwd: string; input?: string; timeoutMs: number },
