@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractJson, CliError, run, type CliProvider } from "./cli";
+import { extractJson, CliError, run, cliBin, type CliProvider } from "./cli";
 
 const TIMEOUT_MS = 6 * 60_000;
 
@@ -57,7 +57,7 @@ export async function runCliVisionJson<T>(
     ];
     if (model) args.push("--model", model);
 
-    const { stdout } = await run(process.env.CLAUDE_CLI_BIN?.trim() || "claude", args, {
+    const { stdout } = await run(cliBin(provider), args, {
       cwd,
       input: user,
       timeoutMs: TIMEOUT_MS,

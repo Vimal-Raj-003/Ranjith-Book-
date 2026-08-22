@@ -78,8 +78,11 @@ export class CliError extends Error {}
  * Node 18.20+ will not spawn a `.cmd` without a shell — so the real `.exe` has
  * to be found on PATH instead, or named through the env var when (as with
  * Codex) the binary lives inside the wrapper package rather than on PATH.
+ *
+ * Exported so the vision-capable sibling in `./cli-vision` resolves the same
+ * binary the same way, instead of a second, Windows-blind `|| "claude"` guess.
  */
-function cliBin(provider: CliProvider): string {
+export function cliBin(provider: CliProvider): string {
   const name = provider === "codex-cli" ? "codex" : "claude";
   const override =
     process.env[provider === "codex-cli" ? "CODEX_CLI_BIN" : "CLAUDE_CLI_BIN"]?.trim();
