@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { cookies } from "next/headers";
 import { prisma } from "../db";
+import { AppError } from "../errors";
 import { SESSION_COOKIE, SESSION_DAYS } from "./config";
 
 export interface SessionUser {
@@ -44,13 +45,16 @@ export async function currentUser(): Promise<SessionUser | null> {
   return { id: session.user.id, email: session.user.email, name: session.user.name };
 }
 
-/** Route-handler guard: returns the user or throws a 401-shaped error. */
+/**
+ * Route-handler guard: returns the user or throws a named, 401-shaped error —
+ * an `AppError` rather than a plain `Error`, so `errorStatus`/`errorBody`
+ * (which key off `AppError`) answer with 401 and code `unauthorized` instead
+ * of silently falling back to an empty-feeling 500.
+ */
 export async function requireUser(): Promise<SessionUser> {
   const user = await currentUser();
   if (!user) {
-    const err = new Error("Sign in to continue.") as Error & { status?: number };
-    err.status = 401;
-    throw err;
+    throw new AppError("unauthorized", "Sign in to continue.", 401);
   }
   return user;
 }

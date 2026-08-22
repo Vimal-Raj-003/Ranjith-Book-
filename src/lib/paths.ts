@@ -19,3 +19,10 @@ export const WORK_ROOT = path.join(process.cwd(), ".bookreel");
  * `/api/creations/[id]/video`, which checks ownership first.
  */
 export const RENDER_DIR = path.join(WORK_ROOT, "renders");
+
+/** Photographs live beside the renders, outside `public/`, for the same reason. */
+export const UPLOAD_DIR = path.join(WORK_ROOT, "uploads");
+
+export function uploadDir(uploadId: string): string {
+  return path.join(UPLOAD_DIR, uploadId);
+}

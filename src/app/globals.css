@@ -189,12 +189,30 @@ body {
   animation: toastIn 0.18s ease-out both;
 }
 
+/* Upload thumbnails ------------------------------------------------------- */
+@keyframes thumbIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.thumb-in {
+  animation: thumbIn 0.15s ease-out both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .node-active,
   .sweep::after {
     animation: none;
   }
   .toast-in {
+    animation: none;
+  }
+  .thumb-in {
     animation: none;
   }
 }

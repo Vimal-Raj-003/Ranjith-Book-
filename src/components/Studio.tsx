@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ToastHost, useToast } from "./Toast";
+import UploadDropzone from "./UploadDropzone";
 import { strings } from "@/lib/strings";
 
 interface EpisodeSummary {
@@ -87,6 +88,7 @@ export default function Studio() {
             {strings.studio.subheading}
           </h1>
         </header>
+        <UploadDropzone />
         <EpisodeList />
       </main>
     </ToastHost>

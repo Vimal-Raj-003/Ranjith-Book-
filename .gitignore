@@ -6,6 +6,7 @@ node_modules/
 *.db-journal
 work/
 renders/
+.bookreel/
 tools/bin/
 .superpowers/
 *.tsbuildinfo
