@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL } from "../src/lib/video/composition/build";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
+import { buildCaptions } from "../src/lib/media/captions";
+import type { CaptionWord } from "../src/lib/media/captions";
 
 const input = () => ({
   pkg: {
@@ -16,7 +18,7 @@ const input = () => ({
     { index: 0, text: "A hook.", file: "b0.wav", start: 0, end: 2, speechStart: 0.1, speechEnd: 1.9 },
     { index: 1, text: "Follow.", file: "b1.wav", start: 2, end: 4, speechStart: 2.1, speechEnd: 3.9 },
   ],
-  captions: [{ text: "A hook.", start: 0.1, end: 1.9, beatIndex: 0, words: [] }],
+  captions: [{ text: "A hook.", start: 0.1, end: 1.9, beatIndex: 0, words: [] as CaptionWord[] }],
   pages: [{ src: "assets/page-00.jpg", width: 1000, height: 1400 }],
   sweeps: [
     [{ box: { x0: 0, y0: 0, x1: 500, y1: 40 }, start: 0.1, end: 1.9 }],
@@ -207,6 +209,128 @@ test("tl.duration() and data-duration agree, and the CTA cue is genuinely visibl
       Number(nearEnd!.opacity) > 0.95,
       `the CTA cue's opacity at duration-0.1 was ${nearEnd!.opacity} — it should be holding near 1, not fading out`,
     );
+  } finally {
+    await browser.close();
+  }
+});
+
+// --- Review round 3: a multi-word CTA splits into more than one caption line -
+
+/**
+ * The single-line CTA in `input()` above is exactly what let round 2's bug
+ * through: with only one caption line for the last beat, "hold the last
+ * beat's caption lines" and "hold the last CAPTION line" are indistinguishable.
+ * A real multi-word call to action does not stay one line — `buildCaptions`
+ * splits it every `wordsPerLine` (default 4) words — so this fixture drives
+ * captions through the real `buildCaptions`, not a hand-rolled single line,
+ * to make that split genuine rather than assumed.
+ */
+const multiLineInput = () => {
+  const base = input();
+  const beats = [
+    { index: 0, text: "A hook.", file: "b0.wav", start: 0, end: 2, speechStart: 0.1, speechEnd: 1.9 },
+    {
+      index: 1,
+      text: "Follow along for more book breakdowns.",
+      file: "b1.wav",
+      start: 2,
+      end: 6,
+      speechStart: 2.1,
+      speechEnd: 5.9,
+    },
+  ];
+  base.beats = beats;
+  base.pkg.beats[1].voiceover = "Follow along for more book breakdowns.";
+  base.captions = buildCaptions(beats); // 6 words, wordsPerLine=4 -> two lines, both beatIndex 1
+  base.totalDuration = 6;
+  return base;
+};
+
+test("only the truly final caption line holds — not every line belonging to the last beat", () => {
+  const fixture = multiLineInput();
+  const html = buildComposition(fixture);
+
+  const match = html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/);
+  assert.ok(match);
+  const data = JSON.parse(match![1]) as { captions: { hold: boolean }[] };
+
+  // The real split: the CTA's own narration produced more than one caption
+  // line, both naming the last beat.
+  assert.ok(
+    data.captions.filter((_, i) => fixture.captions[i]?.beatIndex === 1).length >= 2,
+    "the fixture must actually exercise a multi-line CTA, or this test proves nothing",
+  );
+
+  const holdFlags = data.captions.map((c) => c.hold);
+  const lastIndex = holdFlags.length - 1;
+  holdFlags.forEach((hold, i) => {
+    if (i === lastIndex) {
+      assert.equal(hold, true, "the truly final caption line must hold");
+    } else {
+      assert.equal(hold, false, `caption line ${i} belongs to the last beat but is not its final line — it must fade out normally`);
+    }
+  });
+});
+
+test("a multi-line CTA never stacks two caption lines, and only the final line survives into the tail (live browser)", async () => {
+  const fixture = multiLineInput();
+  const html = buildComposition(fixture);
+  const durationMatch = html.match(/data-duration="([\d.]+)"/);
+  assert.ok(durationMatch);
+  const duration = Number(durationMatch![1]);
+
+  const linesMeta = fixture.captions.map((c) => ({
+    start: AUDIO_OFFSET + c.start,
+    end: AUDIO_OFFSET + c.end,
+  }));
+  assert.ok(linesMeta.length >= 3, "hook line + two CTA lines expected");
+
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+    await page.setContent(html, { waitUntil: "load" });
+    await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+
+    const visibleCountAt = async (t: number) =>
+      page.evaluate((time) => {
+        (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+        return Array.from(document.querySelectorAll(".caption-line")).filter(
+          (el) => Number(getComputedStyle(el).opacity) > 0.5,
+        ).length;
+      }, t);
+
+    // Sample the midpoint of each CTA caption line's own window: never more
+    // than one line visible at a time — the exact stacking failure the
+    // reviewer's fixture caught.
+    const [ctaLineA, ctaLineB] = linesMeta.slice(1);
+    for (const t of [
+      (ctaLineA.start + ctaLineA.end) / 2,
+      (ctaLineB.start + ctaLineB.end) / 2,
+      duration - 0.1,
+    ]) {
+      const count = await visibleCountAt(t);
+      assert.ok(count <= 1, `more than one caption line visible at t=${t.toFixed(2)} (count=${count})`);
+    }
+
+    // Deep into the tail, only the FINAL line (the last of the two CTA
+    // lines) may still be showing.
+    const finalLineVisible = await page.evaluate((time) => {
+      (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+      const lines = Array.from(document.querySelectorAll(".caption-line"));
+      const last = lines[lines.length - 1];
+      const cs = getComputedStyle(last);
+      return { opacity: cs.opacity, visibility: cs.visibility };
+    }, duration - 0.1);
+    assert.ok(Number(finalLineVisible.opacity) > 0.95, "the final CTA line must hold near the very end");
+    assert.equal(finalLineVisible.visibility, "visible");
+
+    const earlierLineFaded = await page.evaluate((time) => {
+      (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+      const lines = Array.from(document.querySelectorAll(".caption-line"));
+      const earlier = lines[lines.length - 2];
+      return Number(getComputedStyle(earlier).opacity);
+    }, duration - 0.1);
+    assert.ok(earlierLineFaded < 0.05, "the CTA's own first line must not still be lingering into the tail");
   } finally {
     await browser.close();
   }

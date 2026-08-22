@@ -247,19 +247,29 @@ export function buildComposition(input: CompositionInput): string {
   const strokes = flattenStrokes(pkg, sweeps, offsets, pages.length, AUDIO_OFFSET);
   const cameraData = camera.map((k) => ({ t: AUDIO_OFFSET + k.t, y: k.y }));
 
-  // The last beat is the CTA. Its cue (and its caption, if it has one) must
-  // hold through the outro tail rather than fade out at the beat's own clip
-  // end — `beat.end` lands exactly where OUTRO_TAIL begins, so fading out
-  // there produces a video whose entire tail is a blank page. `hold: true`
-  // tells the runtime script to skip that fade-out and leave the element
-  // visible all the way to `duration`.
+  // The last beat is the CTA. Its cue (and its FINAL caption line, if it has
+  // one) must hold through the outro tail rather than fade out at the beat's
+  // own clip end — `beat.end` lands exactly where OUTRO_TAIL begins, so
+  // fading out there produces a video whose entire tail is a blank page.
+  // `hold: true` tells the runtime script to skip that fade-out and leave the
+  // element visible all the way to `duration`.
+  //
+  // Captions are one-to-many with beats (`buildCaptions` splits a beat's
+  // speech into a new line every `wordsPerLine` words), so `hold` must never
+  // be assigned by `beatIndex` alone — a multi-word CTA produces more than
+  // one caption line whose `beatIndex` names the last beat, and marking every
+  // one of them held skips ALL of their fade-outs, stacking an earlier line
+  // on screen under the final one for as long as the beat's own narration
+  // runs, well before the tail even begins. Only the LAST caption line in
+  // the whole array — not every line naming the last beat — is held.
   const lastBeatIndex = pkg.beats.length - 1;
+  const lastCaptionIndex = captions.length - 1;
 
-  const captionData = captions.map((c) => ({
+  const captionData = captions.map((c, i) => ({
     text: c.text,
     start: AUDIO_OFFSET + c.start,
     end: AUDIO_OFFSET + c.end,
-    hold: c.beatIndex === lastBeatIndex,
+    hold: i === lastCaptionIndex && c.beatIndex === lastBeatIndex,
   }));
   const cueData = pkg.beats.map((_, i) => {
     const audio: BeatAudio | undefined = beats[i];
