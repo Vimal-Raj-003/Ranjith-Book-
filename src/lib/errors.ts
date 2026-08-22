@@ -38,7 +38,7 @@ export class ContentRejectedError extends AppError {
 
 /** Turn any thrown value into a JSON body. Never returns an empty object. */
 export function errorBody(err: unknown): { error: string; code: string } {
-  if (err instanceof AppError) return { error: err.message, code: err.code };
+  if (err instanceof AppError) return { error: err.message || "Something failed without saying what.", code: err.code };
   const message = err instanceof Error ? err.message : String(err);
   return { error: message || "Something failed without saying what.", code: "unknown" };
 }
