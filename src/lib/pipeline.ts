@@ -17,11 +17,28 @@ import { numberedWordLines } from "./content/prompt";
 import type { CliProvider } from "./content/cli";
 import type { RightsStatus } from "./content/quotation";
 import { synthesizeVoiceover } from "./media/tts";
+import { generateMusicBed } from "./media/ffmpeg";
 import { buildCaptions, toSrt } from "./media/captions";
 import { sweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
-import { buildComposition, FRAME } from "./video/composition/build";
+import { buildComposition, FRAME, AUDIO_OFFSET, OUTRO_TAIL } from "./video/composition/build";
 import { marginalia } from "./video/composition/themes/marginalia";
 import { writeProject, checkProject, renderProject } from "./video/render";
+import type { BookTheme } from "./video/composition/theme-contract";
+
+/**
+ * `BookTheme.mood` and `generateMusicBed`'s `style` option come from two
+ * different vocabularies — the theme contract names a *feeling*, the bed
+ * generator names a specific chord progression (see `MUSIC_MOODS` in
+ * `media/ffmpeg.ts`). This is the one place that translates between them.
+ * `editorial` for `warm` is not an arbitrary pick: its own doc comment reads
+ * "Warm paper, magazine feature" — Marginalia's palette, in one sentence.
+ */
+const MOOD_TO_STYLE: Record<BookTheme["mood"], string> = {
+  warm: "editorial",
+  calm: "blueprint",
+  driving: "spotlight",
+  sparse: "terminal",
+};
 
 /**
  * The full, ordered set of stage names each pipeline runs through. `PipelineRail`
@@ -603,6 +620,37 @@ export async function runEpisode(episodeId: string): Promise<void> {
     const columnHeight = compPages.reduce((sum, p) => sum + p.height, 0);
     const camera = cameraTrack(columnSteps, FRAME.height, columnHeight);
 
+    // The music bed: a full-composition-length pad, sidechain-ducked against
+    // the voice, that is what actually carries the CTA's outro hold — the
+    // voice track itself only ever spans AUDIO_OFFSET..AUDIO_OFFSET+totalDuration,
+    // never the OUTRO_TAIL past it (see spec §10, "A known gap fixed rather
+    // than inherited"). Generation is best-effort, same contract as
+    // `writeProject`'s own optional-asset copies below: a failed bed must
+    // never sink an otherwise-good render, it just plays dry, exactly as it
+    // did before this was wired in.
+    const compositionDuration = AUDIO_OFFSET + voice.totalDuration + OUTRO_TAIL;
+    const musicPath = path.join(workDir, "music.wav");
+    let hasMusic = false;
+    try {
+      await generateMusicBed(compositionDuration, musicPath, {
+        style: MOOD_TO_STYLE[marginalia.mood],
+        voicePath: voice.audioPath,
+        voiceOffsetSec: AUDIO_OFFSET,
+      });
+      hasMusic = true;
+    } catch (err) {
+      const existing: string[] = episode.notes ? JSON.parse(episode.notes) : [];
+      await prisma.episode.update({
+        where: { id: episodeId },
+        data: {
+          notes: JSON.stringify([
+            ...existing,
+            `Music bed generation failed (${message(err)}) — rendering without one.`,
+          ]),
+        },
+      });
+    }
+
     await timer.start(EPISODE_STEPS[6]); // Building the composition
     const html = buildComposition({
       pkg,
@@ -613,6 +661,7 @@ export async function runEpisode(episodeId: string): Promise<void> {
       camera,
       theme: marginalia,
       totalDuration: voice.totalDuration,
+      music: hasMusic,
     });
 
     await prisma.episode.update({
@@ -631,6 +680,7 @@ export async function runEpisode(episodeId: string): Promise<void> {
       dir: projectDir,
       indexHtml: html,
       audioSource: voice.audioPath,
+      musicSource: hasMusic ? musicPath : null,
       assets: compPages.map((p) => ({ from: p.from, to: p.to })),
     });
     await prisma.episode.update({ where: { id: episodeId }, data: { projectPath: projectDir } });

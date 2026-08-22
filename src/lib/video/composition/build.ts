@@ -32,6 +32,18 @@ export interface CompositionInput {
   theme: BookTheme;
   /** Measured length of the mastered voice track (`VoiceoverResult.totalDuration`). */
   totalDuration: number;
+  /**
+   * Whether a music bed (`assets/music.wav`, from `generateMusicBed`) was
+   * produced for this render. Generating the bed can fail — a synthesis
+   * error, a missing ffmpeg binary — and a missing bed must never sink the
+   * render (same contract as `writeProject`'s own best-effort copy), so this
+   * flag exists to skip the `<audio>` element entirely rather than reference
+   * a file that was never written. When present, the element spans the FULL
+   * composition duration (0 to `duration`), not just `totalDuration` like the
+   * voice track: the bed is what is meant to carry the CTA's outro hold,
+   * which is exactly the stretch the voice track never covers.
+   */
+  music?: boolean;
 }
 
 /**
@@ -285,7 +297,7 @@ const TIMELINE_JS = `
 `;
 
 export function buildComposition(input: CompositionInput): string {
-  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration } = input;
+  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music } = input;
 
   // Includes AUDIO_OFFSET: the audio element itself starts at AUDIO_OFFSET, not
   // zero, so the declared duration must cover that lead-in too — a duration of
@@ -336,6 +348,14 @@ export function buildComposition(input: CompositionInput): string {
   const pagesHtml = pages.map((p, i) => pageMarkup(p, offsets[i])).join("\n");
   const strokesHtml = strokes.map((_, i) => theme.strokeMarkup(i)).join("\n");
 
+  // Track index 10, below the voice's 20: a bed sits under the narration, not
+  // over it. Spans 0 → duration (not totalDuration) so it is the one thing
+  // that is actually present through the outro tail — see the field doc on
+  // `music` above.
+  const musicHtml = music
+    ? `<audio id="music" src="assets/music.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="10" data-volume="1"></audio>`
+    : "";
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -361,6 +381,7 @@ export function buildComposition(input: CompositionInput): string {
       ${captionMarkup(captions)}
     </div>
     <audio id="voice" src="assets/voice.wav" data-start="${AUDIO_OFFSET.toFixed(3)}" data-duration="${totalDuration.toFixed(3)}" data-track-index="20" data-volume="1"></audio>
+    ${musicHtml}
   </div>
 </div>
 <script id="composition-data" type="application/json">${data}</script>
