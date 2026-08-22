@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { prisma } from "../db";
 import { sendLoginCode } from "./mailer";
-import { CODE_TTL_MS, MAX_ATTEMPTS, isAllowed, mailConfig } from "./config";
+import { CODE_TTL_MS, MAX_ATTEMPTS, isAllowed, isDevLoginEnabled, mailConfig } from "./config";
 import { createSession, purgeExpired } from "./session";
 
 const sha256 = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
@@ -40,7 +40,13 @@ export async function requestCode(rawEmail: string) {
   // Fail before storing anything. Writing the code first would spend one of the
   // three per-10-minute slots on a request that could never have been delivered,
   // so a misconfigured mailbox would also lock the user out of retrying.
-  if (!mailConfig()) {
+  //
+  // Dev bypass only ever substitutes *delivery* here: if SMTP is configured we
+  // always send a real email, even with AUTH_DEV_LOGIN=1 set, so turning on
+  // real SMTP is enough by itself to get back to production-like behavior.
+  const smtp = mailConfig();
+  const devBypass = !smtp && isDevLoginEnabled();
+  if (!smtp && !devBypass) {
     throw new AuthError(
       "Email is not configured on this server yet. Set SMTP_USER and SMTP_PASS.",
       503,
@@ -62,6 +68,27 @@ export async function requestCode(rawEmail: string) {
   await prisma.loginCode.create({
     data: { email, codeHash: sha256(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) },
   });
+
+  if (devBypass) {
+    // Loud on purpose: this only runs when NODE_ENV !== "production" AND
+    // AUTH_DEV_LOGIN=1, so anyone reading server logs (or the response body)
+    // sees plainly that no email was sent and why.
+    console.warn(
+      `[DEV LOGIN BYPASS] SMTP is not configured, so no email was sent. ` +
+        `Sign-in code for ${email}: ${code} (expires in ${CODE_TTL_MS / 60_000} min). ` +
+        `This bypass only exists because NODE_ENV !== "production" and AUTH_DEV_LOGIN=1 — ` +
+        `it cannot run in production.`,
+    );
+    return {
+      email,
+      dev: true,
+      devCode: code,
+      warning:
+        "DEVELOPMENT BYPASS: SMTP is not configured, so this code was not emailed — " +
+        "it is returned here instead because NODE_ENV !== 'production' and AUTH_DEV_LOGIN=1. " +
+        "This never happens in production.",
+    };
+  }
 
   await sendLoginCode(email, code);
   return { email };

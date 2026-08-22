@@ -62,6 +62,20 @@ export function isAllowed(email: string): boolean {
   );
 }
 
+/**
+ * Dev-only sign-in bypass: lets `/api/auth/request` hand back the generated
+ * code instead of emailing it, for local development where SMTP isn't set up.
+ *
+ * Both conditions are required, not either: `NODE_ENV !== "production"` means
+ * a production build/deploy can never take this path regardless of what env
+ * vars leak into it, and `AUTH_DEV_LOGIN=1` means it stays off even in dev
+ * unless someone opts in on purpose. A single flag would be a backdoor that
+ * only needs one stray env var in production to open; this needs both.
+ */
+export function isDevLoginEnabled(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.AUTH_DEV_LOGIN === "1";
+}
+
 export const SESSION_COOKIE = "bookreel_session";
 export const SESSION_DAYS = 30;
 export const CODE_TTL_MS = 10 * 60_000;
