@@ -7,3 +7,4 @@ node_modules/
 work/
 renders/
 tools/bin/
+.superpowers/
