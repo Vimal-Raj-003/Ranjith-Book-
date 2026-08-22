@@ -246,24 +246,30 @@ test("Class A: a short justified line's stretched inter-word gap does not trigge
   // real gutter is typically as wide as a whole word or more; ordinary
   // justification stretch is nowhere near that.
   //
-  // Measured: gaps are 10, 10, 40. Median gap = 10, so signal 1's threshold
-  // is 10*5 = 50 — the 40px stretch (4x normal, a generous stretch) stays
-  // under it. Block width = 380, so signal 2's threshold is 380*0.08 = 30.4
-  // — 40 would clear THIS one alone, which is exactly why both signals are
-  // required: signal 1 alone correctly vetoes the split here.
+  // 6 words (5 gaps) rather than 4/3, so this fixture clears MIN_GAP_SAMPLES
+  // (5) and signal 1 is judged on its actual threshold rather than being
+  // disabled by the low-sample floor — keeping the isolation story literal.
+  //
+  // Measured: gaps are 10, 10, 10, 10, 40. Median gap = 10, so signal 1's
+  // threshold is 10*5 = 50 — the 40px stretch (4x normal, a generous
+  // stretch) stays under it. Block width = 440, so signal 2's threshold is
+  // 440*0.08 = 35.2 — 40 clears THIS one alone, which is exactly why both
+  // signals are required: signal 1 alone correctly vetoes the split here.
   const justifiedLine: AlignedWord[] = [
-    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 90, y1: 40 } },
-    { visionIndex: 1, word: "short", ocrIndex: 1, box: { x0: 100, y0: 0, x1: 180, y1: 40 } },
-    { visionIndex: 2, word: "line", ocrIndex: 2, box: { x0: 190, y0: 0, x1: 270, y1: 40 } },
+    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 70, y1: 40 } },
+    { visionIndex: 1, word: "short", ocrIndex: 1, box: { x0: 80, y0: 0, x1: 140, y1: 40 } },
+    { visionIndex: 2, word: "line", ocrIndex: 2, box: { x0: 150, y0: 0, x1: 210, y1: 40 } },
+    { visionIndex: 3, word: "of", ocrIndex: 3, box: { x0: 220, y0: 0, x1: 280, y1: 40 } },
+    { visionIndex: 4, word: "prose", ocrIndex: 4, box: { x0: 290, y0: 0, x1: 350, y1: 40 } },
     // Justification stretches this gap to reach the right margin.
-    { visionIndex: 3, word: "here", ocrIndex: 3, box: { x0: 310, y0: 0, x1: 390, y1: 40 } },
+    { visionIndex: 5, word: "here", ocrIndex: 5, box: { x0: 390, y0: 0, x1: 450, y1: 40 } },
   ];
 
   const lines = clusterLineRuns(justifiedLine);
 
   assert.equal(lines.length, 1, "the stretched gap must not split the justified line in two");
-  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3]);
-  assert.equal(lines[0].box.x1, 390);
+  assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3, 4, 5]);
+  assert.equal(lines[0].box.x1, 450);
 });
 
 test("Class B: short-word dialogue with an em-dash-scale gap does not trigger the gutter split", () => {
@@ -330,6 +336,107 @@ test("Class C: a modest gutter roughly one word's width still triggers the gutte
   assert.equal(lines.length, 2, "a modest, roughly-one-word-wide gutter must still split");
   assert.deepEqual(lines[0].wordIndices, [0, 1, 2, 3]);
   assert.deepEqual(lines[1].wordIndices, [4, 5, 6, 7]);
+});
+
+// --- FINDING 6: the drop exemption must be magnitude-aware, not just
+// presence-aware, or a single stray unboxed token landing at a gutter
+// disables the split for the whole row. ---
+
+test("a stray unboxed token at the gutter does not disable the split — a single drop, or a run of three", () => {
+  // A 6-row, two-column page: 70px words, 10px normal in-column gaps, a
+  // 300px gutter. Rows 0-3 are ordinary (nothing dropped at the gutter).
+  // Row 4 has a run of THREE unboxed stray tokens landing, in vision-index
+  // order, between the last left-column word and the first right-column
+  // word — e.g. the vision model reading a row across the full page width
+  // and emitting a few tokens from gutter whitespace or an artifact that
+  // OCR never boxes. Row 5 has a single such stray token. This is exactly
+  // the presence-only exemption's failure mode: every intervening
+  // vision-index slot IS unboxed, so a presence-only check would exempt an
+  // arbitrarily large gutter gap.
+  //
+  // Measured: median gap = 10 (18 total gap samples: 12 ordinary 10s, 6
+  // gutter-sized 300s — comfortably robust, and >= MIN_GAP_SAMPLES). Block
+  // width = 600. Both pixel signals clear for every row's gutter gap
+  // (300 > 50 and 300 > 48). The magnitude check is what must reject the
+  // exemption on rows 4 and 5: with max word width 70,
+  //   row 5 (1 drop):  plausible max = 1.15 * (1*70 + 2*10) = 103.5 — 300 far exceeds it.
+  //   row 4 (3 drops): plausible max = 1.15 * (3*70 + 4*10) = 287.5 — 300 still exceeds it.
+  // So neither row's gutter gap is exempted, and both split like the rest.
+  const words: AlignedWord[] = [];
+  let vi = 0;
+  const W = 70;
+  const GAP = 10;
+  const GUTTER = 300;
+  for (let row = 0; row < 6; row++) {
+    const y0 = row * 60;
+    const y1 = y0 + 40;
+    const l1x0 = 10;
+    const l1x1 = l1x0 + W;
+    const l2x0 = l1x1 + GAP;
+    const l2x1 = l2x0 + W;
+    const r1x0 = l2x1 + GUTTER;
+    const r1x1 = r1x0 + W;
+    const r2x0 = r1x1 + GAP;
+    const r2x1 = r2x0 + W;
+
+    words.push({ visionIndex: vi++, word: "left1", ocrIndex: vi, box: { x0: l1x0, y0, x1: l1x1, y1 } });
+    words.push({ visionIndex: vi++, word: "left2", ocrIndex: vi, box: { x0: l2x0, y0, x1: l2x1, y1 } });
+
+    if (row === 4) {
+      words.push({ visionIndex: vi++, word: "stray1", ocrIndex: null, box: null });
+      words.push({ visionIndex: vi++, word: "stray2", ocrIndex: null, box: null });
+      words.push({ visionIndex: vi++, word: "stray3", ocrIndex: null, box: null });
+    } else if (row === 5) {
+      words.push({ visionIndex: vi++, word: "stray", ocrIndex: null, box: null });
+    }
+
+    words.push({ visionIndex: vi++, word: "right1", ocrIndex: vi, box: { x0: r1x0, y0, x1: r1x1, y1 } });
+    words.push({ visionIndex: vi++, word: "right2", ocrIndex: vi, box: { x0: r2x0, y0, x1: r2x1, y1 } });
+  }
+
+  const lines = clusterLineRuns(words);
+
+  assert.equal(lines.length, 12, "all 6 rows split into a left and right line — none bridge the gutter");
+  // Rows 0-3: ordinary.
+  assert.deepEqual(lines[0].wordIndices, [0, 1]);
+  assert.deepEqual(lines[1].wordIndices, [2, 3]);
+  assert.deepEqual(lines[6].wordIndices, [12, 13]);
+  assert.deepEqual(lines[7].wordIndices, [14, 15]);
+  // Row 4 (visionIndex 16,17 left; 18,19,20 dropped; 21,22 right): the
+  // 3-drop run must NOT merge the row into one stroke.
+  assert.deepEqual(lines[8].wordIndices, [16, 17], "row 4 left column, despite the 3-drop run beside it");
+  assert.deepEqual(lines[9].wordIndices, [21, 22], "row 4 right column, not merged with the left");
+  // Row 5 (visionIndex 23,24 left; 25 dropped; 26,27 right): the 1-drop
+  // case must not merge either.
+  assert.deepEqual(lines[10].wordIndices, [23, 24], "row 5 left column, despite the single stray drop beside it");
+  assert.deepEqual(lines[11].wordIndices, [26, 27], "row 5 right column, not merged with the left");
+});
+
+// --- FINDING 7: the gap median must not be trusted on too few samples, or
+// the gutter gap itself can become the "typical" gap it's being measured
+// against. ---
+
+test("a low-sample single line does not let the gutter gap contaminate its own threshold", () => {
+  // Only 3 words, 2 gaps: [8, 300]. With MIN_GAP_SAMPLES = 5, this page has
+  // too few gap samples for the median to be trusted, so signal 1 is
+  // disabled (threshold = Infinity) rather than computed from a median that
+  // the 300px gap itself would dominate (median of [8, 300] is 300 — the
+  // gutter gap becomes the "typical" gap, inflating the threshold to 1500
+  // and completely suppressing detection of the very gutter it measures).
+  // The pre-existing behaviour for "no data" was to fail closed (never
+  // split); this extends that same failure direction to "not enough data",
+  // which is what actually fixes the contamination rather than leaving it
+  // to accidentally happen to still not-split on this particular fixture.
+  const words: AlignedWord[] = [
+    { visionIndex: 0, word: "a", ocrIndex: 0, box: { x0: 10, y0: 0, x1: 80, y1: 40 } },
+    { visionIndex: 1, word: "b", ocrIndex: 1, box: { x0: 88, y0: 0, x1: 158, y1: 40 } },
+    { visionIndex: 2, word: "c", ocrIndex: 2, box: { x0: 458, y0: 0, x1: 528, y1: 40 } },
+  ];
+
+  const lines = clusterLineRuns(words);
+
+  assert.equal(lines.length, 1, "too few gap samples to trust the median — never split on it");
+  assert.deepEqual(lines[0].wordIndices, [0, 1, 2]);
 });
 
 // --- FINDING 1: a run of consecutive unboxed words must not all claim the
