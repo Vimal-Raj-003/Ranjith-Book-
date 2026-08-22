@@ -40,6 +40,34 @@ export interface OcrEngine {
 class TesseractEngine implements OcrEngine {
   private worker: Promise<Worker> | null = null;
 
+  /**
+   * Every `measure()` call's outer promise, tracked so `dispose()` can wait
+   * for all of them to settle before touching the worker. This exists
+   * because of a real crash, reproduced against the installed tesseract.js
+   * v6.0.1: `worker.terminate()` nulls tesseract.js's *internal* worker
+   * reference, but a `recognize()` already in flight later calls an
+   * un-awaited internal `send()` against that same worker — which throws
+   * `TypeError: Cannot read properties of null (reading 'postMessage')` as
+   * an unhandled rejection, entirely outside the promise `measure()` is
+   * awaiting. Node's default behaviour on an unhandled rejection is to kill
+   * the process, so a `dispose()` that races an in-flight `measure()` does
+   * not fail that one call — it takes down the whole process. Waiting here
+   * means `terminate()` is only ever called once nothing is still using the
+   * worker.
+   */
+  private inFlight = new Set<Promise<unknown>>();
+
+  /**
+   * Set once `dispose()` has been called on *this* instance. Reachable only
+   * if something holds a direct reference to a disposed engine and calls
+   * `measure()` on it again — the module-level singleton below never does
+   * this, since it drops its reference to an instance before disposing it,
+   * so a fresh `measurePage()` call always gets a brand-new instance and
+   * worker instead. Kept as a named-error guard rather than silently
+   * resurrecting a terminated worker.
+   */
+  private disposed = false;
+
   private getWorker(): Promise<Worker> {
     if (!this.worker) {
       // tesseract.js writes its downloaded language data to `cachePath` with
@@ -57,6 +85,24 @@ class TesseractEngine implements OcrEngine {
   }
 
   async measure(imagePath: string): Promise<OcrWord[]> {
+    if (this.disposed) {
+      throw new IngestFailed(
+        `OCR engine was already disposed; cannot measure ${imagePath}. Call measurePage() again to get a fresh engine.`,
+      );
+    }
+    // Registered in `inFlight` before the first `await` inside `_recognize`
+    // runs, so there is no window where `dispose()` could observe an
+    // in-flight call as absent.
+    const job = this._recognize(imagePath);
+    this.inFlight.add(job);
+    try {
+      return await job;
+    } finally {
+      this.inFlight.delete(job);
+    }
+  }
+
+  private async _recognize(imagePath: string): Promise<OcrWord[]> {
     const w = await this.getWorker();
     // `{ blocks: true }` is the output-format flag that makes tesseract.js
     // populate `data.blocks`; verified empirically against the installed
@@ -84,7 +130,13 @@ class TesseractEngine implements OcrEngine {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
     if (!this.worker) return;
+    // Let every measure() call already running finish (successfully or not)
+    // before the worker is touched — see the comment on `inFlight` above for
+    // why terminating underneath one of them crashes the process instead of
+    // just failing that call.
+    await Promise.allSettled([...this.inFlight]);
     const w = await this.worker;
     this.worker = null;
     await w.terminate();
@@ -103,9 +155,25 @@ function getEngine(): OcrEngine {
  * `OcrEngine` — a native `tesseract` binary, say — without any code that
  * calls `measurePage` changing. Exists for exactly the escape hatch described
  * on `OcrEngine` above.
+ *
+ * If a page was already measured before this is called, the outgoing engine
+ * is holding a live worker; dropping the reference without disposing it
+ * would leak that worker (and, for `TesseractEngine`, its process). The
+ * outgoing engine's own `dispose()` is what makes that safe to do while a
+ * measurement might still be in flight on it — see `TesseractEngine.dispose`.
+ * Disposal happens in the background rather than being awaited here so this
+ * stays a synchronous swap; a failure tearing down the *old* engine is not
+ * a reason to fail the swap to the new one.
  */
 export function setOcrEngine(e: OcrEngine): void {
+  const outgoing = engine;
   engine = e;
+  if (outgoing && outgoing !== e) {
+    void outgoing.dispose().catch(() => {
+      // Best-effort cleanup of the engine being retired; the caller asked to
+      // replace it, not to be told how that replacement's teardown went.
+    });
+  }
 }
 
 /**
