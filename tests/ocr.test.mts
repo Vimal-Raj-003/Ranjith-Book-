@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
-import { measurePage, disposeOcr } from "../src/lib/ingest/ocr";
+import { measurePage, disposeOcr, setOcrEngine, type OcrEngine, type OcrWord } from "../src/lib/ingest/ocr";
+import { OcrTimeoutError } from "../src/lib/errors";
 
 test("a rendered line of text comes back as words with plausible boxes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-ocr-"));
@@ -140,6 +141,45 @@ test("disposeOcr() while a measurePage() call is still in flight does not crash 
   assert.ok(wordsAfterDispose.length >= 3, "a call after full disposal should get a fresh worker, not hang or throw");
 
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+// Reproduces the production incident this task fixes: `tesseract.js`'s
+// `createWorker()` spawning a worker that never resolves and never rejects
+// (confirmed live, in an actual Next.js dev server route, to be caused by
+// Turbopack bundling the worker's `__dirname`-derived path resolution —
+// fixed by `serverExternalPackages` in `next.config.ts`). Regardless of
+// root cause, `measurePage` must never let a hung OCR pass turn into a dead
+// ingest run: it has to time out on its own, with a name the caller can
+// recognize as "OCR stalled" rather than some other failure. A fake engine
+// whose `measure()` never settles reproduces the hang deterministically,
+// without waiting on a real worker; `timeoutMs` is overridden so the test
+// does not have to wait out the real (60s) production timeout to see it
+// fire.
+test("measurePage times out instead of hanging forever, and throws a named error", async () => {
+  class NeverResolvingEngine implements OcrEngine {
+    async measure(): Promise<OcrWord[]> {
+      return new Promise(() => {
+        // Deliberately never resolves or rejects — this is the hang.
+      });
+    }
+    async dispose(): Promise<void> {}
+  }
+
+  setOcrEngine(new NeverResolvingEngine());
+  try {
+    await assert.rejects(
+      () => measurePage("/does/not/matter.jpg", 20),
+      (err: unknown) => {
+        assert.ok(err instanceof OcrTimeoutError, `expected OcrTimeoutError, got ${err}`);
+        assert.match((err as Error).message, /timed out/);
+        return true;
+      },
+    );
+  } finally {
+    // Drop the fake engine so later tests (and `test.after` below) get a
+    // fresh, real `TesseractEngine` instead of the one that never resolves.
+    await disposeOcr();
+  }
 });
 
 // A live tesseract.js worker holds the Node event loop open (it is a

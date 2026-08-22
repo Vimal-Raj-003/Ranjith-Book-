@@ -259,20 +259,32 @@ export async function runIngest(uploadId: string): Promise<string[]> {
     });
 
     // 1 & 2: Reading and measuring run concurrently — see the doc comment
-    // above. `Measuring the pages` is never set as its own upload.step because
-    // the two genuinely happen at once; once both resolve, the rail simply
-    // advances past both at the same time.
+    // above. Both start under the same `Reading the pages` step name since
+    // neither is done yet. The moment vision (reading) finishes, the step is
+    // advanced to `Measuring the pages` even though OCR may still be running
+    // — vision has a proven, fast path (the CLI), while OCR is the one doing
+    // real, sometimes-slow work (and the one `measurePage`'s own hard
+    // timeout below exists to bound). Without this, an operator watching a
+    // stalled OCR pass sees the misleading "Reading the pages" and has no
+    // way to tell which of the two concurrent jobs is actually stuck.
+    const visionJob = mapLimit(upload.pages, 4, async (p) => {
+      if (!p.derivedPath) {
+        throw new IngestFailed(
+          `Page ${p.pageIndex + 1} has no derived image; re-upload this photograph.`,
+        );
+      }
+      const text = await readPage(p.derivedPath, p.pageIndex, visionProvider, model);
+      await prisma.page.update({ where: { id: p.id }, data: { visionText: JSON.stringify(text) } });
+      return text;
+    });
+    // Best-effort: if this update loses a race with the upload being deleted,
+    // or the DB hiccups, that must never fail (or delay) the real ingest.
+    void visionJob
+      .then(() => prisma.upload.update({ where: { id: uploadId }, data: { step: INGEST_STEPS[1] } }))
+      .catch(() => {});
+
     const [texts, boxesList] = await Promise.all([
-      mapLimit(upload.pages, 4, async (p) => {
-        if (!p.derivedPath) {
-          throw new IngestFailed(
-            `Page ${p.pageIndex + 1} has no derived image; re-upload this photograph.`,
-          );
-        }
-        const text = await readPage(p.derivedPath, p.pageIndex, visionProvider, model);
-        await prisma.page.update({ where: { id: p.id }, data: { visionText: JSON.stringify(text) } });
-        return text;
-      }),
+      visionJob,
       mapLimit(upload.pages, 4, async (p): Promise<OcrWord[]> => {
         try {
           if (!p.derivedPath) return [];

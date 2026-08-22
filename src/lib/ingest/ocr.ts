@@ -1,7 +1,58 @@
 import fs from "node:fs/promises";
 import { createWorker, type Worker } from "tesseract.js";
-import { IngestFailed, AppError } from "../errors";
+import { IngestFailed, OcrTimeoutError, AppError } from "../errors";
 import { OCR_CACHE_DIR } from "../paths";
+
+/**
+ * Hard ceiling on one page's OCR pass. `tesseract.js` spawning a worker that
+ * never resolves and never rejects is a real, reproduced failure mode (a
+ * bundler breaking the worker's path resolution turns `createWorker()` into
+ * a silent hang, with zero CPU, forever) — and OCR failure is designed to be
+ * NON-FATAL in this pipeline (a page with no boxes falls back to paragraph-
+ * block highlighting). Without this timeout, a hang anywhere in the OCR path
+ * converts that designed-for, recoverable failure into a dead run that never
+ * reaches `DONE` — strictly worse than the failure it would otherwise be
+ * hiding. 60s is generous for a single page against a warm, cached worker;
+ * it exists to bound a stall, not to tune normal-case latency.
+ */
+const OCR_TIMEOUT_MS = 60_000;
+
+/**
+ * Races `promise` against a timer. On timeout, rejects with a named
+ * `OcrTimeoutError` — the caller must be able to tell "OCR took too long"
+ * apart from any other failure. Does NOT cancel or otherwise touch the
+ * underlying `promise`: `TesseractEngine.measure` has already registered it
+ * in `inFlight` by the time this wraps it, and `dispose()` still needs to
+ * wait for that real completion (successful or not) before it can safely
+ * terminate the worker — see the doc comment on `inFlight` for why
+ * terminating underneath an in-flight call crashes the whole process. This
+ * timeout only stops the *caller* from waiting on it any longer.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, imagePath: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new OcrTimeoutError(
+          `OCR timed out after ${ms}ms measuring ${imagePath} — this page highlights by block instead of by word.`,
+        ),
+      );
+    }, ms);
+    // Never let this bookkeeping timer hold the process open on its own —
+    // a live tesseract.js worker already does that deliberately (see
+    // `disposeOcr`'s doc comment); this timer is not meant to add to it.
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 export interface Box {
   x0: number;
@@ -190,10 +241,19 @@ export function setOcrEngine(e: OcrEngine): void {
  * returns already live in the composition's coordinate space and never need
  * scaling. `measurePage` itself does not care which file it is handed; this
  * is a note for the pipeline call site, not a constraint enforced here.
+ *
+ * Bounded by a hard timeout (`timeoutMs`, defaulting to `OCR_TIMEOUT_MS`):
+ * on expiry this rejects with a named `OcrTimeoutError` rather than leaving
+ * the caller waiting forever. The parameter exists so a test can exercise
+ * that path in milliseconds instead of `OCR_TIMEOUT_MS`; no real call site
+ * should need to override the default.
  */
-export async function measurePage(imagePath: string): Promise<OcrWord[]> {
+export async function measurePage(
+  imagePath: string,
+  timeoutMs: number = OCR_TIMEOUT_MS,
+): Promise<OcrWord[]> {
   try {
-    return await getEngine().measure(imagePath);
+    return await withTimeout(getEngine().measure(imagePath), timeoutMs, imagePath);
   } catch (err) {
     if (err instanceof AppError) throw err;
     const message = err instanceof Error ? err.message : String(err);

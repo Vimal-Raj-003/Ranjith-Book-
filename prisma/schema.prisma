@@ -87,6 +87,12 @@ model Upload {
   pages     Page[]
   episodes  Episode[]
   createdAt DateTime @default(now())
+  /// Bumped by every `prisma.upload.update` in `runIngest` (once per step
+  /// transition). `reap.ts` uses this — not `createdAt` — to tell "stuck on
+  /// the current step" apart from "a long-running upload that is still
+  /// making progress": `Upload` has no per-step `StepRun` history the way
+  /// `Episode` does, so this is the only signal a reaper has.
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@index([bookId])
 }

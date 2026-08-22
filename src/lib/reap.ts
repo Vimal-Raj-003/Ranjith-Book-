@@ -40,5 +40,32 @@ export async function reapStaleRuns(): Promise<number> {
     });
   }
 
-  return stale.length;
+  // `Upload` has no `StepRun` history the way `Episode` does — every ingest
+  // step is just a string on the row itself — so `updatedAt` (bumped by every
+  // `prisma.upload.update` call in `runIngest`, once per step transition) is
+  // the only signal available for "stuck on the current step" versus "still
+  // making progress". A run stuck 10+ minutes on ingest with zero CPU (the
+  // incident this was added for: `measurePage` hanging inside the Next.js
+  // dev server) is exactly what this is for — and it went uncaught because,
+  // until now, this function only ever looked at `Episode` rows.
+  const staleUploads = await prisma.upload.findMany({
+    where: {
+      status: { in: ["RUNNING", "QUEUED"] },
+      updatedAt: { lt: cutoff },
+    },
+    select: { id: true, step: true },
+  });
+
+  for (const upload of staleUploads) {
+    await prisma.upload.update({
+      where: { id: upload.id },
+      data: {
+        status: "FAILED",
+        step: "Interrupted",
+        error: `The run stopped responding during "${upload.step}". This usually means the server restarted mid-run, or a step hung. Start it again.`,
+      },
+    });
+  }
+
+  return stale.length + staleUploads.length;
 }

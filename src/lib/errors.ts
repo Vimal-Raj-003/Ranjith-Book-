@@ -26,6 +26,19 @@ export class IngestFailed extends AppError {
   }
 }
 
+/**
+ * Raised by `measurePage` when OCR does not settle within its hard timeout.
+ * A distinct name (rather than a generic `IngestFailed`) so a stall is
+ * unmistakable in logs and in the note `runIngest` records — OCR failure is
+ * designed to be non-fatal (the page falls back to block highlighting), and
+ * a hang must never be allowed to look like anything worse than that.
+ */
+export class OcrTimeoutError extends AppError {
+  constructor(message: string) {
+    super("ocr_timeout", message, 500);
+  }
+}
+
 /** Raised when the grounding check refuses the script, so the pipeline stops
  *  before the voiceover. Carries the report so the operator can read why. */
 export class ContentRejectedError extends AppError {

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
+import { reapStaleRuns } from "@/lib/reap";
 
 /**
  * Polled every 1.5s by the client while an episode runs (see `PipelineRail`).
@@ -12,6 +13,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const user = await requireUser();
     const { id } = await ctx.params;
+
+    // Best-effort, same reasoning as the uploads poll route: this is the
+    // natural place to notice and close out a run that stopped responding,
+    // and it must never break the poll it rides in on.
+    await reapStaleRuns().catch(() => {});
 
     const episode = await prisma.episode.findUnique({
       where: { id },
