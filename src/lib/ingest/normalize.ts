@@ -3,6 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { BadUpload } from "../errors";
 import { detectImageType } from "./validate";
+import { enhancePage } from "./enhance";
 
 /**
  * Re-encode through a decoder before anything else touches the file, and drop
@@ -49,6 +50,15 @@ export async function normalizePhoto(
  * exactly and never upscales a photo that is already smaller than the
  * target long edge. The full-resolution original is kept on disk separately
  * (this function never touches it) in case a future task needs it.
+ *
+ * The derivative is then graded in place by `enhancePage` (spec §7) so an
+ * indoor phone photograph reads as a printed book rather than a photocopy.
+ * That step is deliberately last and deliberately best-effort: it returns
+ * `false` instead of throwing, and a `false` leaves the resized derivative
+ * on disk exactly as written here. It also cannot resize — it writes to a
+ * temp file and refuses to install it unless the dimensions came back
+ * identical — so the coordinate space every OCR box, line run, sweep step
+ * and camera key is measured in is the same one either way.
  */
 export async function deriveForComposition(
   srcPath: string,
@@ -60,4 +70,6 @@ export async function deriveForComposition(
     .resize({ width: longEdge, height: longEdge, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 88, mozjpeg: true })
     .toFile(outPath);
+
+  await enhancePage(outPath, outPath);
 }
