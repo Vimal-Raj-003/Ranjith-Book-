@@ -261,3 +261,32 @@ test("no pages, no hook and no keywords still produces thumbnails, not an except
     await fs.rm(outDir, { recursive: true, force: true });
   }
 });
+
+/**
+ * The regression test for the empty thumbnail panel.
+ *
+ * `parseThumbnails` takes the episode ROW, reading `.thumbnails` off it. When
+ * its parameter was typed `unknown`, both API routes passed the COLUMN instead
+ * — `parseThumbnails(episode.thumbnails)` — which typechecked, returned an
+ * empty array every time, and left the library and the inspector showing
+ * nothing while six rendered images sat on disk. The signature now names a row
+ * type so that call cannot compile, and this pins the behaviour either way.
+ */
+test("parseThumbnails reads the row, and a bare column yields nothing", () => {
+  const specs = [
+    { key: "9x16-quote", aspect: "9:16", variant: "quote", path: "/w/thumbs/e1/9x16-quote.jpg", width: 1080, height: 1920 },
+  ];
+  const column = JSON.stringify(specs);
+
+  assert.equal(parseThumbnails({ thumbnails: column }).length, 1, "a row with the column parses");
+  assert.equal(parseThumbnails({} as never).length, 0, "a row without the column is simply empty");
+  assert.equal(parseThumbnails(null).length, 0);
+  assert.equal(parseThumbnails(undefined).length, 0);
+  // The exact mistake that shipped: passing the column string itself. It has no
+  // `.thumbnails`, so it can only ever be empty — which is why it was silent.
+  assert.equal(
+    parseThumbnails(column as never).length,
+    0,
+    "passing the column instead of the row yields nothing — the bug this test exists for",
+  );
+});

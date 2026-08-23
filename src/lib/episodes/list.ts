@@ -51,6 +51,6 @@ export async function listEpisodes(userId: string): Promise<EpisodeListItem[]> {
     createdAt: e.createdAt,
     bookTitle: e.book.title,
     // Lets the library grid show a real poster instead of a placeholder.
-    thumbnails: publicThumbs(parseThumbnails(e.thumbnails)),
+    thumbnails: publicThumbs(parseThumbnails(e)),
   }));
 }

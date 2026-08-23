@@ -32,6 +32,21 @@ function isSpec(value: unknown): value is ThumbSpec {
 }
 
 /**
+ * An episode row, as far as this module is concerned. Structural rather than
+ * Prisma's `Episode` so it compiles both before and after the client is
+ * regenerated for the new column.
+ *
+ * Naming the parameter type at all is the point: `parseThumbnails` used to take
+ * `unknown`, and every call site that passed `episode.thumbnails` — the column
+ * — instead of `episode` — the row — typechecked perfectly and silently
+ * returned no thumbnails. Both API routes shipped with exactly that mistake,
+ * so the library and the inspector showed nothing while six images sat on disk.
+ */
+export interface ThumbnailRow {
+  thumbnails?: unknown;
+}
+
+/**
  * Read the JSON column off an episode row.
  *
  * Takes `unknown` and reads the field structurally rather than typing against
@@ -39,7 +54,7 @@ function isSpec(value: unknown): value is ThumbSpec {
  * regenerated for the new column — a row without the field has no thumbnails.
  * Malformed JSON is not an error worth a 500: it means no thumbnails.
  */
-export function parseThumbnails(row: unknown): ThumbSpec[] {
+export function parseThumbnails(row: ThumbnailRow | null | undefined): ThumbSpec[] {
   const raw = row && typeof row === "object" ? (row as { thumbnails?: unknown }).thumbnails : undefined;
   if (typeof raw !== "string" || raw.trim() === "") return [];
   let parsed: unknown;

@@ -445,6 +445,42 @@ function columnOffsets(pages: { height: number }[]): number[] {
  * audio, never estimated; sweeps use the real `speechStart`/`speechEnd`, which
  * only exist after the voiceover is recorded.
  */
+/**
+ * Append advisory notes to an episode, re-reading what is already stored.
+ *
+ * Every note-writing site used to build its list from `episode.notes` on the
+ * row fetched at the top of `runEpisode`. That snapshot is minutes stale by the
+ * time the later steps run, so each block overwrote whatever the blocks before
+ * it had recorded — and the last writer won.
+ *
+ * This was not theoretical. A real run generated all six thumbnails on disk and
+ * then failed to store them; the note explaining why was written correctly and
+ * then erased by the composition check a few seconds later, leaving a DONE
+ * episode with no thumbnails, no error, and nothing in `notes` to say what
+ * happened. Notes are the only diagnostic these best-effort steps have, so
+ * losing them is the difference between a bug that explains itself and one that
+ * has to be excavated.
+ *
+ * Best-effort by design, like every caller: a note that cannot be written must
+ * never take down the render it is describing.
+ */
+async function appendNotes(episodeId: string, lines: string[]): Promise<void> {
+  if (lines.length === 0) return;
+  try {
+    const row = await prisma.episode.findUnique({
+      where: { id: episodeId },
+      select: { notes: true },
+    });
+    const existing: string[] = row?.notes ? (JSON.parse(row.notes) as string[]) : [];
+    await prisma.episode.update({
+      where: { id: episodeId },
+      data: { notes: JSON.stringify([...existing, ...lines]) },
+    });
+  } catch {
+    // Deliberately swallowed — see the doc comment.
+  }
+}
+
 export async function runEpisode(episodeId: string): Promise<void> {
   const episode = await prisma.episode.findUniqueOrThrow({
     where: { id: episodeId },
@@ -653,16 +689,9 @@ export async function runEpisode(episodeId: string): Promise<void> {
       });
       hasMusic = true;
     } catch (err) {
-      const existing: string[] = episode.notes ? JSON.parse(episode.notes) : [];
-      await prisma.episode.update({
-        where: { id: episodeId },
-        data: {
-          notes: JSON.stringify([
-            ...existing,
-            `Music bed generation failed (${message(err)}) — rendering without one.`,
-          ]),
-        },
-      });
+      await appendNotes(episodeId, [
+        `Music bed generation failed (${message(err)}) — rendering without one.`,
+      ]);
     }
 
     await timer.start(EPISODE_STEPS[6]); // Building the composition
@@ -735,16 +764,9 @@ export async function runEpisode(episodeId: string): Promise<void> {
         });
       }
     } catch (err) {
-      const existing: string[] = episode.notes ? JSON.parse(episode.notes) : [];
-      await prisma.episode.update({
-        where: { id: episodeId },
-        data: {
-          notes: JSON.stringify([
-            ...existing,
-            `Thumbnail generation failed (${message(err)}) — the video is unaffected.`,
-          ]),
-        },
-      });
+      await appendNotes(episodeId, [
+        `Thumbnail generation failed (${message(err)}) — the video is unaffected.`,
+      ]);
     }
 
     const projectDir = path.join(WORK_ROOT, "projects", episodeId);
@@ -762,9 +784,7 @@ export async function runEpisode(episodeId: string): Promise<void> {
     await timer.start(EPISODE_STEPS[7]); // Checking the composition
     const check = await checkProject(projectDir);
     if (!check.ok || check.notes.length) {
-      const existing: string[] = episode.notes ? JSON.parse(episode.notes) : [];
-      const combined = [...existing, ...check.notes.map((n) => `Composition check: ${n}`)];
-      await prisma.episode.update({ where: { id: episodeId }, data: { notes: JSON.stringify(combined) } });
+      await appendNotes(episodeId, check.notes.map((n) => `Composition check: ${n}`));
     }
 
     await timer.start(EPISODE_STEPS[8]); // Rendering the video

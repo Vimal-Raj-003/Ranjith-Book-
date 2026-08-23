@@ -65,7 +65,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       cta: episode.cta,
       description: episode.description,
       hashtags: parseTags(episode.hashtags),
-      thumbnails: publicThumbs(parseThumbnails(episode.thumbnails)),
+      thumbnails: publicThumbs(parseThumbnails(episode)),
     });
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });
