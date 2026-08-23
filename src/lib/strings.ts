@@ -43,14 +43,16 @@ export interface ThemeOption {
   label: string;
   note: string;
   available: boolean;
+  /** The music bed this theme's mood produces — see MOOD_TO_STYLE in pipeline.ts. */
+  music: string;
 }
 
 export const VIDEO_THEMES: ThemeOption[] = [
-  { id: "marginalia", label: "Marginalia", note: "Warm paper, hand-drawn marker", available: true },
-  { id: "terminal", label: "Terminal", note: "Dark, developer-native", available: false },
-  { id: "editorial", label: "Editorial", note: "Magazine feature", available: false },
-  { id: "spotlight", label: "Spotlight", note: "Punchy, made for Shorts", available: false },
-  { id: "blueprint", label: "Blueprint", note: "Calm, documentary", available: false },
+  { id: "marginalia", label: "Marginalia", note: "Warm paper, hand-drawn marker", available: true, music: "Editorial — warm, gentle" },
+  { id: "terminal", label: "Terminal", note: "Dark, developer-native", available: true, music: "Terminal — sparse, unhurried" },
+  { id: "editorial", label: "Editorial", note: "Magazine feature", available: true, music: "Editorial — warm, gentle" },
+  { id: "spotlight", label: "Spotlight", note: "Punchy, made for Shorts", available: true, music: "Spotlight — driving, punchy" },
+  { id: "blueprint", label: "Blueprint", note: "Calm, documentary", available: true, music: "Blueprint — calm, documentary" },
 ];
 
 export const strings = {
@@ -185,7 +187,7 @@ export const strings = {
     heading: "Theme",
     current: "In use",
     unavailable: "Coming soon",
-    hint: "Marginalia is the only built theme. The others are named here so you know what is coming, not offered as choices.",
+    hint: "The theme applies to your next run. An episode keeps the theme it was made with, so changing this never re-skins a video that already exists.",
   },
   voicePanel: {
     heading: "Voice",
@@ -196,12 +198,12 @@ export const strings = {
   musicPanel: {
     heading: "Music",
     moodLabel: "Mood",
-    moodValue: "Editorial — warm, gentle",
+    moodUnknown: "Follows the selected theme",
     levelLabel: "Bed level",
     levelValue: "−22 LUFS (about 6 dB under the narration)",
     duckLabel: "Ducking",
     duckValue: "On — the bed steps back under every spoken phrase",
-    hint: "The bed is generated per video from the theme's mood. There is nothing to choose yet.",
+    hint: "The bed is synthesized here for every video, so it carries no licence and cannot be claimed. It follows the theme's mood; there is nothing to choose separately.",
   },
   thumbnails: {
     heading: "Thumbnails",

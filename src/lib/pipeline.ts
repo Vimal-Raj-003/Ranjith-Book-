@@ -23,7 +23,7 @@ import { buildCaptions, toSrt } from "./media/captions";
 import { sweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
-import { marginalia } from "./video/composition/themes/marginalia";
+import { bookThemeById, isBookThemeId, DEFAULT_BOOK_THEME_ID } from "./video/composition/themes";
 import { writeProject, checkProject, renderProject } from "./video/render";
 import type { BookTheme } from "./video/composition/theme-contract";
 
@@ -374,6 +374,12 @@ export async function runIngest(uploadId: string): Promise<string[]> {
     // whole-upload fallback IS the planner-failure recovery path.
     const plan = validatePlan(rawPlan, upload.pages.length, wordsPerPage);
 
+    // The theme the operator picked in Settings, stamped onto each episode at
+    // creation so a later change never silently re-skins an episode that has
+    // already been rendered with a different one.
+    const settingTheme = await getSetting("theme");
+    const chosenTheme = isBookThemeId(settingTheme) ? settingTheme : DEFAULT_BOOK_THEME_ID;
+
     const episodeIds: string[] = [];
     for (let i = 0; i < plan.length; i++) {
       const ep = plan[i];
@@ -384,7 +390,7 @@ export async function runIngest(uploadId: string): Promise<string[]> {
           userId: upload.userId,
           partNumber: i + 1,
           seriesTotal: plan.length,
-          theme: "marginalia",
+          theme: chosenTheme,
           ideaKey: ep.ideaKey,
           title: ep.title,
           status: "QUEUED",
@@ -656,6 +662,11 @@ export async function runEpisode(episodeId: string): Promise<void> {
       }
     });
 
+    // `episode.theme` is whatever was stamped at creation. `bookThemeById`
+    // never throws and never returns undefined -- an unknown or null id falls
+    // back to the default rather than taking down a render for a bad string.
+    const theme = bookThemeById(episode.theme);
+
     const columnHeight = compPages.reduce((sum, p) => sum + p.height, 0);
 
     // The window the viewer actually sees is the CARD, not the whole frame:
@@ -687,7 +698,7 @@ export async function runEpisode(episodeId: string): Promise<void> {
     let hasMusic = false;
     try {
       await generateMusicBed(compositionDuration, musicPath, {
-        style: MOOD_TO_STYLE[marginalia.mood],
+        style: MOOD_TO_STYLE[theme.mood],
         voicePath: voice.audioPath,
         voiceOffsetSec: AUDIO_OFFSET,
       });
@@ -706,7 +717,7 @@ export async function runEpisode(episodeId: string): Promise<void> {
       pages: compPages.map((p) => ({ src: p.src, width: p.width, height: p.height })),
       sweeps,
       camera,
-      theme: marginalia,
+      theme,
       totalDuration: voice.totalDuration,
       music: hasMusic,
       bookTitle: episode.book.title,
