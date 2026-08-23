@@ -283,6 +283,12 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
   let revised = false;
 
   try {
+    // Announced before the first draft, not only before a REWRITE. Without
+    // this the whole first model call -- by far the most expensive step in the
+    // run -- was still being reported under whatever step preceded it, so a
+    // real episode showed "Reserving the idea" for four minutes and the step
+    // named "Writing the script" only ever appeared when a rewrite happened.
+    await onStep?.("Writing the script");
     pkg = await write([]);
 
     // Cheap local guard before spending a second model call: a hook too close

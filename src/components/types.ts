@@ -1,3 +1,5 @@
+import type { StepTiming } from "./PipelineRail";
+
 /**
  * The shapes the client binds to. Types only — nothing here is emitted, so it
  * is safe to import from `"use client"` components.
@@ -31,6 +33,9 @@ export interface EpisodeState {
   startedAt: string | null;
   finishedAt: string | null;
   totalMs: number | null;
+  /** Per-step timings from `GET /api/episodes/[id]`. Absent on the list
+   *  endpoint, which does not carry them. */
+  steps?: StepTiming[];
   durationSec?: number | null;
   /** Added by the thumbnail workstream; absent until then. */
   thumbnails?: ThumbnailRef[];

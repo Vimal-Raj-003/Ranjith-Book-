@@ -3,6 +3,7 @@
 import { STEPS } from "@/lib/pipeline-steps";
 import { Disclosure } from "./ui";
 import { strings } from "@/lib/strings";
+import { formatDuration } from "@/lib/format-duration";
 
 /**
  * The full, ordered list of stages a run passes through: every ingest stage,
@@ -22,6 +23,16 @@ export { STEPS };
 
 export type RunStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | string;
 
+/** One timed step, as `GET /api/episodes/[id]` returns it. */
+export interface StepTiming {
+  step: string;
+  position: number;
+  status: string;
+  startedAt: string;
+  /** Null while the step is still running. */
+  durationMs: number | null;
+}
+
 export interface PipelineRailProps {
   /** The current step name — `Upload.step` during ingest, `Episode.step`
    *  during an episode run. A name outside `STEPS` (e.g. "Queued") is treated
@@ -30,6 +41,10 @@ export interface PipelineRailProps {
   status: RunStatus;
   /** Shown under a failed step, if there is one. */
   error?: string | null;
+  /** Per-step timings. Absent during ingest, which has no StepRun rows. */
+  steps?: StepTiming[];
+  /** Total run time, for the share-of-run column. */
+  totalMs?: number | null;
 }
 
 /**
@@ -43,7 +58,17 @@ export interface PipelineRailProps {
  * and whether a segment went red — and one line carries the only stage that
  * is news. The full list is a keypress away and unchanged when it is opened.
  */
-export default function PipelineRail({ step, status, error }: PipelineRailProps) {
+export default function PipelineRail({ step, status, error, steps, totalMs }: PipelineRailProps) {
+  // Timings are keyed by step NAME rather than by index: the rail renders
+  // ingest and episode stages as one list, while StepRun rows exist only for
+  // the episode half, so the two are not positionally aligned.
+  const timing = new Map((steps ?? []).map((t) => [t.step, t]));
+  // The denominator for the share column is the sum of what was actually
+  // measured, not `totalMs`: total includes time outside any step, and a
+  // column of percentages that does not add to 100 reads as a bug.
+  const measured = (steps ?? []).reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
+  const slowest = (steps ?? []).reduce((max, t) => Math.max(max, t.durationMs ?? 0), 0);
+
   const currentIndex = STEPS.findIndex((s) => s === step);
   const isDone = status === "DONE";
   const isFailed = status === "FAILED";
@@ -114,7 +139,7 @@ export default function PipelineRail({ step, status, error }: PipelineRailProps)
                   style={{ background: color }}
                 />
                 <span
-                  className="font-mono text-[12px] leading-snug"
+                  className="min-w-0 flex-1 truncate font-mono text-[12px] leading-snug"
                   style={{
                     color: state === "todo" ? "var(--mute-2)" : "var(--ink)",
                     fontWeight: state === "current" || state === "failed" ? 600 : 400,
@@ -122,6 +147,31 @@ export default function PipelineRail({ step, status, error }: PipelineRailProps)
                 >
                   {s}
                 </span>
+                {(() => {
+                  const t = timing.get(s);
+                  if (!t) return null;
+                  const ms = t.durationMs;
+                  const share = ms != null && measured > 0 ? Math.round((ms / measured) * 100) : null;
+                  return (
+                    <span className="flex shrink-0 items-baseline gap-2 font-mono text-[11px] tabular-nums">
+                      {share != null && share >= 10 && (
+                        <span style={{ color: "var(--mute-2)" }}>{share}%</span>
+                      )}
+                      <span
+                        className="w-[52px] text-right"
+                        style={{
+                          // The single slowest step is the only one worth
+                          // drawing the eye to — that is the thing an operator
+                          // would act on.
+                          color: ms != null && ms === slowest && slowest > 0 ? "var(--amber)" : "var(--mute)",
+                          fontWeight: ms != null && ms === slowest && slowest > 0 ? 600 : 400,
+                        }}
+                      >
+                        {ms == null ? strings.run.stepRunning : formatDuration(ms)}
+                      </span>
+                    </span>
+                  );
+                })()}
               </li>
             );
           })}

@@ -110,7 +110,13 @@ export default function EpisodeCard({
 
       <div className="panel-body flex flex-col gap-2">
         <div aria-live="polite" aria-atomic="false">
-          <PipelineRail step={episode.step} status={episode.status} error={episode.error} />
+          <PipelineRail
+            step={episode.step}
+            status={episode.status}
+            error={episode.error}
+            steps={episode.steps}
+            totalMs={episode.totalMs}
+          />
         </div>
 
         {/* The notes are the pipeline's own asides — worth keeping, never

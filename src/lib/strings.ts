@@ -143,6 +143,7 @@ export const strings = {
     /** The compressed rail: "Step 7 of 14", then the stage's own name. */
     stepCount: (index: number, total: number) => `Step ${index} of ${total}`,
     notStarted: "Not started",
+    stepRunning: "running",
     allSteps: "All steps",
     notesSummary: (n: number) => (n === 1 ? "1 note" : `${n} notes`),
     videoReady: "Your video is ready.",

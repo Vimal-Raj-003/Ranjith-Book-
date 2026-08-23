@@ -36,7 +36,14 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     const episode = await prisma.episode.findUnique({
       where: { id },
-      include: { book: { select: { title: true } } },
+      include: {
+        book: { select: { title: true } },
+        // Every step is already timed and stored by `StepTimer`; this is the
+        // first thing that ever reads it back. Ordered by `position` rather
+        // than `startedAt` so a step that was retried still sits where it
+        // belongs in the run, not where it last happened to run.
+        steps: { orderBy: { position: "asc" } },
+      },
     });
     if (!episode) return NextResponse.json({ error: "Not found", code: "not_found" }, { status: 404 });
     if (episode.userId && episode.userId !== user.id) {
@@ -66,6 +73,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       description: episode.description,
       hashtags: parseTags(episode.hashtags),
       thumbnails: publicThumbs(parseThumbnails(episode)),
+      // Per-step timings. `durationMs` is null for the step still running —
+      // the client shows a live figure for that one rather than a blank.
+      steps: episode.steps.map((s) => ({
+        step: s.step,
+        position: s.position,
+        status: s.status,
+        startedAt: s.startedAt,
+        durationMs: s.durationMs,
+      })),
     });
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });

@@ -551,8 +551,12 @@ export async function runEpisode(episodeId: string): Promise<void> {
       provider,
       model,
       onStep: async (step) => {
+        // `writing` matches the first draft, `rewriting` matches every retry;
+        // both belong to the same step. Measured on a real run, the first
+        // draft alone was 254s -- 51% of the whole episode -- and it was being
+        // billed to "Reserving the idea", a step that does almost nothing.
         if (/checking/i.test(step)) await timer.start(EPISODE_STEPS[2]); // Grounding check
-        else if (/rewriting/i.test(step)) await timer.start(EPISODE_STEPS[1]); // Writing the script
+        else if (/writing/i.test(step)) await timer.start(EPISODE_STEPS[1]); // Writing the script
       },
     });
     pkg = result.pkg;
