@@ -101,6 +101,16 @@ const CAPTION_FADE = 0.15;
 const CUE_FADE = 0.2;
 /** The hook card's dissolve into the page, and the CTA end card's fade in. */
 const HOOK_FADE = 0.35;
+/**
+ * The hard ceiling on how long the hook card sits over the page, in seconds.
+ *
+ * Chosen so the card is COMPLETELY GONE inside four seconds — the operator's
+ * limit — not merely starting to fade there: the fade begins at
+ * `HOOK_MAX_VISIBLE - HOOK_FADE`, so the last frame carrying any of it lands
+ * at 3.5s. A Short has about two seconds to earn the next twenty; a card that
+ * outstays that is costing the thing it was built to buy.
+ */
+export const HOOK_MAX_VISIBLE = 3.5;
 const CTA_FADE = 0.35;
 /** The card's page-change pop: how far it starts scaled up, and for how long. */
 const POP_FROM = 1.04;
@@ -1045,12 +1055,26 @@ export function buildComposition(input: CompositionInput): string {
   });
 
   // --- Hook window (spec §2.2) ---------------------------------------------
-  // t=0 to the end of beat 0 — the hook BEAT, `pkg.beats[0]`, whose measured
-  // clip end is `beats[0].end`. A package with no beats at all (guarded
-  // upstream, but this function is exported and must stand on its own) gets no
-  // hook card rather than a card that never leaves the screen: with no beat 0
-  // there is no honest moment to hand the page over at.
-  const hookEnd = pkg.beats.length > 0 ? AUDIO_OFFSET + (beats[0]?.end ?? beats[0]?.start ?? 0) : 0;
+  // The hook card owns the opening, then hands over to the page.
+  //
+  // It used to run to the end of beat 0 — the hook BEAT — on the reasoning
+  // that the card should stand while its own line is spoken. On a real render
+  // that came to 17.4 SECONDS, because beat 0's narration is a paragraph, not
+  // a sentence. Seventeen seconds of scrim over the page is the exact
+  // retention failure this card exists to prevent, inflicted by the card
+  // itself: the viewer never sees the book.
+  //
+  // So the card is capped independently of how long beat 0 talks. It leaves by
+  // HOOK_MAX_VISIBLE at the latest, and earlier if beat 0 is genuinely short —
+  // whichever comes first. The narration is not cut; only the card goes. The
+  // hook line keeps being spoken over the page it is describing, which is
+  // where the viewer should be looking by then anyway.
+  //
+  // A package with no beats at all (guarded upstream, but this function is
+  // exported and must stand on its own) gets no hook card rather than a card
+  // that never leaves the screen.
+  const beatZeroEnd = pkg.beats.length > 0 ? AUDIO_OFFSET + (beats[0]?.end ?? beats[0]?.start ?? 0) : 0;
+  const hookEnd = pkg.beats.length > 0 ? Math.min(beatZeroEnd, HOOK_MAX_VISIBLE) : 0;
   const showHook =
     pkg.beats.length > 0 && pkg.hook.trim().length > 0 && Number.isFinite(hookEnd) && hookEnd > 0;
   // The fade must START early enough to be FINISHED by the beat's end, not

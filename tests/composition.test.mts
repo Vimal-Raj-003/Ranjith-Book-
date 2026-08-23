@@ -14,6 +14,7 @@ import {
   CARD_H,
   CAPTION_BASELINE,
   BYLINE_Y,
+  HOOK_MAX_VISIBLE,
   bylineText,
 } from "../src/lib/video/composition/build";
 import { cameraTrack } from "../src/lib/video/sweep";
@@ -965,4 +966,65 @@ test("drift and sweep leave the highlight geometry alone (live browser)", async 
   } finally {
     await browser.close();
   }
+});
+
+/**
+ * THE REGRESSION TEST FOR THE 17-SECOND HOOK.
+ *
+ * The hook card used to run to the end of beat 0, on the reasoning that it
+ * should stand while its own line is spoken. Measured on a real render that
+ * came to 17.45 seconds — beat 0's narration is a paragraph, not a sentence —
+ * so the viewer sat behind a scrim for a sixth of the video and never saw the
+ * book. That is the retention failure the card exists to prevent, caused by
+ * the card.
+ */
+test("the hook card is gone within four seconds however long beat 0 talks", () => {
+  const base = input();
+  // A beat 0 that narrates for 40 seconds: the old code showed the card for
+  // all of it.
+  const long = {
+    ...base,
+    beats: [
+      { index: 0, text: "A hook.", file: "b0.wav", start: 0, end: 40, speechStart: 0.1, speechEnd: 39.5 },
+      { index: 1, text: "Follow.", file: "b1.wav", start: 40, end: 44, speechStart: 40.1, speechEnd: 43.9 },
+    ],
+    totalDuration: 44,
+  };
+  const data = JSON.parse(
+    /<script id="composition-data" type="application\/json">(.*?)<\/script>/s
+      .exec(buildComposition(long))![1]
+      .replace(/\\u003c/g, "<"),
+  );
+
+  assert.ok(data.hook, "a long beat 0 still gets a hook card");
+  assert.ok(
+    data.hook.end <= 4,
+    `the hook must be gone inside four seconds, was ${data.hook.end}s — this is the 17-second regression`,
+  );
+  assert.equal(data.hook.end, HOOK_MAX_VISIBLE);
+  assert.ok(data.hook.fadeAt < data.hook.end, "it fades out before its end, not at it");
+
+  // The narration is NOT cut — only the card goes. Beat 0's own cue still runs
+  // its full length.
+  assert.ok(data.cues[0].end > 30, "capping the card must not shorten the beat");
+
+  // A genuinely short beat 0 keeps its own shorter window rather than being
+  // padded out to the ceiling.
+  const short = {
+    ...base,
+    beats: [
+      { index: 0, text: "A hook.", file: "b0.wav", start: 0, end: 1.4, speechStart: 0.1, speechEnd: 1.3 },
+      { index: 1, text: "Follow.", file: "b1.wav", start: 1.4, end: 4, speechStart: 1.5, speechEnd: 3.9 },
+    ],
+    totalDuration: 4,
+  };
+  const shortData = JSON.parse(
+    /<script id="composition-data" type="application\/json">(.*?)<\/script>/s
+      .exec(buildComposition(short))![1]
+      .replace(/\\u003c/g, "<"),
+  );
+  assert.ok(
+    shortData.hook.end < HOOK_MAX_VISIBLE,
+    "a short beat 0 hands over early rather than being padded to the ceiling",
+  );
 });
