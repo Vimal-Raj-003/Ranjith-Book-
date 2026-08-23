@@ -43,6 +43,16 @@ export const marginalia: BookTheme = {
     ctaFace: "#f8f2e2",
     progressTrack: "rgba(255,238,200,0.16)",
     progressFill: "#ffd23f",
+
+    // Warm parchment at ~70% against the #150f09..#3a2617 backdrop: clearly
+    // legible at 28px, and deliberately quieter than the caption's #fdfaf2 so
+    // a persistent line never competes with the one that is only there for a
+    // second and a half.
+    bylineInk: "rgba(246,236,214,0.72)",
+    // Screen-blended, so this is light being ADDED to the paper. 0.13 alpha
+    // over a cream page is a visible pass without blowing the print out to
+    // white — the same felt-tip photograph has to stay readable underneath it.
+    sweepLight: "rgba(255,246,222,0.13)",
   },
 
   css: () => `
@@ -94,7 +104,23 @@ export const marginalia: BookTheme = {
                 box-shadow: 0 36px 80px -24px rgba(0,0,0,0.66),
                             0 0 0 1px rgba(255,244,214,0.22); }
     .cta-kicker { color:#d9531e; }
+    .buy-card { background:#f8f2e2; color:#231a10;
+                box-shadow: 0 24px 60px -22px rgba(0,0,0,0.66),
+                            0 0 0 1px rgba(255,244,214,0.22); }
+    .buy-kicker { color:#d9531e; }
     .progress-fill { background: linear-gradient(90deg, #d9531e 0%, #ffd23f 100%); }
+
+    /* The byline is set in the same script face as the annotations, one size
+       down and without the sticky-note card behind it: it is a caption for the
+       object above it, not a third annotation competing with the cue. No
+       \`transform\` here — see the theme-contract note; \`.byline\` carries the
+       translateX that centres it, though it is untweened. */
+    .byline { color: rgba(246,236,214,0.72);
+              font-family: "Bradley Hand", "Segoe Script", cursive;
+              text-shadow: 0 2px 10px rgba(0,0,0,0.55); }
+
+    /* The emoji rides slightly high against the script face's own x-height. */
+    .cue-emoji { position:relative; top:-2px; }
 
     .vignette { position:absolute; inset:0; pointer-events:none;
                 box-shadow: inset 0 0 260px 80px rgba(20,12,4,.55); }

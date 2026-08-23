@@ -57,6 +57,23 @@ export interface ThemePalette {
   progressTrack: string;
   /** Filled part of the progress bar. */
   progressFill: string;
+
+  // --- Motion and byline roles (spec 2026-08-23 §8/§9) ---------------------
+  /**
+   * The persistent byline under the card. It sits on the BACKDROP, not on
+   * paper and not on a scrim, so it is neither `ink` nor `captionInk`: it has
+   * to be legible against the darkest surface in the frame while staying
+   * quieter than the caption, which is the loudest.
+   */
+  bylineInk: string;
+  /**
+   * The bright centre of the light-sweep band. Painted with
+   * `mix-blend-mode: screen`, so this is a LIGHT value: a dark colour here
+   * does nothing at all rather than darkening the page, and a fully opaque one
+   * blows the print out to white as the band passes over it. A low-alpha warm
+   * white is what reads as light moving over paper.
+   */
+  sweepLight: string;
 }
 
 /**
@@ -68,11 +85,17 @@ export interface ThemePalette {
  * The framed layout added five new on-screen surfaces, and none of them moved
  * a marker, so none of them became a theme-owned *position*:
  *
- *  - `.card` / `.card-pop` / `.scaler` — geometry, owned by `build.ts`'s
- *    exported layout constants. A theme may only restyle `.card`.
- *  - `.hook-card`, `.cta-card`, `.progress-track` / `.progress-fill`,
- *    `.caption-line`, `.cue` — placed and timed by `build.ts`, styled by the
- *    palette above and refinable by `css()`.
+ *  - `.card` / `.card-pop` / `.card-drift` / `.card-sweep` / `.scaler` —
+ *    geometry and motion, owned by `build.ts`'s exported layout constants. A
+ *    theme may only restyle `.card`. In particular a theme must NEVER declare
+ *    `transform` on `.card-drift`, `.card-sweep-band` or `.scaler`: the first
+ *    two are tweened (theme CSS is appended last, so it would win the tie at
+ *    load and then be overwritten the first time the tween runs — a jump), and
+ *    the third carries the static column->card scale.
+ *  - `.hook-card`, `.cta-card`, `.buy-card`, `.progress-track` /
+ *    `.progress-fill`, `.caption-line`, `.cue` / `.cue-emoji` / `.cue-label`,
+ *    `.byline` — placed and timed by `build.ts`, styled by the palette above
+ *    and refinable by `css()`.
  *  - `cardFace()` is the one genuinely new markup surface a theme owns: what
  *    is painted INSIDE the card, behind the photographed page.
  */
@@ -98,8 +121,8 @@ export interface BookTheme {
   backdrop(): string;
   /**
    * Markup painted inside the card, behind the photographed page: the paper
-   * surface itself. Sits inside `.card-pop`, so it pops with the page rather
-   * than sliding out from under it.
+   * surface itself. Sits inside `.card-pop` and `.card-drift`, so it pops and
+   * breathes WITH the page rather than sliding out from under it.
    */
   cardFace(): string;
   /** Markup layered over the page — annotations, sticky notes, light pool. */

@@ -75,6 +75,20 @@ export const CARD_RADIUS = 28;
 export const CAPTION_BASELINE = 1720;
 
 /**
+ * The persistent byline under the card (spec 2026-08-23 §9): book title, and
+ * the author ONLY when the four-link verification chain passed upstream.
+ *
+ * 1388 is 18px below the card's bottom edge (1370) and well clear of the cue
+ * band at 1450 — the byline is a caption for the object above it, not a third
+ * competing text layer.
+ *
+ * It carries NO tween at all. That is the cheapest thing there is to seek
+ * correctly, and it is also what "persistent" means: the title is on screen
+ * for every frame of the video, including the ones a viewer screenshots.
+ */
+export const BYLINE_Y = 1388;
+
+/**
  * Where the cue / annotation band sits — between the card's bottom edge
  * (1370) and the caption's own top edge (roughly 1640 once `translateY(-100%)`
  * is applied to a one-line caption). The cue used to sit at `top:64px`, which
@@ -91,6 +105,59 @@ const CTA_FADE = 0.35;
 /** The card's page-change pop: how far it starts scaled up, and for how long. */
 const POP_FROM = 1.04;
 const POP_DUR = 0.5;
+/** The purchase card's fade-in, and how long after the CTA card it follows. */
+const BUY_FADE = 0.35;
+const BUY_DELAY = 0.45;
+
+/* ===========================================================================
+ * Motion — spec 2026-08-23 §8. "Humanised", and every bit of it seek-safe.
+ *
+ * Both effects below live on their OWN elements, and the choice of element is
+ * the entire safety argument, not a detail:
+ *
+ *  - NEVER `.scaler`. It carries the static CSS scale that maps column space
+ *    onto the card.
+ *  - NEVER `.column`. It carries the camera's `y` tween.
+ *
+ * GSAP writes the WHOLE `transform` property whenever it tweens any transform
+ * component, so a second tween on either of those elements does not compose
+ * with what is already there — it replaces it. Drift on `.scaler` would erase
+ * the column->card scale (the page snaps to full size and overflows the card);
+ * drift on `.column` would erase the camera's `y` (every marker in the video
+ * lands on the wrong words, with the highlight geometry itself still perfectly
+ * correct, which is why it would read as a highlight bug and would not be one).
+ * ======================================================================== */
+
+/**
+ * Depth drift: where the very slow scale on `.card-drift` ends up.
+ *
+ * 1.03 over the whole video is about 0.1% per second — below the threshold at
+ * which a viewer reads it as a zoom, above the one at which the frame reads as
+ * a still photograph. It is expressed as a single `tl.to` from a `gsap.set`
+ * rest state rather than a `fromTo`, because one tween spanning the entire
+ * timeline cannot overlap anything, including itself.
+ *
+ * The amplitude is also bounded by the highlight: `.card-drift` sits INSIDE
+ * `.card` (which clips), and the camera parks the active stroke in the middle
+ * third of the card, so 3% pushes a centred stroke a handful of pixels further
+ * from centre and can never carry it out of the card. A large drift could, and
+ * would show up as `npm run e2e:highlight`'s sibling check in
+ * `tests/composition.test.mts` ("the marker never leaves the card").
+ */
+const DRIFT_TO = 1.03;
+
+/**
+ * Light sweep: the band's travel, in percentages of its OWN width (GSAP
+ * `xPercent`), so the numbers do not have to be recomputed if the band is
+ * resized. The band is 42% of the card wide, so -140 parks it entirely off the
+ * card's left edge and 240 entirely off its right — at rest, before the first
+ * pass and after the last, it paints nothing at all.
+ */
+const SWEEP_FROM = -140;
+const SWEEP_TO = 240;
+/** A pass is clipped to stop before the next one starts; these bound it. */
+const SWEEP_MAX_DUR = 2.6;
+const SWEEP_MIN_DUR = 0.4;
 
 /**
  * The scale that maps COLUMN space (the 1600px-long-edge derivative's pixel
@@ -171,6 +238,47 @@ export interface CompositionInput {
    * which is exactly the stretch the voice track never covers.
    */
   music?: boolean;
+
+  /* --- Byline and purchase card (spec 2026-08-23 §9 / §11) ----------------
+   *
+   * All three are declared OPTIONAL rather than required, and that is a
+   * deliberate, narrow concession: `buildComposition` is called from
+   * `src/lib/pipeline.ts`, which is the controller's file, and a required
+   * field would break `tsc` for everyone until that one call site catches up.
+   * Optional here means "the controller has not wired it yet", and every
+   * consumer below treats a missing value EXACTLY as it treats an absent one:
+   * it renders nothing. There is no placeholder anywhere on this path.
+   */
+
+  /**
+   * The book's title, rendered in the persistent byline under the card.
+   * Absent or blank renders no byline at all rather than an empty strip.
+   */
+  bookTitle: string;
+  /**
+   * The author — and ONLY when the four-link verification chain upstream
+   * passed. `pipeline.ts` already resolves this to
+   * `book.authorVerified ? book.author : null`, so by the time it reaches
+   * here the decision has been made and this function's whole job is to
+   * render nothing where there is no name.
+   *
+   * Never a placeholder, never "Unknown", never a dangling "by" — the
+   * separator is composed WITH the name in `bylineText` rather than emitted
+   * around it, so an absent author cannot leave punctuation behind.
+   */
+  author?: string | null;
+  /**
+   * The purchase link, validated as `http(s)` upstream. Present: a final
+   * purchase card follows the CTA. Absent: nothing — no empty card, no
+   * placeholder, no "coming soon".
+   *
+   * The URL itself is NEVER painted as on-screen text: it is unreadable at
+   * phone size, unclickable in a video, and the description already carries
+   * the real link. The card says where to find it and the URL travels only as
+   * an escaped `data-book-link` attribute, so the markup records what this
+   * render was built for without asking a viewer to transcribe it.
+   */
+  bookLink?: string | null;
 }
 
 /**
@@ -267,16 +375,155 @@ function pageMarkup(page: { src: string; width: number; height: number }, offset
   return `<div class="page" style="top:${offset}px;width:${page.width}px;height:${page.height}px;"><img src="${esc(page.src)}" width="${page.width}" height="${page.height}" alt="" /></div>`;
 }
 
+/* ===========================================================================
+ * Byline — spec 2026-08-23 §9
+ * ======================================================================== */
+
+/** Roughly what fits on one 28px line inside the card's own width. */
+const BYLINE_MAX_CHARS = 58;
+/** A title is never truncated below this, even to make room for a long name. */
+const BYLINE_MIN_TITLE_CHARS = 18;
+/** A name longer than this is itself a data problem; it is clipped, not obeyed. */
+const BYLINE_AUTHOR_MAX = 28;
+/**
+ * The separator is emitted only as part of the "title AND author" branch. It
+ * is never concatenated onto the title and then optionally followed by a name,
+ * which is the shape that produces a trailing "·" (or a dangling "by") on
+ * every unverified book — the exact failure §9 forbids.
+ */
+const BYLINE_SEP = " · ";
+
+/**
+ * Single-line truncation with a real ellipsis character, over CODE POINTS
+ * rather than UTF-16 units: `String.prototype.slice` on a title containing an
+ * astral character (an emoji, or any of the CJK extension planes a translated
+ * title can carry) can cut a surrogate pair in half and produce a replacement
+ * glyph as the last thing on screen.
+ */
+function truncate(s: string, max: number): string {
+  const chars = Array.from(s);
+  if (chars.length <= max) return s;
+  return `${chars.slice(0, Math.max(1, max - 1)).join("").trimEnd()}…`;
+}
+
+/**
+ * The byline's text, or `null` when there is nothing honest to say.
+ *
+ * Exported because it is the whole of the §9 rule expressed in one place, and
+ * a rule this easy to get subtly wrong ("by" with nothing after it, "Unknown",
+ * a trailing separator) deserves to be testable without parsing HTML out of a
+ * whole composition.
+ *
+ * A long title is truncated rather than wrapped: `.byline` is `white-space:
+ * nowrap` and overflows into an ellipsis anyway, but doing it here as well
+ * keeps the ellipsis on the TITLE and leaves the author's name intact, which
+ * is the opposite of what CSS overflow would do (it would eat the name — the
+ * one part of the line that had to earn its place by being verified).
+ */
+export function bylineText(
+  bookTitle: string | null | undefined,
+  author: string | null | undefined,
+): string | null {
+  const title = typeof bookTitle === "string" ? bookTitle.trim() : "";
+  if (title.length === 0) return null;
+
+  const name = typeof author === "string" ? author.trim() : "";
+  if (name.length === 0) return truncate(title, BYLINE_MAX_CHARS);
+
+  const shown = truncate(name, BYLINE_AUTHOR_MAX);
+  const budget = Math.max(
+    BYLINE_MIN_TITLE_CHARS,
+    BYLINE_MAX_CHARS - Array.from(shown).length - BYLINE_SEP.length,
+  );
+  return `${truncate(title, budget)}${BYLINE_SEP}${shown}`;
+}
+
+/* ===========================================================================
+ * Emoji — spec 2026-08-23 §10
+ * ======================================================================== */
+
+/** How many code points of a beat's `emoji` are actually painted. */
+const EMOJI_MAX_CHARS = 4;
+
+/**
+ * A beat's optional emoji, or `null`.
+ *
+ * `Beat.emoji` is written by the model and added to the schema by another
+ * workstream, so at this call site it may be present, absent, empty, or not a
+ * string at all (a number, an array, `null`). Every one of those must produce
+ * a cue card without an emoji rather than an exception — a decorative glyph is
+ * never worth failing a render for. Hence the `unknown` read and the `typeof`
+ * gate, rather than trusting the declared type.
+ *
+ * Clipped over CODE POINTS (`Array.from`, not `slice`): every interesting
+ * emoji is astral, and a UTF-16 slice would cut one in half and paint a
+ * replacement glyph. The clip exists at all because "one emoji" is a
+ * convention, not a guarantee — a model that returns a sentence here should
+ * cost four characters of cue card, not the layout.
+ *
+ * This function feeds the CUE CARD ONLY. Nothing spoken passes through here:
+ * `voiceover` is read straight from the beat by the TTS path and
+ * `sanitizeForSpeech` strips emoji there independently, which is what keeps a
+ * speech engine from either going silent or reading a glyph's name aloud.
+ */
+export function beatEmoji(beat: unknown): string | null {
+  const raw = (beat as { emoji?: unknown } | null | undefined)?.emoji;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  return Array.from(trimmed).slice(0, EMOJI_MAX_CHARS).join("");
+}
+
 /**
  * The on-screen label lives in the shared skeleton, not the theme, even though
  * it is styled by the theme's CSS (`.annot` in Marginalia): WHERE it sits and
  * WHEN it shows/hides is timing and layout, which the theme contract does not
  * own. Only its look is themed.
+ *
+ * The emoji (§10) is a SIBLING span rather than text prepended to the label,
+ * so the theme can size and space it independently of the handwritten cue face
+ * — a colour-emoji font and a script font at the same px are not the same
+ * optical size — and so that a beat without one leaves no stray leading space.
  */
 function cueMarkup(pkg: ContentPackage): string {
   return pkg.beats
-    .map((b, i) => `<div class="cue annot" data-cue="${i}">${esc(b.onScreen)}</div>`)
+    .map((b, i) => {
+      const emoji = beatEmoji(b);
+      const badge = emoji ? `<span class="cue-emoji">${esc(emoji)}</span>` : "";
+      return `<div class="cue annot" data-cue="${i}">${badge}<span class="cue-label">${esc(b.onScreen)}</span></div>`;
+    })
     .join("\n");
+}
+
+/* ===========================================================================
+ * Purchase card — spec 2026-08-23 §11
+ * ======================================================================== */
+
+/**
+ * Whether a purchase card is warranted, and the link it was built for.
+ *
+ * The link is re-validated as `http(s)` here even though §11 says it is
+ * validated before it is stored: "before it is stored OR RENDERED" is two
+ * checks, and this is the render one. A `javascript:` or `data:` string would
+ * never be painted (the URL is not rendered as text at all) but it would still
+ * be written into the document as an attribute value, and the cheapest place
+ * to refuse that is the place that decides whether the card exists.
+ *
+ * Anything that is not a usable http(s) URL — absent, null, blank, a bare
+ * "amazon.com", a mailto: — produces NO card. Not an empty one.
+ */
+function purchaseLink(bookLink: string | null | undefined): string | null {
+  if (typeof bookLink !== "string") return null;
+  const trimmed = bookLink.trim();
+  if (trimmed.length === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return trimmed;
 }
 
 /**
@@ -407,6 +654,44 @@ function popTimes(
   });
 }
 
+/**
+ * Light-sweep passes (spec §8) — one per beat, on the dedicated
+ * `.card-sweep-band` element that receives no other tween.
+ *
+ * Built from the BEAT clip starts, so the band crosses the paper once per
+ * spoken beat, which is what makes the light read as tied to the narration
+ * rather than to a metronome running underneath it.
+ *
+ * Two rules, both learned from `popTimes` above:
+ *  - Each pass is clipped to end before the next one begins. Two overlapping
+ *    `fromTo`s on one property of one element resolve in tween-creation order,
+ *    and creation order is exactly what a seek does not replay.
+ *  - Starts are deduped and sorted before clipping, so two beats sharing an
+ *    instant (a zero-length clip, a fixture with repeated timings) produce one
+ *    pass rather than two stacked on the same millisecond.
+ *
+ * A window too short to be seen as a sweep (`SWEEP_MIN_DUR`) is dropped
+ * entirely rather than played fast: a band that crosses the whole card in a
+ * tenth of a second is a flash, and a flash on one frame out of three is
+ * strobing, not light on paper.
+ */
+function sweepPasses(beats: BeatAudio[], shift: number, duration: number): { t: number; d: number }[] {
+  const starts = beats
+    .map((b) => shift + (b?.start ?? 0))
+    .filter((t) => Number.isFinite(t) && t >= 0 && t < duration);
+
+  const sorted = Array.from(new Set(starts)).sort((a, b) => a - b);
+  const out: { t: number; d: number }[] = [];
+  sorted.forEach((t, i) => {
+    const next = sorted[i + 1] ?? duration;
+    // 0.01 of clearance, so two passes never share an instant even after the
+    // renderer rounds a timestamp to a frame.
+    const d = Math.min(SWEEP_MAX_DUR, next - t - 0.01);
+    if (d >= SWEEP_MIN_DUR) out.push({ t, d });
+  });
+  return out;
+}
+
 function sharedCss(theme: BookTheme): string {
   const p = theme.palette;
   return `
@@ -432,16 +717,54 @@ function sharedCss(theme: BookTheme): string {
           border-radius:${CARD_RADIUS}px; overflow:hidden; background:${p.cardFace};
           box-shadow: 0 42px 90px -24px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
   .card-pop { position:absolute; inset:0; transform-origin:50% 50%; }
+  /* Depth drift (§8). Its OWN wrapper, between .card-pop and .scaler, carrying
+     exactly one tween (a scale) and nothing else. It is a separate element from
+     .card-pop for the same reason .card-pop is separate from .scaler: two
+     tweens writing 'transform' on one element do not compose, they overwrite,
+     and the page-change pop and the drift are on different clocks. */
+  .card-drift { position:absolute; inset:0; transform-origin:50% 50%; }
   .scaler { position:absolute; left:0; top:0; transform-origin: top left; }
   .column { position:relative; }
   .page { position:absolute; left:0; }
   .page img { display:block; width:100%; height:100%; object-fit:cover; }
   .stroke { position:absolute; transform-origin:left center; }
 
+  /* --- light sweep (§8) --------------------------------------------------- */
+  /* The rotation and the clipping live on the STATIC wrapper; only the inner
+     band is ever tweened. Putting the tilt on the band itself would be the
+     .scaler mistake in miniature — GSAP writes the whole transform property
+     when it tweens xPercent, so the rotation would vanish on the first pass. */
+  .card-sweep { position:absolute; inset:0; overflow:hidden; pointer-events:none;
+                mix-blend-mode:screen; transform:rotate(-8deg) scale(1.25); }
+  .card-sweep-band { position:absolute; left:0; top:0; width:42%; height:100%;
+                     transform:translateX(${SWEEP_FROM}%);
+                     background: linear-gradient(90deg,
+                       rgba(255,255,255,0) 0%, ${p.sweepLight} 50%, rgba(255,255,255,0) 100%);
+                     filter: blur(24px); }
+
+  /* --- byline (§9) -------------------------------------------------------- */
+  /* No tween, ever. 'top' (not 'bottom') for the same reason every other
+     absolutely positioned element on this frame uses it — see CAPTION_BASELINE.
+     nowrap + ellipsis is the second of two truncations: 'bylineText' already
+     clipped the title so the ellipsis lands there rather than eating the
+     author's name, and this is the guard for a title whose characters happen
+     to be wider than the estimate. */
+  .byline { position:absolute; left:50%; top:${BYLINE_Y}px; transform:translateX(-50%);
+            max-width:${CARD_W}px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+            font-size:28px; font-weight:600; letter-spacing:0.3px; line-height:1.2;
+            font-family: Inter, system-ui, sans-serif; color:${p.bylineInk}; }
+
   .cues { position:absolute; inset:0; pointer-events:none; }
   .cue { position:absolute; top:${CUE_TOP}px; left:50%; transform:translateX(-50%) rotate(-4deg);
          padding:10px 22px; border-radius:6px; opacity:0; visibility:hidden;
          white-space:nowrap; }
+  /* The emoji (§10) sits beside the label, sized on its own: a colour-emoji
+     font and Marginalia's script face do not share an optical size at the same
+     px, and a beat without an emoji must leave no gap where one would be. */
+  .cue-emoji { display:inline-block; vertical-align:middle; margin-right:12px;
+               font-size:0.92em; line-height:1;
+               font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+  .cue-label { display:inline-block; vertical-align:middle; }
   .captions { position:absolute; inset:0; pointer-events:none; }
   .caption-line { position:absolute; left:50%; top:${CAPTION_BASELINE}px;
                   transform:translate(-50%, -100%);
@@ -477,6 +800,23 @@ function sharedCss(theme: BookTheme): string {
   .cta-kicker { font-size:30px; font-weight:800; letter-spacing:6px; text-transform:uppercase;
                 color:${p.accent}; margin-bottom:22px; }
   .cta-text { font-size:58px; font-weight:800; line-height:1.2; }
+
+  /* --- purchase card (§11) ------------------------------------------------ */
+  /* Sits BELOW the CTA card and fades in after it, so the two read as one
+     ending rather than one covering the other — the CTA card is never faded
+     back out (exactly one tween touches it), so "after" here has to mean
+     "underneath and later", not "instead of".
+     'top', never 'bottom': autoAlpha-driven, see CAPTION_BASELINE.
+     The URL is not on this card. Nothing here is a link, because nothing in a
+     video is clickable; the description carries the real one. */
+  .buy-card { position:absolute; left:${CARD_X + 120}px; top:${Math.round(CARD_Y + CARD_H / 2 + 260)}px;
+              width:${CARD_W - 240}px; padding:28px 34px; border-radius:${CARD_RADIUS}px;
+              text-align:center; font-family: Inter, system-ui, sans-serif;
+              background:${p.ctaFace}; color:${p.ctaInk};
+              opacity:0; visibility:hidden; }
+  .buy-kicker { font-size:24px; font-weight:800; letter-spacing:5px; text-transform:uppercase;
+                color:${p.accent}; margin-bottom:12px; }
+  .buy-text { font-size:38px; font-weight:800; line-height:1.15; }
 `;
 }
 
@@ -491,6 +831,10 @@ const TIMELINE_JS = `
   var CUE_FADE = ${CUE_FADE};
   var HOOK_FADE = ${HOOK_FADE};
   var CTA_FADE = ${CTA_FADE};
+  var BUY_FADE = ${BUY_FADE};
+  var DRIFT_TO = ${DRIFT_TO};
+  var SWEEP_FROM = ${SWEEP_FROM};
+  var SWEEP_TO = ${SWEEP_TO};
   var raw = document.getElementById("composition-data").textContent;
   var data = JSON.parse(raw);
   var column = document.getElementById("column");
@@ -540,6 +884,35 @@ const TIMELINE_JS = `
     });
   }
 
+  // Depth drift (§8). ONE tween, ONE property, ONE element, spanning the whole
+  // timeline — so it cannot overlap anything, including a later copy of itself.
+  // A tl.to() off a gsap.set() rest state rather than a fromTo: at time 0 a
+  // fromTo is the shape GSAP renders at its END value on the first pass and its
+  // FROM value once initted, which is a one-frame discontinuity at frame 0 for
+  // no benefit.
+  //
+  // #card-drift, NOT .scaler and NOT .column. See the DRIFT_TO doc comment:
+  // GSAP writes the whole transform property, so this tween on .scaler would
+  // erase the column->card scale and on .column would erase the camera, putting
+  // every marker in the video on the wrong words.
+  var drift = document.getElementById("card-drift");
+  if (drift) {
+    gsap.set(drift, { scale: 1 });
+    tl.to(drift, { scale: DRIFT_TO, duration: Math.max(0.001, data.duration), ease: "sine.inOut" }, 0);
+  }
+
+  // Light sweep (§8). Non-overlapping fromTo xPercent tweens on one dedicated
+  // band — the same proven shape as the card pop above, and clipped by
+  // sweepPasses() so no two ever share an instant. The rotation and the clip
+  // live on the band's static .card-sweep parent, which nothing tweens.
+  var band = document.getElementById("card-sweep");
+  if (band) {
+    gsap.set(band, { xPercent: SWEEP_FROM });
+    data.lightSweeps.forEach(function (s) {
+      tl.fromTo(band, { xPercent: SWEEP_FROM }, { xPercent: SWEEP_TO, duration: s.d, ease: "none", immediateRender: false }, s.t);
+    });
+  }
+
   var capEls = document.querySelectorAll(".caption-line");
   data.captions.forEach(function (line, i) {
     var el = capEls[i];
@@ -583,6 +956,16 @@ const TIMELINE_JS = `
     tl.fromTo(ctaEl, { autoAlpha: 0 }, { autoAlpha: 1, duration: CTA_FADE, ease: "none", immediateRender: false }, data.cta.start);
   }
 
+  // The purchase card (§11) fades in shortly after the CTA card and, like it,
+  // is never faded back out — one tween, one property, one element. It exists
+  // only when a validated http(s) link was supplied; with none, data.buy is
+  // null and there is no element in the document to tween at all.
+  var buyEl = document.getElementById("buy-card");
+  if (buyEl && data.buy) {
+    gsap.set(buyEl, { autoAlpha: 0 });
+    tl.fromTo(buyEl, { autoAlpha: 0 }, { autoAlpha: 1, duration: BUY_FADE, ease: "none", immediateRender: false }, data.buy.start);
+  }
+
   // An explicit tail marker: a zero-duration, no-op set at the declared end of
   // the composition. Without it, when the last camera key is skipped (the
   // ordinary "camera settles, then holds for the CTA" shape — see the
@@ -614,6 +997,7 @@ const TIMELINE_JS = `
 
 export function buildComposition(input: CompositionInput): string {
   const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music } = input;
+  const { bookTitle, author, bookLink } = input;
 
   // Includes AUDIO_OFFSET: the audio element itself starts at AUDIO_OFFSET, not
   // zero, so the declared duration must cover that lead-in too — a duration of
@@ -688,11 +1072,23 @@ export function buildComposition(input: CompositionInput): string {
     ? { start: Math.max(0, Math.min(ctaStartRaw, duration - CTA_FADE)) }
     : null;
 
+  // --- Purchase card (spec §11) --------------------------------------------
+  // Starts BUY_DELAY after the CTA card so the two arrive as a sequence rather
+  // than together, and is clamped so its fade always completes inside the
+  // declared duration — a card that begins fading in at `duration` is a card
+  // nobody ever sees, on the one part of the video that exists to be read.
+  const link = purchaseLink(bookLink);
+  const buyData = link
+    ? { start: Math.max(0, Math.min(ctaStartRaw + BUY_DELAY, duration - BUY_FADE)) }
+    : null;
+
   const pops = popTimes(pkg, beats, pages.length, AUDIO_OFFSET, duration).map((p) => ({
     t: p.t,
     d: p.d,
     from: POP_FROM,
   }));
+
+  const lightSweeps = sweepPasses(beats, AUDIO_OFFSET, duration);
 
   const data = embed({
     strokes,
@@ -700,8 +1096,10 @@ export function buildComposition(input: CompositionInput): string {
     captions: captionData,
     cues: cueData,
     pops,
+    lightSweeps,
     hook: hookData,
     cta: ctaData,
+    buy: buyData,
     duration,
   });
 
@@ -719,6 +1117,25 @@ export function buildComposition(input: CompositionInput): string {
     ? `<div class="cta-card" id="cta-card">
       <div class="cta-kicker">BookReel</div>
       <div class="cta-text">${esc(pkg.cta)}</div>
+    </div>`
+    : "";
+
+  // The byline (§9). Baked into the markup at build time like every other text
+  // surface here — it is never assigned by the runtime script. `null` means
+  // there is nothing honest to render, and the element is then simply absent:
+  // no empty strip, no "Unknown", no dangling separator.
+  const byline = bylineText(bookTitle, author);
+  const bylineHtml = byline ? `<div class="byline" id="byline">${esc(byline)}</div>` : "";
+
+  // The purchase card (§11). It says WHERE the link is; it never paints the
+  // link. `esc()` is applied to the URL regardless, because it is still
+  // written into the document as an attribute value and a raw `"` there would
+  // break out of the attribute exactly as a raw `</script>` breaks out of the
+  // JSON payload.
+  const buyHtml = link
+    ? `<div class="buy-card" id="buy-card" data-book-link="${esc(link)}">
+      <div class="buy-kicker">Get the book</div>
+      <div class="buy-text">Link in the description</div>
     </div>`
     : "";
 
@@ -746,16 +1163,20 @@ export function buildComposition(input: CompositionInput): string {
     <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
     <div class="card" id="card">
       <div class="card-pop" id="card-pop">
-        ${theme.cardFace()}
-        <div class="scaler" style="transform:scale(${scale.toFixed(6)});">
-          <div class="column" id="column" style="width:${columnWidth}px;height:${columnHeight}px;">
-            ${pagesHtml}
-            ${strokesHtml}
+        <div class="card-drift" id="card-drift">
+          ${theme.cardFace()}
+          <div class="scaler" style="transform:scale(${scale.toFixed(6)});">
+            <div class="column" id="column" style="width:${columnWidth}px;height:${columnHeight}px;">
+              ${pagesHtml}
+              ${strokesHtml}
+            </div>
           </div>
         </div>
       </div>
+      <div class="card-sweep"><div class="card-sweep-band" id="card-sweep"></div></div>
     </div>
     ${theme.overlay()}
+    ${bylineHtml}
     <div class="cues">
       ${cueMarkup(pkg)}
     </div>
@@ -764,6 +1185,7 @@ export function buildComposition(input: CompositionInput): string {
     </div>
     ${hookHtml}
     ${ctaHtml}
+    ${buyHtml}
     <audio id="voice" src="assets/voice.wav" data-start="${AUDIO_OFFSET.toFixed(3)}" data-duration="${totalDuration.toFixed(3)}" data-track-index="20" data-volume="1"></audio>
     ${musicHtml}
   </div>

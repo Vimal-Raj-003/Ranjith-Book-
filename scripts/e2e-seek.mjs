@@ -80,8 +80,14 @@ async function stateAt(page, t) {
       // "seek-safe" while proving nothing about the new work, so the selector
       // grew with the composition rather than the composition being trimmed
       // to fit the harness.
+      //
+      // The presentation addendum (spec 2026-08-23 §8/§11) added three more:
+      // #card-drift (the depth drift's own wrapper), #card-sweep (the light
+      // band, a chain of non-overlapping fromTo xPercent tweens — the same
+      // riskiest-shape-in-the-composition as #card-pop) and #buy-card. Same
+      // reasoning as above: an untracked tweened element is an untested one.
       for (const el of document.querySelectorAll(
-        "[data-stroke], .caption-line, .cue, #column, #card-pop, #progress, #hook, #cta-card",
+        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, #cta-card, #buy-card",
       )) {
         const cs = getComputedStyle(el);
         const key =
@@ -101,7 +107,19 @@ async function stateAt(page, t) {
 }
 
 async function main() {
-  const html = buildComposition(fixtureInput({ theme: marginalia }));
+  // The byline and the purchase card (spec 2026-08-23 §9/§11) are the
+  // present-only branches of the composition: with no `bookLink` there is no
+  // #buy-card element in the document at all, so widening the selector above
+  // to include it would have proved exactly nothing on the bare fixture. These
+  // three fields are supplied HERE rather than in the shared fixture so the
+  // fixture keeps describing the geometry case it was written for, and so the
+  // "absent" shape it already covers stays covered by every other consumer.
+  const html = buildComposition({
+    ...fixtureInput({ theme: marginalia }),
+    bookTitle: "The Fixture Book of Very Long Titles Indeed",
+    author: "A Verified Author",
+    bookLink: "https://example.com/fixture-book",
+  });
 
   let browser;
   try {

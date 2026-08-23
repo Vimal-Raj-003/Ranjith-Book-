@@ -709,6 +709,15 @@ export async function runEpisode(episodeId: string): Promise<void> {
       theme: marginalia,
       totalDuration: voice.totalDuration,
       music: hasMusic,
+      bookTitle: episode.book.title,
+      // The byline shows a name ONLY when the four-link verification chain
+      // established one. `authorVerified` is that chain's verdict; an
+      // unverified author is passed as null and the byline renders the title
+      // alone -- no placeholder, no "Unknown", no guess. Same rule the content
+      // writer is held to (it is never handed an unverified name either).
+      author: episode.book.authorVerified ? episode.book.author : null,
+      // Null unless the operator typed one. No link, no purchase card.
+      bookLink: episode.book.bookLink,
     });
 
     await prisma.episode.update({
