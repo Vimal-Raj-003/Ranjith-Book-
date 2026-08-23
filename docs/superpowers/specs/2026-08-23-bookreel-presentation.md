@@ -239,3 +239,54 @@ One optional emoji per beat, chosen by the writer to match that beat's meaning.
 - Download EPUB / plain text / PDF where the format exists.
 - Network calls go through the existing `fetch-guard`, with a timeout, and never block a render.
 - This is a browsing and download surface. Generating episodes directly from a Gutenberg text is the natural next step and is explicitly OUT of scope here.
+
+---
+
+# Addendum — 2026-08-23 (third pass)
+
+Operator screenshot: Free books search for "work out" returned "Project Gutenberg is not answering". Every theme except Marginalia shows COMING SOON and cannot be selected. They want to build videos FROM a free book, choosing how many pages, with output that is copyright-free.
+
+## 13. Measured facts (not assumed)
+
+| Probe | Result |
+|---|---|
+| `gutendex.com/books/?search=work+out` | HTTP 200 in **34.5s** |
+| `…?search=meditations` | HTTP 200 in **42.5s** |
+| `…?search=frankenstein` (cached) | HTTP 200 in **0.5s** |
+| `gutenberg.org/cache/epub/feeds/pg_catalog.csv` | HTTP 200, **21 MB in 6.1s** |
+| `gutenberg.org/files/84/84-0.txt` | HTTP 200, 421 KB |
+
+Gutendex is not down — it is 40 seconds slow on anything uncached, which no timeout setting can make usable. The earlier 503 from `gutenberg.org` was the sandbox, not this machine: from here it works fine.
+
+**So search stops depending on Gutendex.** The full catalog is downloaded once and indexed locally; search becomes a local query with no network call and no timeout. Gutendex remains a fallback for cover art and metadata only.
+
+## 14. Free books that actually open
+
+- One-time catalog sync: download `pg_catalog.csv`, parse, store in a local table. ~75,000 rows.
+- Search is a local query: title, author, subject. Instant, offline, no timeout.
+- A book's text is fetched from `gutenberg.org` on demand and cached under `WORK_ROOT`.
+- Re-sync is explicit and shows progress. A failed sync must leave the previous catalog intact.
+
+## 15. Free book → video (the typeset page)
+
+A Gutenberg book has no photograph, so there is nothing to enhance and nothing to OCR. The page is TYPESET instead, and that is strictly better here:
+
+**We lay out the text, so we know every word's box exactly.** No OCR, no alignment, no confidence floor, no fallback to block highlighting. The highlight is correct by construction — the failure mode that the entire `align.ts` / `lines.ts` machinery exists to survive simply cannot occur on this path.
+
+- The operator picks a book, a starting point, and **how many pages** (the same 2–10 choice photographs get).
+- Text is paginated into pages of roughly 240 words and rendered to images at the SAME 1600px-long-edge geometry the photo derivative uses, so every downstream stage — sweep, camera, card scale, composition — is untouched.
+- Each page emits its word boxes directly. These enter the pipeline where OCR-aligned boxes normally would.
+- Typography must look like a real book: serif body, proper measure, generous leading, paper tone, page number. Not a screenshot of a text file.
+
+## 16. Rights and restrictions — already correct, must be visible
+
+`checkQuotationBudget` already reads `unlimited = rights !== "in-copyright"`. A public-domain or own-work book has **no quotation limit at all**. Nothing needs loosening; the operator simply cannot see why a limit applied.
+
+- Gutenberg books are created with `rightsStatus: "public-domain"` — full verbatim narration is lawful and unrestricted.
+- The UI must show a book's rights status and let it be changed, and must say plainly that the quotation limit exists only for in-copyright books.
+
+Output is copyright-free on every axis already: the music is synthesized here (no licence, no Content ID), the narration is the app's own commentary, and a public-domain source carries no rights in the text itself.
+
+## 17. Themes
+
+Marginalia is the only built theme; the other four are named but unbuildable because they were never implemented against the theme contract. Build all four — Terminal, Editorial, Spotlight, Blueprint — and make the picker real: the choice persists on the episode and the pipeline honours it instead of hardcoding `marginalia`.
