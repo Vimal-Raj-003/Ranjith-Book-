@@ -184,11 +184,9 @@ export default function UploadDropzone({
   }
 
   return (
-    <section aria-labelledby={`${titleId}-section`} className="flex flex-col gap-4">
-      <h2 id={`${titleId}-section`} className="font-display text-[17px] font-semibold" style={{ color: "var(--ink)" }}>
-        {strings.upload.sectionHeading}
-      </h2>
-
+    /* The heading lives on the panel this sits inside, so the section is
+       labelled rather than titled twice. */
+    <section aria-label={strings.upload.sectionHeading} className="flex flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row">
         <div className="flex flex-1 flex-col gap-1">
           <label htmlFor={titleId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>

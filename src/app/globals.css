@@ -233,3 +233,496 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--mute-2);
 }
+
+/* ==========================================================================
+   Desktop application shell
+   --------------------------------------------------------------------------
+   Three panes at desktop width, two in the middle range, one on a phone. The
+   layout is grid-areas rather than flex so the same markup order serves all
+   three: the sidebar is a real <nav> first in the DOM, which is also the order
+   a screen reader and the tab key want.
+   ========================================================================== */
+:root {
+  --rail-w: 240px;
+  --inspector-w: 340px;
+  --pane-gap: 20px;
+  --pane-pad: 24px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "side"
+    "work"
+    "insp";
+  min-height: 100dvh;
+  background: var(--void);
+  color: var(--ink);
+}
+
+.app-side {
+  grid-area: side;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--slab) 55%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.app-work {
+  grid-area: work;
+  min-width: 0;
+  padding: var(--pane-pad) 16px 48px;
+}
+
+.app-insp {
+  grid-area: insp;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding: var(--pane-pad) 16px 48px;
+  background: color-mix(in srgb, var(--slab) 35%, transparent);
+}
+
+@media (min-width: 900px) {
+  .app-shell {
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-areas:
+      "side work"
+      "side insp";
+  }
+  .app-side {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    height: 100dvh;
+    overflow-y: auto;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+  }
+  .app-work {
+    padding: 28px var(--pane-gap) 56px;
+  }
+  .app-insp {
+    padding: 4px var(--pane-gap) 56px;
+    border-top: 0;
+    background: transparent;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-shell {
+    grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
+    grid-template-areas: "side work insp";
+  }
+  .app-work {
+    padding: 32px 28px 64px;
+  }
+  .app-insp {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100dvh;
+    overflow-y: auto;
+    padding: 32px 24px 64px;
+    border-left: 1px solid var(--line);
+    background: color-mix(in srgb, var(--slab) 30%, transparent);
+  }
+}
+
+/* The workbench never stretches type past a comfortable measure, even on a
+   very wide monitor — a 900px-wide paragraph is unreadable no matter how much
+   room the window has. */
+.work-measure {
+  width: 100%;
+  max-width: 880px;
+}
+
+/* Navigation ------------------------------------------------------------- */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--mute);
+  background: transparent;
+  text-align: left;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.nav-item:hover:not(:disabled) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.nav-item[aria-current="page"] {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 38%, transparent);
+}
+.nav-item:disabled {
+  color: var(--mute-2);
+  cursor: not-allowed;
+}
+
+/* Panels ----------------------------------------------------------------- */
+.panel {
+  background: var(--slab);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+:root[data-theme="dark"] .panel,
+:root:not([data-theme]) .panel {
+  background: linear-gradient(180deg, var(--slab-2), var(--slab));
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-body {
+  padding: 16px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.badge-soon {
+  border-color: color-mix(in srgb, var(--violet) 45%, transparent);
+  color: var(--violet);
+}
+.badge-live {
+  border-color: color-mix(in srgb, var(--amber) 50%, transparent);
+  color: var(--amber);
+}
+.badge-done {
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent);
+  color: var(--cyan);
+}
+.badge-failed {
+  border-color: color-mix(in srgb, var(--rose) 45%, transparent);
+  color: var(--rose);
+}
+
+/* Library ---------------------------------------------------------------- */
+.library-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  align-items: stretch;
+}
+/* Every card is the same height whatever its title does, so the grid reads as
+   rows rather than as a ragged edge. */
+.library-grid > li {
+  display: flex;
+}
+.library-card {
+  flex: 1;
+}
+.library-card > span:last-child {
+  flex: 1;
+}
+.library-card .card-meta {
+  margin-top: auto;
+}
+.library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  text-align: left;
+  background: var(--slab);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.library-card:hover {
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  transform: translateY(-2px);
+}
+.library-card[aria-current="true"] {
+  border-color: var(--amber);
+}
+.poster {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: var(--slab-2);
+  overflow: hidden;
+}
+.poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* A quiet placeholder, never a broken-image icon: an episode with no
+   thumbnail yet gets a plain tinted field with its initials. */
+.poster-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-family: var(--font-space-grotesk), system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--mute-2);
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--amber) 8%, transparent), transparent 70%),
+    var(--slab-2);
+}
+
+/* Skeletons — sized exactly like the content they stand in for, so nothing
+   jumps when the real data lands. */
+@keyframes shimmer {
+  0% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0.45;
+  }
+}
+.skeleton {
+  background: var(--slab-2);
+  border-radius: 8px;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* Video preview ---------------------------------------------------------- */
+.preview-stage {
+  position: relative;
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 9 / 16;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 8%, var(--slab-2));
+}
+.preview-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+.preview-note {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--mute);
+}
+
+/* Inspector controls ----------------------------------------------------- */
+.field-label {
+  display: block;
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mute-2);
+  margin-bottom: 6px;
+}
+.control {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--field);
+  color: var(--ink);
+  font-size: 14px;
+}
+.control:disabled {
+  color: var(--mute);
+  background: color-mix(in srgb, var(--slab-2) 70%, transparent);
+  cursor: not-allowed;
+}
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--slab-2) 55%, transparent);
+}
+.option-row[data-state="on"] {
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+.option-row[data-state="off"] {
+  opacity: 0.62;
+}
+
+.hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--mute-2);
+}
+
+/* Thumbnails ------------------------------------------------------------- */
+.thumb-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.thumb-tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--slab-2);
+}
+.thumb-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  .library-card:hover {
+    transform: none;
+  }
+  .library-card,
+  .nav-item,
+  body {
+    transition: none;
+  }
+}
+
+/* Sidebar internals -------------------------------------------------------
+   One markup order, two shapes: a column of sections on a desktop, a compact
+   top bar on a phone. Nothing is hidden in the narrow form — the rows wrap
+   instead — so the phone layout loses no function, only height. */
+.side-inner {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+.side-inner .side-brand p {
+  display: none;
+}
+.side-nav {
+  order: 3;
+  flex: 1 1 100%;
+}
+.side-nav ul {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.side-nav .nav-item {
+  width: auto;
+  padding: 7px 10px;
+}
+.side-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.side-foot .nav-item {
+  width: auto;
+}
+.side-account {
+  order: 4;
+  flex: 1 1 100%;
+  max-width: 100%;
+  padding-left: 0;
+}
+
+@media (min-width: 900px) {
+  .side-inner {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 24px;
+    height: 100%;
+    padding: 22px 16px 20px;
+  }
+  .side-inner .side-brand p {
+    display: block;
+  }
+  .side-nav {
+    order: 0;
+    flex: 0 0 auto;
+  }
+  .side-nav ul {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .side-nav .nav-item {
+    width: 100%;
+    padding: 9px 11px;
+  }
+  .side-foot {
+    order: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    margin-top: auto;
+    margin-left: 0;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+  .side-foot .nav-item {
+    width: 100%;
+  }
+  .side-account {
+    order: 0;
+    flex: 0 0 auto;
+    padding-left: 12px;
+  }
+}
+
+/* The account footer in the narrow top-bar form: the email keeps its own line
+   rather than squeezing the buttons, and "Sign out" never breaks in two. */
+@media (max-width: 899px) {
+  .side-foot {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .side-foot .nav-item {
+    white-space: nowrap;
+  }
+  .side-account {
+    flex: 1 1 100%;
+    order: 1;
+    padding: 0;
+    text-align: right;
+  }
+  .side-account > div:first-child {
+    display: none;
+  }
+}
