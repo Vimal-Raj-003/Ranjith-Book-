@@ -56,6 +56,42 @@ export function Hint({ children, id }: { children: React.ReactNode; id?: string 
   );
 }
 
+/**
+ * A real `<details>`/`<summary>`, and deliberately nothing cleverer.
+ *
+ * Everything the operator asked to stop seeing at once — the theme
+ * descriptions, the voice and music panels, the long hints, the publish copy
+ * — is folded into one of these. A div that toggles a class would look the
+ * same and be unusable: `<summary>` is focusable, opens on Enter and Space,
+ * and is announced with its expanded state without a single aria attribute.
+ * That is the whole reason this component is three lines of markup.
+ *
+ * `defaultOpen` maps to the `open` attribute, which the browser then owns —
+ * there is no controlled mode on purpose, because a disclosure whose state
+ * React re-asserts fights the reader every time a poll re-renders the pane.
+ */
+export function Disclosure({
+  summary,
+  children,
+  defaultOpen = false,
+  quiet = false,
+  className = "",
+}: {
+  summary: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  /** A footnote you can open, rather than another boxed panel. */
+  quiet?: boolean;
+  className?: string;
+}) {
+  return (
+    <details className={`disclosure${quiet ? " disclosure-quiet" : ""} ${className}`} open={defaultOpen}>
+      <summary>{summary}</summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
 export function EmptyState({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-[13px] leading-relaxed" style={{ color: "var(--mute)" }}>
@@ -67,7 +103,7 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
 /** A read-only fact. Used wherever a value exists but cannot be changed yet. */
 export function StatRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 py-1.5">
+    <div className="flex items-baseline justify-between gap-3 py-1">
       <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
         {label}
       </span>

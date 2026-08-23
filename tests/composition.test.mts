@@ -991,7 +991,7 @@ test("the hook card is gone within four seconds however long beat 0 talks", () =
     totalDuration: 44,
   };
   const data = JSON.parse(
-    /<script id="composition-data" type="application\/json">(.*?)<\/script>/s
+    /<script id="composition-data" type="application\/json">([\s\S]*?)<\/script>/
       .exec(buildComposition(long))![1]
       .replace(/\\u003c/g, "<"),
   );
@@ -1019,7 +1019,7 @@ test("the hook card is gone within four seconds however long beat 0 talks", () =
     totalDuration: 4,
   };
   const shortData = JSON.parse(
-    /<script id="composition-data" type="application\/json">(.*?)<\/script>/s
+    /<script id="composition-data" type="application\/json">([\s\S]*?)<\/script>/
       .exec(buildComposition(short))![1]
       .replace(/\\u003c/g, "<"),
   );

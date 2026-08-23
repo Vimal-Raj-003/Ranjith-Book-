@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import PipelineRail from "./PipelineRail";
 import RunClock from "./RunClock";
-import { StatusBadge } from "./ui";
+import { Disclosure, StatusBadge } from "./ui";
 import { strings } from "@/lib/strings";
 import type { EpisodeState } from "./types";
 
@@ -80,7 +80,7 @@ export default function EpisodeCard({
     return (
       <div className="panel panel-body flex flex-col gap-3" aria-busy="true">
         <div className="skeleton" style={{ height: 14, width: "40%" }} />
-        <div className="skeleton" style={{ height: 200 }} />
+        <div className="skeleton" style={{ height: 56 }} />
       </div>
     );
   }
@@ -108,33 +108,37 @@ export default function EpisodeCard({
         </div>
       </header>
 
-      <div className="panel-body flex flex-col gap-3">
+      <div className="panel-body flex flex-col gap-2">
         <div aria-live="polite" aria-atomic="false">
           <PipelineRail step={episode.step} status={episode.status} error={episode.error} />
         </div>
 
+        {/* The notes are the pipeline's own asides — worth keeping, never
+            worth a paragraph of the one screen this app gets. */}
         {episode.notes.length > 0 && (
-          <ul role="list" className="flex flex-col gap-1">
-            {episode.notes.map((n, i) => (
-              <li key={i} className="text-[12px] leading-snug" style={{ color: "var(--mute)" }}>
-                {n}
-              </li>
-            ))}
-          </ul>
+          <Disclosure quiet summary={strings.run.notesSummary(episode.notes.length)}>
+            <ul role="list" className="flex flex-col gap-1">
+              {episode.notes.map((n, i) => (
+                <li key={i} className="text-[12px] leading-snug" style={{ color: "var(--mute)" }}>
+                  {n}
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
         )}
 
         {episode.status === "FAILED" && (
-          <p role="alert" className="text-[13px]" style={{ color: "var(--rose)" }}>
+          <p role="alert" className="text-[12.5px] leading-snug" style={{ color: "var(--rose)" }}>
             {episode.error || strings.run.failed}
           </p>
         )}
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => onSelect(episode.id)}
             disabled={active}
-            className="rounded-lg border px-3 py-1.5 text-[12px] font-semibold disabled:opacity-60"
+            className="rounded-lg border px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
             style={{ borderColor: "var(--line)", color: "var(--ink)" }}
           >
             {active ? strings.run.selected : strings.run.select(title)}

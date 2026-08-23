@@ -47,6 +47,12 @@ export interface ThemeOption {
   music: string;
 }
 
+/**
+ * Note the split every panel in the inspector now follows: a short line that
+ * is always on screen, and the honest long-form paragraph kept beside it under
+ * a `…More` / `…Details` key. Nothing was deleted to make the app fit in one
+ * window — the sentences moved behind a `<summary>`.
+ */
 export const VIDEO_THEMES: ThemeOption[] = [
   { id: "marginalia", label: "Marginalia", note: "Warm paper, hand-drawn marker", available: true, music: "Editorial — warm, gentle" },
   { id: "terminal", label: "Terminal", note: "Dark, developer-native", available: true, music: "Terminal — sparse, unhurried" },
@@ -86,8 +92,10 @@ export const strings = {
   studio: {
     heading: "BookReel",
     subheading: "Your episodes",
-    workbench: "Studio",
-    workbenchIntro: "Upload photographs of the pages you want, then watch the video build.",
+    workbenchIntro: "Pages in, video out.",
+    workbenchHelpSummary: "How this works",
+    workbenchHelp:
+      "Photograph the pages you want, add them below in reading order, and start the ingest. The pipeline reads them, writes a script, records the narration and renders a 9:16 video. Progress appears under the upload form; the finished video appears in the preview beside it.",
     loading: "Loading episodes…",
     loadError: "Could not load your episodes. Try reloading the page.",
     empty: "No episodes yet — upload some book pages to make your first one.",
@@ -101,8 +109,10 @@ export const strings = {
     titlePlaceholder: "e.g. Atomic Habits",
     bookLinkLabel: "Book link (optional)",
     bookLinkPlaceholder: "https://…  where people can buy it",
-    bookLinkHint:
-      "If you add one, the description ends with this link and the video finishes on a buy-the-book card. Leave it blank and neither appears. Only web addresses starting http:// or https:// are kept — anything else is ignored, and your upload still goes through.",
+    bookLinkHint: "Adds a buy card and a link in the description.",
+    bookLinkMoreSummary: "More about the link",
+    bookLinkMore:
+      "Leave it blank and neither the card nor the link appears. Only web addresses starting http:// or https:// are kept — anything else is ignored, and your upload still goes through.",
     rightsLabel: "Rights status",
     rightsOptions: {
       "public-domain": "Public domain",
@@ -130,6 +140,11 @@ export const strings = {
   run: {
     heading: "Runs",
     ingestHeading: "Reading your pages",
+    /** The compressed rail: "Step 7 of 14", then the stage's own name. */
+    stepCount: (index: number, total: number) => `Step ${index} of ${total}`,
+    notStarted: "Not started",
+    allSteps: "All steps",
+    notesSummary: (n: number) => (n === 1 ? "1 note" : `${n} notes`),
     videoReady: "Your video is ready.",
     episodeLabel: (part: number, total: number) => (total > 1 ? `Episode ${part} of ${total}` : "Episode"),
     failed: "This run failed.",
@@ -154,6 +169,8 @@ export const strings = {
     download: "Download video",
   },
   publish: {
+    /** Doubles as the `<summary>`: the whole panel is collapsed by default,
+     *  because four boxes of pastable text is most of a laptop screen. */
     heading: "Ready to post",
     youtubeTitle: "YouTube title",
     youtubeDescription: "YouTube description",
@@ -165,7 +182,7 @@ export const strings = {
   },
   library: {
     heading: "Library",
-    intro: "Every episode you have made, newest first.",
+    intro: "Newest first.",
     countLabel: (n: number) => (n === 1 ? "1 episode" : `${n} episodes`),
     open: (title: string) => `Open ${title}`,
     noPoster: "No thumbnail yet",
@@ -187,16 +204,23 @@ export const strings = {
     heading: "Theme",
     current: "In use",
     unavailable: "Coming soon",
-    hint: "The theme applies to your next run. An episode keeps the theme it was made with, so changing this never re-skins a video that already exists.",
+    /** The one line that stays on screen. */
+    hint: "Applies to your next run.",
+    detailsSummary: "What each theme looks like",
+    detailsBody:
+      "An episode keeps the theme it was made with, so changing this never re-skins a video that already exists.",
   },
   voicePanel: {
     heading: "Voice",
+    /** The collapsed summary: the panel is not in use, so it says its answer. */
+    summary: (label: string) => `Voice · ${label}`,
     selectLabel: "Narrator",
     hint: "Every render uses Charles. Choosing a different voice arrives with the voice settings release.",
     genderLabel: { female: "Female", male: "Male" } as Record<string, string>,
   },
   musicPanel: {
     heading: "Music",
+    summary: "Music · follows the theme",
     moodLabel: "Mood",
     moodUnknown: "Follows the selected theme",
     levelLabel: "Bed level",
@@ -207,6 +231,7 @@ export const strings = {
   },
   thumbnails: {
     heading: "Thumbnails",
+    summary: (n: number) => (n === 0 ? "Thumbnails" : n === 1 ? "Thumbnails · 1" : `Thumbnails · ${n}`),
     empty: "No thumbnails for this episode yet.",
     pending: "Thumbnails are generated at the end of a run.",
     alt: (variant: string, aspect: string) => `${variant} thumbnail, ${aspect}`,

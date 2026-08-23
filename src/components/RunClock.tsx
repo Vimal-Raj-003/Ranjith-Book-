@@ -43,7 +43,7 @@ export default function RunClock({
 
   return (
     <div
-      className="flex items-center gap-2.5 rounded-xl border px-3.5 py-2"
+      className="flex items-center gap-2 rounded-lg border px-2.5 py-1"
       style={{
         borderColor: running ? "var(--amber)" : "var(--line)",
         background: running ? "color-mix(in srgb, var(--amber) 10%, transparent)" : "transparent",
@@ -64,8 +64,8 @@ export default function RunClock({
         <div
           className="font-mono tabular-nums"
           style={{
-            fontSize: 22,
-            marginTop: 3,
+            fontSize: 16,
+            marginTop: 2,
             color: idle ? "var(--mute-2)" : running ? "var(--amber)" : "var(--cyan)",
           }}
         >

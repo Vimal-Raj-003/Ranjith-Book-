@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { freeBooks as t } from "./free-books-copy";
-import { Badge, EmptyState, Hint } from "./ui";
+import { Badge, Disclosure, EmptyState, Hint } from "./ui";
 
 /**
  * Browse Project Gutenberg and download a book.
@@ -116,10 +116,7 @@ function Cover({ book }: { book: FreeBook }) {
   const [broken, setBroken] = useState(false);
 
   return (
-    <div
-      className="w-full overflow-hidden"
-      style={{ aspectRatio: "2 / 3", background: "var(--slab-2)" }}
-    >
+    <div className="cover">
       {book.coverUrl && !broken ? (
         // eslint-disable-next-line @next/next/no-img-element -- a remote public-domain cover, not a statically optimizable asset
         <img
@@ -129,7 +126,6 @@ function Cover({ book }: { book: FreeBook }) {
           decoding="async"
           referrerPolicy="no-referrer"
           onError={() => setBroken(true)}
-          className="block h-full w-full object-cover"
         />
       ) : (
         <div className="poster-empty" aria-hidden>
@@ -396,7 +392,8 @@ function ResultSkeleton() {
       {[0, 1, 2, 3, 4, 5].map((i) => (
         <li key={i} className="flex">
           <div className="library-card w-full">
-            <div className="skeleton w-full" style={{ aspectRatio: "2 / 3", borderRadius: 0 }} />
+            {/* Same box as the real cover, so nothing jumps when it lands. */}
+            <div className="cover skeleton" style={{ borderRadius: 0 }} />
             <div className="flex flex-col gap-2 p-3">
               <div className="skeleton" style={{ height: 14 }} />
               <div className="skeleton" style={{ height: 11, width: "65%" }} />
@@ -584,25 +581,36 @@ export default function FreeBooks() {
   const shown = phase.kind === "ready" ? phase.page : busy ? held : null;
 
   return (
-    <section className="flex flex-col gap-4" aria-labelledby="free-books-heading">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h2
-            id="free-books-heading"
-            ref={headingRef}
-            tabIndex={-1}
-            className="font-display text-[20px] font-semibold"
-            style={{ color: "var(--ink)" }}
-          >
-            {t.heading}
-          </h2>
-          <p className="mt-1 text-[13px]" style={{ color: "var(--mute)" }}>
-            {t.intro}
-          </p>
+    <section className="flex flex-col gap-3" aria-labelledby="free-books-heading">
+      {/* The paragraph that used to sit under this heading — what the archive
+          is, how big it is, where the books come from — is one line plus a
+          disclosure now. The provenance is still stated, still on this page,
+          still reachable by keyboard; it is just not spending four lines of a
+          window that has to hold a result grid as well. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2
+          id="free-books-heading"
+          ref={headingRef}
+          tabIndex={-1}
+          className="font-display text-[18px] font-semibold"
+          style={{ color: "var(--ink)" }}
+        >
+          {t.heading}
+        </h2>
+        <span className="text-[12px]" style={{ color: "var(--mute)" }}>
+          {t.intro}
+        </span>
+        <div className="ms-auto flex items-baseline gap-3">
+          {phase.kind === "ready" && (
+            <Badge>{t.countLabel(phase.page.total, phase.page.books.length)}</Badge>
+          )}
+          <Disclosure quiet summary={t.aboutSummary}>
+            <p className="max-w-[62ch] text-[12px] leading-relaxed" style={{ color: "var(--mute)" }}>
+              {t.about}
+            </p>
+            <p className="mt-1.5 hint">{t.attribution}</p>
+          </Disclosure>
         </div>
-        {phase.kind === "ready" && (
-          <Badge>{t.countLabel(phase.page.total, phase.page.books.length)}</Badge>
-        )}
       </div>
 
       <CatalogPanel status={catalog} onSync={startSync} busy={syncing} />
@@ -735,8 +743,6 @@ export default function FreeBooks() {
           )}
         </div>
       )}
-
-      <Hint>{t.attribution}</Hint>
     </section>
   );
 }

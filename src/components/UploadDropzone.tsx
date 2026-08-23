@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useToast } from "./Toast";
+import { Disclosure } from "./ui";
 import { strings } from "@/lib/strings";
 import { checkPhotoBatch } from "@/lib/ingest/validate";
 
@@ -194,8 +195,8 @@ export default function UploadDropzone({
   return (
     /* The heading lives on the panel this sits inside, so the section is
        labelled rather than titled twice. */
-    <section aria-label={strings.upload.sectionHeading} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row">
+    <section aria-label={strings.upload.sectionHeading} className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-2.5 sm:flex-row">
         <div className="flex flex-1 flex-col gap-1">
           <label htmlFor={titleId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
             {strings.upload.titleLabel}
@@ -206,38 +207,12 @@ export default function UploadDropzone({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={strings.upload.titlePlaceholder}
-            className="rounded-lg border px-3 py-2 text-[14px]"
+            className="rounded-lg border px-3 py-1.5 text-[14px]"
             style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
           />
         </div>
 
-        {/* Optional, and said so on the label rather than only in the hint —
-            a field with no "(optional)" on it reads as required, and this one
-            is the difference between a video that ends on a purchase card and
-            one that quietly does not. */}
-        <div className="flex flex-1 flex-col gap-1">
-          <label htmlFor={bookLinkId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
-            {strings.upload.bookLinkLabel}
-          </label>
-          <input
-            id={bookLinkId}
-            type="url"
-            inputMode="url"
-            autoComplete="off"
-            spellCheck={false}
-            value={bookLink}
-            onChange={(e) => setBookLink(e.target.value)}
-            placeholder={strings.upload.bookLinkPlaceholder}
-            aria-describedby={bookLinkHintId}
-            className="rounded-lg border px-3 py-2 text-[14px]"
-            style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
-          />
-          <p id={bookLinkHintId} className="text-[11px] leading-snug" style={{ color: "var(--mute)" }}>
-            {strings.upload.bookLinkHint}
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1 sm:w-[42%]">
           <label htmlFor={rightsId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
             {strings.upload.rightsLabel}
           </label>
@@ -245,7 +220,7 @@ export default function UploadDropzone({
             id={rightsId}
             value={rights}
             onChange={(e) => setRights(e.target.value)}
-            className="rounded-lg border px-3 py-2 text-[14px]"
+            className="rounded-lg border px-3 py-1.5 text-[14px]"
             style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
           >
             {RIGHTS_VALUES.map((value) => (
@@ -257,10 +232,42 @@ export default function UploadDropzone({
         </div>
       </div>
 
+      {/* Optional, and said so on the label rather than only in the hint —
+          a field with no "(optional)" on it reads as required, and this one
+          is the difference between a video that ends on a purchase card and
+          one that quietly does not. The caveats about which URLs survive are
+          true and still here, one `<summary>` away. */}
+      <div className="flex flex-col gap-1">
+        <label htmlFor={bookLinkId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
+          {strings.upload.bookLinkLabel}
+        </label>
+        <input
+          id={bookLinkId}
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          spellCheck={false}
+          value={bookLink}
+          onChange={(e) => setBookLink(e.target.value)}
+          placeholder={strings.upload.bookLinkPlaceholder}
+          aria-describedby={bookLinkHintId}
+          className="rounded-lg border px-3 py-1.5 text-[14px]"
+          style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
+        />
+        <p id={bookLinkHintId} className="text-[11px] leading-snug" style={{ color: "var(--mute)" }}>
+          {strings.upload.bookLinkHint}
+        </p>
+        <Disclosure quiet summary={strings.upload.bookLinkMoreSummary}>
+          <p className="text-[11.5px] leading-snug" style={{ color: "var(--mute)" }}>
+            {strings.upload.bookLinkMore}
+          </p>
+        </Disclosure>
+      </div>
+
       {/* The actual keyboard-reachable entry point: dragging is a bonus, the
           button is not optional. */}
       <div
-        className="slab flex flex-col items-center gap-2 border-dashed px-4 py-6 text-center"
+        className="slab flex flex-wrap items-center justify-center gap-3 border-dashed px-4 py-3 text-center"
         style={{ borderColor: dragActive ? "var(--cyan)" : "var(--line)" }}
         onDragOver={(e) => {
           e.preventDefault();
@@ -279,7 +286,7 @@ export default function UploadDropzone({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="rounded-lg border px-4 py-2 text-[13px] font-semibold"
+          className="rounded-lg border px-3.5 py-1.5 text-[13px] font-semibold"
           style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--slab-2)" }}
         >
           {strings.upload.chooseFiles}
@@ -302,12 +309,14 @@ export default function UploadDropzone({
       </div>
 
       {items.length === 0 ? (
-        <p style={{ color: "var(--mute)" }}>{strings.upload.emptyHint}</p>
+        <p className="text-[12px]" style={{ color: "var(--mute)" }}>
+          {strings.upload.emptyHint}
+        </p>
       ) : (
         <ul
           role="list"
-          className="grid gap-3"
-          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(92px, 1fr))" }}
+          className="grid max-h-[34dvh] gap-2 overflow-y-auto"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(80px, 1fr))" }}
         >
           {items.map((item, index) => {
             const page = index + 1;
@@ -392,12 +401,12 @@ export default function UploadDropzone({
         </p>
       )}
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={handleUpload}
           disabled={busy}
-          className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50"
+          className="rounded-lg px-3.5 py-1.5 text-[13px] font-semibold disabled:opacity-50"
           style={{ background: "var(--cyan)", color: "var(--on-accent)" }}
         >
           {busy ? strings.upload.uploading : strings.upload.uploadButton}
@@ -408,7 +417,7 @@ export default function UploadDropzone({
             type="button"
             onClick={handleIngest}
             disabled={ingesting}
-            className="rounded-lg border px-4 py-2 text-[13px] font-semibold disabled:opacity-50"
+            className="rounded-lg border px-3.5 py-1.5 text-[13px] font-semibold disabled:opacity-50"
             style={{ borderColor: "var(--line)", color: "var(--ink)" }}
           >
             {ingesting ? strings.upload.ingestStarting : strings.upload.ingestButton}

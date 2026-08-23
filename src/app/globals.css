@@ -243,10 +243,10 @@ body {
    a screen reader and the tab key want.
    ========================================================================== */
 :root {
-  --rail-w: 240px;
-  --inspector-w: 340px;
-  --pane-gap: 20px;
-  --pane-pad: 24px;
+  --rail-w: 204px;
+  --inspector-w: 300px;
+  --pane-gap: 16px;
+  --pane-pad: 20px;
 }
 
 .app-shell {
@@ -308,21 +308,50 @@ body {
   }
 }
 
+/* ==========================================================================
+   The one-window rule
+   --------------------------------------------------------------------------
+   From 1200px up the shell IS the window: `height: 100dvh` with the page
+   itself clipped, and each of the three panes scrolling inside its own box if
+   its content ever outgrows it. That is what makes `documentElement`'s
+   scrollHeight equal its clientHeight in both axes — the operator asked never
+   to scroll the page, and a clamp is the only way to promise that regardless
+   of how long a library or a search result gets.
+
+   Below 1200px nothing is clamped: the document scrolls the ordinary way, so
+   the phone layout keeps every row it has today.
+   ========================================================================== */
 @media (min-width: 1200px) {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
   .app-shell {
     grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
     grid-template-areas: "side work insp";
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .app-side {
+    position: static;
+    height: 100%;
+    min-height: 0;
   }
   .app-work {
-    padding: 32px 28px 64px;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px 20px 20px;
   }
   .app-insp {
-    position: sticky;
-    top: 0;
-    align-self: start;
-    max-height: 100dvh;
+    position: static;
+    min-height: 0;
+    max-height: none;
     overflow-y: auto;
-    padding: 32px 24px 64px;
+    overflow-x: hidden;
+    padding: 16px 16px 20px;
     border-left: 1px solid var(--line);
     background: color-mix(in srgb, var(--slab) 30%, transparent);
   }
@@ -330,10 +359,124 @@ body {
 
 /* The workbench never stretches type past a comfortable measure, even on a
    very wide monitor — a 900px-wide paragraph is unreadable no matter how much
-   room the window has. */
+   room the window has. Once the shell is clamped the measure is set by the
+   split below instead, so the cap is lifted rather than fighting it. */
 .work-measure {
   width: 100%;
   max-width: 880px;
+}
+
+@media (min-width: 1200px) {
+  .work-measure {
+    max-width: none;
+  }
+}
+
+/* Two stacks side by side: what you are making on the left, what came out on
+   the right. Below 1200px they fall back to one column in source order. */
+.work-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 1200px) {
+  .work-split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+  }
+}
+
+.work-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ==========================================================================
+   Disclosures
+   --------------------------------------------------------------------------
+   Real <details>/<summary>, never a div that toggles a class: the summary is
+   focusable, operable with Enter and Space, and announced with its expanded
+   state, all for free. Every long explanation in the app now lives inside one
+   of these — reachable, not deleted.
+   ========================================================================== */
+.disclosure {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--slab-2) 45%, transparent);
+}
+.disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.disclosure > summary::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--mute);
+  border-bottom: 1.5px solid var(--mute);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.disclosure[open] > summary::after {
+  transform: translateY(1px) rotate(225deg);
+}
+.disclosure > summary:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.disclosure-body {
+  padding: 0 12px 11px;
+}
+
+/* The quiet variant: a hint that has been folded away. No box, small type —
+   it must read as a footnote you can open, not as another panel. */
+.disclosure-quiet {
+  border: 0;
+  background: transparent;
+}
+.disclosure-quiet > summary {
+  padding: 2px 0;
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--mute-2);
+}
+.disclosure-quiet > summary:hover {
+  background: transparent;
+  color: var(--mute);
+}
+.disclosure-quiet > .disclosure-body {
+  padding: 4px 0 2px;
+}
+
+/* The summary counts as the label, so a disclosure inside a Panel does not
+   need the Panel's own header too — this is the headerless form. */
+.disclosure-panel {
+  border-radius: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .disclosure > summary::after {
+    transition: none;
+  }
 }
 
 /* Navigation ------------------------------------------------------------- */
@@ -381,11 +524,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--line);
 }
 .panel-body {
-  padding: 16px;
+  padding: 12px 14px;
 }
 
 .badge {
@@ -422,8 +565,8 @@ body {
 /* Library ---------------------------------------------------------------- */
 .library-grid {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   align-items: stretch;
 }
 /* Every card is the same height whatever its title does, so the grid reads as
@@ -472,6 +615,30 @@ body {
   display: block;
 }
 
+/* A full 9:16 poster is 267px tall in a 150px column, which means six
+   episodes cost two rows and a scroll. Inside the clamped shell the poster is
+   capped and cropped instead — the card still reads as a video, and the grid
+   reads as a grid rather than a column. Phones keep the whole poster. */
+@media (min-width: 1200px) {
+  .poster,
+  .cover {
+    max-height: clamp(110px, 19dvh, 172px);
+  }
+}
+
+.cover {
+  width: 100%;
+  overflow: hidden;
+  aspect-ratio: 2 / 3;
+  background: var(--slab-2);
+}
+.cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 /* A quiet placeholder, never a broken-image icon: an episode with no
    thumbnail yet gets a plain tinted field with its initials. */
 .poster-empty {
@@ -506,7 +673,10 @@ body {
   animation: shimmer 1.4s ease-in-out infinite;
 }
 
-/* Video preview ---------------------------------------------------------- */
+/* Video preview -----------------------------------------------------------
+   Width-driven on a phone, height-driven once the shell is clamped: inside a
+   fixed window the only dimension that can be allowed to grow freely is the
+   one there is room for, and for a 9:16 stage that is never the height. */
 .preview-stage {
   position: relative;
   width: 100%;
@@ -528,11 +698,19 @@ body {
   display: grid;
   place-items: center;
   height: 100%;
-  padding: 20px;
+  padding: 16px;
   text-align: center;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12.5px;
+  line-height: 1.55;
   color: var(--mute);
+}
+
+@media (min-width: 1200px) {
+  .preview-stage {
+    width: auto;
+    max-width: 100%;
+    height: min(54dvh, 440px);
+  }
 }
 
 /* Inspector controls ----------------------------------------------------- */
@@ -559,22 +737,80 @@ body {
   background: color-mix(in srgb, var(--slab-2) 70%, transparent);
   cursor: not-allowed;
 }
-.option-row {
+/* The theme picker, as chips rather than five stacked paragraphs. The chip
+   carries the name only; what each theme LOOKS like is one disclosure below,
+   so the control the operator uses every run is four rows tall instead of
+   twenty. Still a real button with aria-pressed — this is a shorter row, not
+   a weaker control. */
+.chip-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.chip {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 9px 11px;
-  border-radius: 10px;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 9px;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--slab-2) 55%, transparent);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--mute);
+  text-align: left;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
-.option-row[data-state="on"] {
-  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
-  background: color-mix(in srgb, var(--amber) 10%, transparent);
+.chip:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--amber) 35%, transparent);
 }
-.option-row[data-state="off"] {
-  opacity: 0.62;
+.chip[data-state="on"] {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.chip[data-state="on"]::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+.chip:disabled {
+  cursor: not-allowed;
+}
+
+/* The pipeline, compressed: one segment per stage, filled as the run passes
+   it. The full named rail is a disclosure underneath, so nothing is lost. */
+.rail-meter {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+}
+.rail-seg {
+  flex: 1 1 0;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--slab-2);
+}
+.rail-seg[data-state="passed"] {
+  background: var(--cyan);
+}
+.rail-seg[data-state="current"] {
+  background: var(--amber);
+}
+.rail-seg[data-state="failed"] {
+  background: var(--rose);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip {
+    transition: none;
+  }
 }
 
 .hint {
@@ -667,9 +903,9 @@ body {
     flex-direction: column;
     flex-wrap: nowrap;
     align-items: stretch;
-    gap: 24px;
+    gap: 16px;
     height: 100%;
-    padding: 22px 16px 20px;
+    padding: 16px 12px 14px;
   }
   .side-inner .side-brand p {
     display: block;

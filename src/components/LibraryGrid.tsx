@@ -79,17 +79,15 @@ export default function LibraryGrid({
   }, [nonce]);
 
   return (
-    <section className="flex flex-col gap-4" aria-labelledby="library-heading">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h2 id="library-heading" className="font-display text-[20px] font-semibold" style={{ color: "var(--ink)" }}>
-            {strings.library.heading}
-          </h2>
-          <p className="mt-1 text-[13px]" style={{ color: "var(--mute)" }}>
-            {strings.library.intro}
-          </p>
-        </div>
-        <span aria-live="polite" className="badge">
+    <section className="flex flex-col gap-3" aria-labelledby="library-heading">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 id="library-heading" className="font-display text-[18px] font-semibold" style={{ color: "var(--ink)" }}>
+          {strings.library.heading}
+        </h2>
+        <span className="text-[12px]" style={{ color: "var(--mute)" }}>
+          {strings.library.intro}
+        </span>
+        <span aria-live="polite" className="badge ms-auto">
           {episodes === null ? strings.studio.loading : strings.library.countLabel(episodes.length)}
         </span>
       </div>

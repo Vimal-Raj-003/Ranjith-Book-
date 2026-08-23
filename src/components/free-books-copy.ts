@@ -15,8 +15,11 @@
  */
 export const freeBooks = {
   heading: "Free books",
-  intro:
-    "Search Project Gutenberg — around 78,000 titles, all out of copyright, all free to download. Searched locally, so results are instant.",
+  /** The one line that stays on screen; the rest is behind `aboutSummary`. */
+  intro: "Project Gutenberg, searched locally.",
+  aboutSummary: "About this catalogue",
+  about:
+    "Around 78,000 titles, all out of copyright, all free to download. The catalogue is held on this machine, so a search answers in milliseconds and nothing about it leaves here. Books and metadata from Project Gutenberg; all titles are in the public domain.",
 
   searchLabel: "Search Project Gutenberg",
   searchPlaceholder: "Title, author, or subject",
@@ -29,7 +32,7 @@ export const freeBooks = {
 
   /** Nothing typed yet — the resting state, not an error. */
   idleTitle: "Nothing searched yet",
-  idleBody: "Type a title, an author or a subject above. Nothing leaves this machine, so it answers immediately.",
+  idleBody: "Type a title, an author or a subject above.",
 
   /** A real search that matched nothing. */
   noResultsTitle: (query: string) => `Nothing found for “${query}”`,
@@ -120,7 +123,7 @@ export const freeBooks = {
   next: "Next",
   pageLabel: (page: number) => `Page ${page}`,
 
-  /** Rendered under the results, because provenance is the point of this pane. */
+  /** Provenance. Folded into `about` above so it costs no vertical space. */
   attribution: "Books and metadata from Project Gutenberg. All titles are in the public domain.",
 
   /** Shown when a book records no author at all — commoner than you'd think. */

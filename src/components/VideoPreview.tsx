@@ -26,7 +26,7 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
         )
       }
     >
-      <div className="flex flex-col items-start gap-4 sm:flex-row">
+      <div className="flex flex-col items-start gap-3 sm:flex-row">
         <div className="preview-stage">
           {ready && episode ? (
             /* The SRT is a separate deliverable, not attached as a <track> here. */
@@ -46,16 +46,16 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
           )}
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           {episode && (
             <>
-              <span className="font-display text-[16px] font-semibold" style={{ color: "var(--ink)" }}>
+              <span className="font-display text-[14px] font-semibold leading-snug" style={{ color: "var(--ink)" }}>
                 {episode.title || strings.studio.untitled}
               </span>
-              <span className="text-[13px]" style={{ color: "var(--mute)" }}>
+              <span className="text-[12px] leading-snug" style={{ color: "var(--mute)" }}>
                 {episode.bookTitle}
               </span>
-              <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
+              <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
                 {strings.run.episodeLabel(episode.partNumber, episode.seriesTotal)}
               </span>
             </>
@@ -64,7 +64,7 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
             <a
               href={`/api/episodes/${episode.id}/video`}
               download
-              className="mt-2 inline-flex w-fit rounded-lg px-3.5 py-2 text-[13px] font-semibold"
+              className="mt-1 inline-flex w-fit rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
               style={{ background: "var(--cyan)", color: "var(--on-accent)" }}
             >
               {strings.preview.download}

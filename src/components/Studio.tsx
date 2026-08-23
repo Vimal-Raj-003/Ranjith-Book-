@@ -10,7 +10,7 @@ import PublishPanel from "./PublishPanel";
 import LibraryGrid from "./LibraryGrid";
 import Inspector from "./Inspector";
 import Sidebar from "./Sidebar";
-import { Badge, Panel } from "./ui";
+import { Badge, Disclosure, Panel } from "./ui";
 import { strings } from "@/lib/strings";
 import FreeBooks from "./FreeBooks";
 import type { EpisodeState, View } from "./types";
@@ -18,6 +18,14 @@ import type { EpisodeState, View } from "./types";
 /**
  * The desktop application shell: a fixed sidebar, a flexible workbench and an
  * inspector, collapsing to two columns below 1200px and to one below 900px.
+ *
+ * From 1200px up the shell is the window — `height: 100dvh`, the page itself
+ * clipped, each pane scrolling inside its own box. That is the operator's
+ * actual request: everything at once, no scrolling the page in either
+ * direction. Under it the studio splits into two stacks, so the upload form
+ * and the run sit beside the preview rather than a screen below it; below
+ * 1200px they fall back to one column in the same source order and the
+ * document scrolls the ordinary way, which is what a phone wants.
  *
  * All episode polling is owned here rather than by whichever pane happens to
  * be showing an episode. `EpisodeCard` runs the 1.5s poll for its id and
@@ -83,45 +91,61 @@ export default function Studio({ email }: { email: string }) {
         </header>
 
         <main id="main" className="app-work" tabIndex={-1}>
-          <div className="work-measure flex flex-col gap-6">
+          <div className="work-measure flex flex-col gap-3">
             {view === "studio" && (
               <>
-                <div>
-                  <div className="eyebrow">{strings.studio.workbench}</div>
-                  <h1 className="mt-2 font-display text-[24px] font-semibold leading-tight" style={{ color: "var(--ink)" }}>
+                {/* One line, not four. What the studio is FOR is a sentence
+                    the operator needed once; it is under the summary now. */}
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <h1 className="font-display text-[18px] font-semibold leading-tight" style={{ color: "var(--ink)" }}>
                     {strings.studio.subheading}
                   </h1>
-                  <p className="mt-2 max-w-[52ch] text-[13px] leading-relaxed" style={{ color: "var(--mute)" }}>
+                  <span className="text-[12px]" style={{ color: "var(--mute)" }}>
                     {strings.studio.workbenchIntro}
-                  </p>
+                  </span>
+                  <div className="ms-auto">
+                    <Disclosure quiet summary={strings.studio.workbenchHelpSummary}>
+                      <p className="max-w-[60ch] text-[12px] leading-relaxed" style={{ color: "var(--mute)" }}>
+                        {strings.studio.workbenchHelp}
+                      </p>
+                    </Disclosure>
+                  </div>
                 </div>
 
-                <Panel title={strings.upload.sectionHeading}>
-                  <UploadDropzone onIngestStarted={(uploadId) => setRuns((list) => [uploadId, ...list])} />
-                </Panel>
+                <div className="work-split">
+                  {/* Left: what you are making. */}
+                  <div className="work-col">
+                    <Panel title={strings.upload.sectionHeading}>
+                      <UploadDropzone onIngestStarted={(uploadId) => setRuns((list) => [uploadId, ...list])} />
+                    </Panel>
 
-                {(runs.length > 0 || episodeIds.length > 0) && (
-                  <section className="flex flex-col gap-3" aria-labelledby="runs-heading">
-                    <h2 id="runs-heading" className="font-display text-[15px] font-semibold" style={{ color: "var(--ink)" }}>
-                      {strings.run.heading}
-                    </h2>
-                    {runs.map((uploadId) => (
-                      <UploadRun key={uploadId} uploadId={uploadId} onEpisodes={watchEpisodes} />
-                    ))}
-                    {episodeIds.map((id) => (
-                      <EpisodeCard
-                        key={id}
-                        episodeId={id}
-                        active={id === activeId}
-                        onSelect={setSelectedId}
-                        onState={handleState}
-                      />
-                    ))}
-                  </section>
-                )}
+                    {(runs.length > 0 || episodeIds.length > 0) && (
+                      <section className="flex flex-col gap-2" aria-labelledby="runs-heading">
+                        <h2 id="runs-heading" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+                          {strings.run.heading}
+                        </h2>
+                        {runs.map((uploadId) => (
+                          <UploadRun key={uploadId} uploadId={uploadId} onEpisodes={watchEpisodes} />
+                        ))}
+                        {episodeIds.map((id) => (
+                          <EpisodeCard
+                            key={id}
+                            episodeId={id}
+                            active={id === activeId}
+                            onSelect={setSelectedId}
+                            onState={handleState}
+                          />
+                        ))}
+                      </section>
+                    )}
+                  </div>
 
-                <VideoPreview episode={active} />
-                <PublishPanel episode={active} />
+                  {/* Right: what came out. */}
+                  <div className="work-col">
+                    <VideoPreview episode={active} />
+                    <PublishPanel episode={active} />
+                  </div>
+                </div>
               </>
             )}
 
@@ -130,9 +154,9 @@ export default function Studio({ email }: { email: string }) {
             {view === "free-books" && <FreeBooks />}
 
             {view === "queue" && (
-              <section className="flex flex-col gap-4" aria-labelledby="queue-heading">
+              <section className="flex flex-col gap-3" aria-labelledby="queue-heading">
                 <div className="flex flex-wrap items-center gap-3">
-                  <h1 id="queue-heading" className="font-display text-[24px] font-semibold" style={{ color: "var(--ink)" }}>
+                  <h1 id="queue-heading" className="font-display text-[18px] font-semibold" style={{ color: "var(--ink)" }}>
                     {strings.queue.heading}
                   </h1>
                   <Badge tone="soon">{strings.queue.badge}</Badge>

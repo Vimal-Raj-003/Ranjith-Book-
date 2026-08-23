@@ -1,6 +1,8 @@
 "use client";
 
 import { STEPS } from "@/lib/pipeline-steps";
+import { Disclosure } from "./ui";
+import { strings } from "@/lib/strings";
 
 /**
  * The full, ordered list of stages a run passes through: every ingest stage,
@@ -31,56 +33,100 @@ export interface PipelineRailProps {
 }
 
 /**
- * A vertical progress rail: every stage the pipeline can be in, with the ones
- * already passed marked done, the current one highlighted, and a failure (if
- * any) shown in place rather than silently stopping the rail mid-way.
+ * A progress meter, then the name of the stage the run is actually in, then
+ * the whole named rail behind a `<summary>`.
+ *
+ * Fourteen named stages stacked vertically is close to four hundred pixels of
+ * a screen that has to hold the upload form, the preview and the settings as
+ * well, and thirteen of those fourteen lines say nothing the operator did not
+ * already know. So the meter carries the shape of the run — how far along,
+ * and whether a segment went red — and one line carries the only stage that
+ * is news. The full list is a keypress away and unchanged when it is opened.
  */
 export default function PipelineRail({ step, status, error }: PipelineRailProps) {
   const currentIndex = STEPS.findIndex((s) => s === step);
   const isDone = status === "DONE";
   const isFailed = status === "FAILED";
 
+  const stateOf = (i: number) => {
+    const passed = isDone || (currentIndex >= 0 && i < currentIndex);
+    const isCurrent = !isDone && i === currentIndex;
+    if (isFailed && isCurrent) return "failed" as const;
+    if (passed) return "passed" as const;
+    if (isCurrent) return "current" as const;
+    return "todo" as const;
+  };
+
+  const headline = isDone
+    ? STEPS[STEPS.length - 1]
+    : currentIndex >= 0
+      ? STEPS[currentIndex]
+      : strings.run.notStarted;
+  const position = isDone ? STEPS.length : currentIndex >= 0 ? currentIndex + 1 : 0;
+
   return (
-    <ol role="list" className="flex flex-col gap-0.5" aria-label="Pipeline progress">
-      {STEPS.map((s, i) => {
-        const passed = isDone || (currentIndex >= 0 && i < currentIndex);
-        const isCurrent = !isDone && i === currentIndex;
-        const failedHere = isFailed && isCurrent;
+    <div className="flex flex-col gap-1.5">
+      {/* aria-hidden: the meter is the same fact as the line under it, said in
+          colour. Announcing it twice is noise in a region that already
+          re-announces on every poll. */}
+      <div className="rail-meter" aria-hidden>
+        {STEPS.map((s, i) => (
+          <span key={s} className={`rail-seg${stateOf(i) === "current" && !isFailed ? " node-active" : ""}`} data-state={stateOf(i)} />
+        ))}
+      </div>
 
-        const color = failedHere
-          ? "var(--rose)"
-          : passed
-            ? "var(--cyan)"
-            : isCurrent
-              ? "var(--amber)"
-              : "var(--mute-2)";
+      <div className="flex items-baseline justify-between gap-3">
+        <span
+          className="min-w-0 truncate font-mono text-[12.5px]"
+          style={{ color: isFailed ? "var(--rose)" : "var(--ink)", fontWeight: 600 }}
+        >
+          {headline}
+        </span>
+        <span className="shrink-0 font-mono text-[11px]" style={{ color: "var(--mute-2)" }}>
+          {strings.run.stepCount(position, STEPS.length)}
+        </span>
+      </div>
 
-        return (
-          <li key={s} role="listitem" className="flex items-start gap-2.5 py-1">
-            <span
-              aria-hidden
-              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${isCurrent && !isFailed ? "node-active" : ""}`}
-              style={{ background: color }}
-            />
-            <div className="flex flex-col">
-              <span
-                className="font-mono text-[12.5px] leading-snug"
-                style={{
-                  color: passed || isCurrent ? "var(--ink)" : "var(--mute-2)",
-                  fontWeight: isCurrent ? 600 : 400,
-                }}
-              >
-                {s}
-              </span>
-              {failedHere && error && (
-                <span role="alert" className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
-                  {error}
+      {isFailed && error && (
+        <span role="alert" className="text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
+          {error}
+        </span>
+      )}
+
+      <Disclosure quiet summary={strings.run.allSteps}>
+        <ol role="list" className="flex flex-col gap-0.5">
+          {STEPS.map((s, i) => {
+            const state = stateOf(i);
+            const color =
+              state === "failed"
+                ? "var(--rose)"
+                : state === "passed"
+                  ? "var(--cyan)"
+                  : state === "current"
+                    ? "var(--amber)"
+                    : "var(--mute-2)";
+
+            return (
+              <li key={s} role="listitem" className="flex items-start gap-2.5 py-0.5">
+                <span
+                  aria-hidden
+                  className={`mt-1 h-2 w-2 shrink-0 rounded-full ${state === "current" ? "node-active" : ""}`}
+                  style={{ background: color }}
+                />
+                <span
+                  className="font-mono text-[12px] leading-snug"
+                  style={{
+                    color: state === "todo" ? "var(--mute-2)" : "var(--ink)",
+                    fontWeight: state === "current" || state === "failed" ? 600 : 400,
+                  }}
+                >
+                  {s}
                 </span>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
+              </li>
+            );
+          })}
+        </ol>
+      </Disclosure>
+    </div>
   );
 }
