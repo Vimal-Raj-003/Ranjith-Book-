@@ -1,7 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
-import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL } from "../src/lib/video/composition/build";
+import {
+  buildComposition,
+  columnScale,
+  cardViewportHeight,
+  AUDIO_OFFSET,
+  OUTRO_TAIL,
+  FRAME,
+  CARD_X,
+  CARD_Y,
+  CARD_W,
+  CARD_H,
+  CAPTION_BASELINE,
+} from "../src/lib/video/composition/build";
+import { cameraTrack } from "../src/lib/video/sweep";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
 import type { CaptionWord } from "../src/lib/media/captions";
@@ -336,6 +349,276 @@ test("a multi-line CTA never stacks two caption lines, and only the final line s
       return Number(getComputedStyle(earlier).opacity);
     }, duration - 0.1);
     assert.ok(earlierLineFaded < 0.05, "the CTA's own first line must not still be lingering into the tail");
+  } finally {
+    await browser.close();
+  }
+});
+
+// --- Framed layout (spec 2026-08-23 §1/§2) ---------------------------------
+
+test("columnScale maps the column onto the card, and degrades to 1 rather than to Infinity or NaN", () => {
+  assert.equal(columnScale(CARD_W), 1, "a column exactly as wide as the card needs no scaling");
+  assert.ok(Math.abs(columnScale(1200) - CARD_W / 1200) < 1e-12);
+
+  // The guard is not academic: `columnWidth` is `Math.max(...pages.map(p => p.width))`,
+  // which is -Infinity for an empty page list and NaN if any derivative's width
+  // failed to be measured. A `scale(NaN)` is DROPPED by the browser, silently
+  // leaving the column at full 1600px size overflowing a 960px card, and a
+  // non-finite scale also poisons cardViewportHeight and therefore cameraTrack.
+  for (const bad of [0, -10, NaN, Infinity, -Infinity]) {
+    const s = columnScale(bad);
+    assert.equal(s, 1, `columnScale(${bad}) must fall back to 1, got ${s}`);
+    assert.ok(Number.isFinite(s));
+  }
+});
+
+test("cardViewportHeight is the card's height in COLUMN space, never the frame's height", () => {
+  const width = 1200;
+  const expected = CARD_H / (CARD_W / width);
+  assert.ok(Math.abs(cardViewportHeight(width) - expected) < 1e-9);
+
+  // The whole point: a column wider than the card produces a viewport TALLER
+  // than CARD_H, and it must not be confused with FRAME.height. Handing
+  // cameraTrack 1920 makes maxY (= pageHeight - frameHeight) hundreds of column
+  // pixels too small, so the camera stops early and the marker runs out of the
+  // bottom of the card.
+  assert.ok(cardViewportHeight(width) > CARD_H, "a scaled-down column sees more column pixels than the card is tall");
+  assert.notEqual(cardViewportHeight(width), FRAME.height);
+
+  // The guard propagates: a degenerate width gives a finite viewport, not NaN.
+  for (const bad of [0, NaN, Infinity]) {
+    assert.equal(cardViewportHeight(bad), CARD_H, `cardViewportHeight(${bad}) must be finite`);
+  }
+});
+
+test("the page scrolls inside a card, and the scale sits on .scaler where GSAP can never write it", () => {
+  const html = buildComposition(input());
+
+  assert.match(html, /class="card"/, "the page must sit on a card, not fill the frame");
+  assert.match(html, new RegExp(`left:${CARD_X}px; top:${CARD_Y}px; width:${CARD_W}px; height:${CARD_H}px`));
+  assert.match(html, /\.card \{[^}]*overflow:hidden/, "the card is the window the column scrolls behind");
+
+  // The column is 1000px wide in the fixture; the static scale is CARD_W/1000.
+  const expected = (CARD_W / 1000).toFixed(6);
+  assert.ok(
+    html.includes(`<div class="scaler" style="transform:scale(${expected});">`),
+    "the column->card scale must be a static inline transform on .scaler",
+  );
+
+  // GSAP writes the WHOLE transform property when it tweens y. If the scale
+  // were on .column it would be erased by the first camera key and the page
+  // would jump to full size mid-video.
+  assert.doesNotMatch(html, /y:\s*-key\.y[^}]*\}\s*,\s*key\.t\s*\)\s*;\s*[\s\S]{0,40}scaler/);
+  const js = html.split('<script>')[1] ?? "";
+  assert.ok(!js.includes('".scaler"') && !js.includes("'.scaler'"), "the runtime script must never touch .scaler");
+  assert.ok(js.includes('getElementById("column")'), "the camera still tweens .column, in unscaled column pixels");
+});
+
+test("captions clear Instagram's chrome and are still positioned with top, never bottom", () => {
+  const html = buildComposition(input());
+  assert.equal(CAPTION_BASELINE, 1720);
+  assert.match(html, new RegExp(`\\.caption-line \\{[^}]*top:${CAPTION_BASELINE}px`));
+  // `bottom:` on an autoAlpha-driven absolutely positioned element never
+  // painted at all in the real renderer — see the CAPTION_BASELINE doc comment.
+  assert.doesNotMatch(html, /\.caption-line \{[^}]*bottom:/);
+  assert.doesNotMatch(html, /\.hook-text \{[^}]*bottom:/);
+  assert.doesNotMatch(html, /\.cta-card \{[^}]*bottom:/);
+});
+
+test("the progress bar is one scaleX over the whole duration", () => {
+  const html = buildComposition(input());
+  assert.match(html, /id="progress"/);
+  assert.match(html, /tl\.to\(progress, \{ scaleX: 1, duration: Math\.max\(0\.001, data\.duration\)/);
+});
+
+// --- Hook card (spec §2.2) --------------------------------------------------
+
+const withHook = (hook: string, hookKeywords?: string[]) => {
+  const base = input();
+  return { ...base, pkg: { ...base.pkg, hook, ...(hookKeywords ? { hookKeywords } : {}) } };
+};
+
+const hookText = (html: string) => {
+  const m = html.match(/<div class="hook-text">([\s\S]*?)<\/div>/);
+  return m ? m[1] : null;
+};
+
+test("hookKeywords are painted in the accent, case-insensitively and on word boundaries", () => {
+  const html = buildComposition(withHook("The quiet Truth about truthful people.", ["truth"]));
+  const text = hookText(html);
+  assert.ok(text, "the hook card must render pkg.hook");
+
+  // "Truth" matches with its own casing preserved; "truthful" must NOT match —
+  // it is a longer word, not the keyword.
+  assert.ok(text!.includes('<span class="hook-key">Truth</span>'), `expected the accent span, got: ${text}`);
+  assert.ok(!text!.includes('<span class="hook-key">truth</span>ful'), "a keyword must not match inside a longer word");
+  assert.equal((text!.match(/hook-key/g) ?? []).length, 1);
+});
+
+test("an absent, empty, or never-occurring hookKeywords renders the plain hook instead of throwing", () => {
+  for (const keywords of [undefined, [], ["nowhere"], ["", "   "]]) {
+    const html = buildComposition(withHook("A plain hook line.", keywords));
+    const text = hookText(html);
+    assert.equal(text, "A plain hook line.", `keywords=${JSON.stringify(keywords)} must render the hook unpainted`);
+  }
+});
+
+test("hook text is escaped on both sides of an accent span", () => {
+  const html = buildComposition(withHook(`</script><b>danger</b> & "quotes"`, ["danger"]));
+  const text = hookText(html);
+  assert.ok(text);
+  assert.ok(!text!.includes("<b>"), "raw markup must never survive into the hook card");
+  assert.ok(text!.includes('<span class="hook-key">danger</span>'), "the keyword itself is still painted");
+  assert.equal((html.match(/<script[\s>]/g) ?? []).length, 3, "a </script> in the hook must not close a tag early");
+});
+
+test("the hook card's window ends at the end of beat 0, and it fades out before then", () => {
+  const html = buildComposition(input());
+  const match = html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/);
+  assert.ok(match);
+  const data = JSON.parse(match![1]) as { hook: { end: number; fadeAt: number } | null };
+
+  assert.ok(data.hook, "the hook card must exist — pkg.hook is the single biggest retention lever");
+  // Beat 0's measured clip end is 2, plus the AUDIO_OFFSET lead-in.
+  assert.ok(Math.abs(data.hook!.end - (AUDIO_OFFSET + 2)) < 1e-9, `expected ${AUDIO_OFFSET + 2}, got ${data.hook!.end}`);
+  assert.ok(data.hook!.fadeAt > 0 && data.hook!.fadeAt < data.hook!.end, "the fade must finish by beat 0's end, not start there");
+});
+
+test("no beats at all produces no hook card rather than one that never leaves", () => {
+  const base = input();
+  const empty = { ...base, pkg: { ...base.pkg, beats: [] }, beats: [], captions: [], sweeps: [] };
+  const html = buildComposition(empty);
+
+  assert.ok(!html.includes('id="hook"'), "with no beat 0 there is no honest moment to hand the page over at");
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as {
+    hook: unknown;
+    pops: unknown[];
+  };
+  assert.equal(data.hook, null);
+  assert.deepEqual(data.pops, []);
+});
+
+test("the CTA end card renders pkg.cta and holds to the end", () => {
+  const html = buildComposition(input());
+  assert.match(html, /<div class="cta-text">Follow\.<\/div>/);
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as {
+    cta: { start: number } | null;
+    duration: number;
+  };
+  assert.ok(data.cta);
+  assert.ok(data.cta!.start < data.duration, "the CTA card must actually appear inside the composition");
+  // It fades in and is never faded back out: exactly one tween touches ctaEl,
+  // and it is the fromTo. A `tl.to(ctaEl, ...)` anywhere would be a second
+  // tween on the same property of the same element — the shape that does not
+  // survive a seek — and would also blank the end card during the outro hold.
+  const js = html.split("<script>")[1] ?? "";
+  assert.ok(js.includes("tl.fromTo(ctaEl,"), "the CTA card fades in with a single guarded fromTo");
+  assert.ok(!js.includes("tl.to(ctaEl,"), "the CTA card must never be faded back out — nothing follows it");
+  assert.equal((js.match(/tl\.(to|fromTo)\(ctaEl,/g) ?? []).length, 1);
+});
+
+// --- Card pop (spec §2.3) ---------------------------------------------------
+
+test("the card pop lives on its own wrapper, fires only on page changes, and never overlaps itself", () => {
+  const base = input();
+  // Three pages, four beats: pages 0,0,1,2 -> exactly two page changes.
+  const pages = [
+    { src: "assets/page-00.jpg", width: 1000, height: 1400 },
+    { src: "assets/page-01.jpg", width: 1000, height: 1400 },
+    { src: "assets/page-02.jpg", width: 1000, height: 1400 },
+  ];
+  const pkgBeats = [0, 0, 1, 2].map((sourcePage, i) => ({
+    id: `b${i}`, voiceover: "x", onScreen: `B${i}`, sourcePage, startWord: 0, endWord: 1,
+  }));
+  const beats = pkgBeats.map((_, i) => ({
+    index: i, text: "x", file: `b${i}.wav`, start: i * 2, end: i * 2 + 2,
+    speechStart: i * 2 + 0.1, speechEnd: i * 2 + 1.9,
+  }));
+  const html = buildComposition({
+    ...base, pages, pkg: { ...base.pkg, beats: pkgBeats }, beats,
+    sweeps: pkgBeats.map(() => []), totalDuration: 8,
+  });
+
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as {
+    pops: { t: number; d: number; from: number }[];
+  };
+  assert.equal(data.pops.length, 2, "one pop per page change — not one per beat, and not one per camera key");
+  assert.ok(Math.abs(data.pops[0].t - (AUDIO_OFFSET + 4)) < 1e-9);
+  assert.ok(Math.abs(data.pops[1].t - (AUDIO_OFFSET + 6)) < 1e-9);
+
+  // Two overlapping fromTos on one property of one element are order-dependent,
+  // and order is exactly what a seek does not preserve.
+  for (let i = 1; i < data.pops.length; i++) {
+    assert.ok(
+      data.pops[i].t >= data.pops[i - 1].t + data.pops[i - 1].d,
+      `pop ${i} starts at ${data.pops[i].t}, before pop ${i - 1} ends at ${data.pops[i - 1].t + data.pops[i - 1].d}`,
+    );
+  }
+
+  // The pop element must receive no other tween.
+  const js = html.split("<script>")[1] ?? "";
+  const popRefs = js.match(/\bpop\b(?!Refs)/g) ?? [];
+  assert.ok(js.includes('getElementById("card-pop")'));
+  assert.ok(popRefs.length > 0);
+  assert.ok(!js.includes("tl.to(pop,"), ".card-pop must carry the scale fromTo and nothing else");
+});
+
+test("with a real cameraTrack call the marker never leaves the card (live browser)", async () => {
+  // The controller's exact wiring: cameraTrack is given the card's viewport in
+  // COLUMN space, not FRAME.height. This is the check that fails loudly if that
+  // argument is ever swapped back.
+  const base = input();
+  const page = { src: "assets/page-00.jpg", width: 1000, height: 3000 };
+  const steps = [0, 1, 2, 3, 4].map((i) => ({
+    box: { x0: 60, y0: 200 + i * 600, x1: 700, y1: 250 + i * 600 },
+    start: i * 1.5, end: i * 1.5 + 1.4,
+  }));
+  const pkgBeats = steps.map((_, i) => ({
+    id: `b${i}`, voiceover: "x", onScreen: `B${i}`, sourcePage: 0, startWord: 0, endWord: 1,
+  }));
+  const beatAudio = steps.map((s, i) => ({
+    index: i, text: "x", file: `b${i}.wav`, start: s.start, end: s.end,
+    speechStart: s.start, speechEnd: s.end,
+  }));
+  const camera = cameraTrack(steps, cardViewportHeight(page.width), page.height);
+  assert.ok(camera.length > 0, "the fixture must actually make the camera move");
+
+  const html = buildComposition({
+    ...base,
+    pages: [page],
+    pkg: { ...base.pkg, beats: pkgBeats },
+    beats: beatAudio,
+    captions: [],
+    sweeps: steps.map((s) => [s]),
+    camera,
+    totalDuration: 7.5,
+  });
+
+  const browser = await chromium.launch();
+  try {
+    const tab = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+    await tab.setContent(html, { waitUntil: "load" });
+    await tab.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+
+    for (let i = 0; i < steps.length; i++) {
+      const t = AUDIO_OFFSET + steps[i].end - 0.05; // the stroke is fully drawn
+      const rects = await tab.evaluate(
+        ({ time, index }) => {
+          (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+          const strokeEl = document.querySelector(`[data-stroke="${index}"]`);
+          const cardEl = document.getElementById("card");
+          if (!strokeEl || !cardEl) return null;
+          const s = strokeEl.getBoundingClientRect();
+          const c = cardEl.getBoundingClientRect();
+          return { s: { top: s.top, bottom: s.bottom, left: s.left, right: s.right }, c: { top: c.top, bottom: c.bottom, left: c.left, right: c.right } };
+        },
+        { time: t, index: i },
+      );
+      assert.ok(rects, `stroke ${i} and the card must both exist`);
+      const { s, c } = rects!;
+      assert.ok(s.top >= c.top - 1 && s.bottom <= c.bottom + 1, `stroke ${i} is outside the card vertically (${s.top}-${s.bottom} vs card ${c.top}-${c.bottom}) — the camera was given the wrong viewport height`);
+      assert.ok(s.left >= c.left - 1 && s.right <= c.right + 1, `stroke ${i} is outside the card horizontally`);
+    }
   } finally {
     await browser.close();
   }

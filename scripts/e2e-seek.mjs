@@ -72,14 +72,26 @@ async function stateAt(page, t) {
     ({ t, props }) => {
       window.__tl.pause(t);
       const out = {};
-      for (const el of document.querySelectorAll("[data-stroke], .caption-line, #column")) {
+      // Every element the timeline writes to. The framed layout (spec
+      // 2026-08-23) added four tweened elements — #card-pop, #progress, #hook
+      // and #cta-card — and #card-pop is the riskiest tween in the whole
+      // composition (several non-overlapping fromTo scale tweens on one
+      // element). A harness that did not look at them would report
+      // "seek-safe" while proving nothing about the new work, so the selector
+      // grew with the composition rather than the composition being trimmed
+      // to fit the harness.
+      for (const el of document.querySelectorAll(
+        "[data-stroke], .caption-line, .cue, #column, #card-pop, #progress, #hook, #cta-card",
+      )) {
         const cs = getComputedStyle(el);
         const key =
           el.dataset.stroke !== undefined
             ? `stroke:${el.dataset.stroke}`
             : el.dataset.caption !== undefined
               ? `caption:${el.dataset.caption}`
-              : el.id;
+              : el.dataset.cue !== undefined
+                ? `cue:${el.dataset.cue}`
+                : el.id;
         out[key] = Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
       }
       return out;
