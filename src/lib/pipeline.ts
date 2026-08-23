@@ -20,7 +20,8 @@ import { synthesizeVoiceover } from "./media/tts";
 import { generateMusicBed } from "./media/ffmpeg";
 import { buildCaptions, toSrt } from "./media/captions";
 import { sweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
-import { buildComposition, FRAME, AUDIO_OFFSET, OUTRO_TAIL } from "./video/composition/build";
+import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
+import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { marginalia } from "./video/composition/themes/marginalia";
 import { writeProject, checkProject, renderProject } from "./video/render";
 import type { BookTheme } from "./video/composition/theme-contract";
@@ -616,7 +617,22 @@ export async function runEpisode(episodeId: string): Promise<void> {
     });
 
     const columnHeight = compPages.reduce((sum, p) => sum + p.height, 0);
-    const camera = cameraTrack(columnSteps, FRAME.height, columnHeight);
+
+    // The window the viewer actually sees is the CARD, not the whole frame:
+    // since spec 2026-08-23 the page scrolls inside a 960x1120 paper card
+    // rather than filling all 1080x1920. `cameraTrack` works entirely in
+    // column pixels, so it must be given the card's height expressed in that
+    // space -- `cardViewportHeight` does exactly that conversion.
+    //
+    // Passing `FRAME.height` here still typechecks and still passes every
+    // composition test (they build their own camera), and it fails silently in
+    // two ways at once: the camera stops scrolling ~640 column pixels early so
+    // the end of the last page is never brought into the card, and the "middle
+    // third" the marker is centred in is a third of the wrong number, so the
+    // marker drifts out of the bottom of the card. Both look like a highlight
+    // bug and are not one.
+    const columnWidth = compPages.length ? Math.max(...compPages.map((p) => p.width)) : 0;
+    const camera = cameraTrack(columnSteps, cardViewportHeight(columnWidth), columnHeight);
 
     // The music bed: a full-composition-length pad, sidechain-ducked against
     // the voice, that is what actually carries the CTA's outro hold — the
@@ -672,6 +688,64 @@ export async function runEpisode(episodeId: string): Promise<void> {
         visualPlan: JSON.stringify({ ...range, sweeps, camera }),
       },
     });
+
+    // Thumbnails: six posters (quote / bold / split, in 9:16 and 16:9) built
+    // from the operator's own photograph. Best-effort, same contract as the
+    // music bed above -- a poster that fails to render must never sink a video
+    // that is otherwise finished.
+    //
+    // The focus box is the single widest stroke in the whole episode: the
+    // longest continuous run of highlighted words is, by construction, the
+    // most quotable line on the page, so it is what the crop centres on.
+    // `sweeps[i]` is beat `i`'s strokes in PAGE-LOCAL coordinates, which is
+    // exactly what the thumbnail renderer wants -- `columnSteps` would be
+    // wrong here, its y values carry the whole column's offset.
+    let focus: ThumbFocus | null = null;
+    let widest = 0;
+    sweeps.forEach((steps, i) => {
+      const sourcePage = pkg.beats[i]?.sourcePage;
+      // `ThumbFocus.pageIndex` indexes the `pages` ARRAY handed below, not the
+      // book's own page numbering; an episode can cover a non-contiguous slice
+      // of an upload, so the two are not interchangeable.
+      const arrayIndex = compPages.findIndex((p) => p.pageIndex === sourcePage);
+      if (arrayIndex < 0) return;
+      for (const step of steps) {
+        const area = Math.max(0, step.box.x1 - step.box.x0) * Math.max(0, step.box.y1 - step.box.y0);
+        if (area <= widest) continue;
+        widest = area;
+        focus = { pageIndex: arrayIndex, x0: step.box.x0, y0: step.box.y0, x1: step.box.x1, y1: step.box.y1 };
+      }
+    });
+
+    try {
+      const specs = await generateThumbnails({
+        episodeId,
+        pkg,
+        // `p.from` is the real path on disk. `p.src` is the "assets/..."
+        // reference the composition uses, which nothing outside the rendered
+        // project directory can resolve.
+        pages: compPages.map((p) => ({ src: p.from, width: p.width, height: p.height })),
+        focus,
+        outDir: thumbsDir(episodeId),
+      });
+      if (specs.length) {
+        await prisma.episode.update({
+          where: { id: episodeId },
+          data: { thumbnails: serializeThumbnails(specs) },
+        });
+      }
+    } catch (err) {
+      const existing: string[] = episode.notes ? JSON.parse(episode.notes) : [];
+      await prisma.episode.update({
+        where: { id: episodeId },
+        data: {
+          notes: JSON.stringify([
+            ...existing,
+            `Thumbnail generation failed (${message(err)}) — the video is unaffected.`,
+          ]),
+        },
+      });
+    }
 
     const projectDir = path.join(WORK_ROOT, "projects", episodeId);
     await writeProject({
