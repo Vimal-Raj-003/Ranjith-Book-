@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 
+import { renderPad, levelAndFade, toWav, type MusicMood } from "./music-synth";
+
 const exec = promisify(execFile);
 
 function resolveBin(name: "ffmpeg" | "ffprobe"): string {
@@ -110,15 +112,6 @@ export async function toMp3(input: string, out: string) {
  *
  * Semitone offsets from the key's root, one entry per chord, three voices each.
  */
-interface MusicMood {
-  id: string;
-  /** Chord voicings as semitone offsets from the root. */
-  progression: number[][];
-  /** Seconds per chord. Slower reads calmer. */
-  chordSeconds: number;
-  /** Root note in Hz. Kept low-mid so it never crowds the voice. */
-  root: number;
-}
 
 const MOODS: Record<string, MusicMood> = {
   // Dark, developer-native. Minor, unhurried, no brightness.
@@ -153,7 +146,6 @@ const MOODS: Record<string, MusicMood> = {
   },
 };
 
-const semitone = (root: number, n: number) => root * Math.pow(2, n / 12);
 
 /**
  * Where the bed sits before it ducks, in LUFS.
@@ -204,114 +196,47 @@ export async function generateMusicBed(
 ) {
   const d = Math.max(1, +durationSec.toFixed(3));
   const mood = MOODS[opts.style ?? "terminal"] ?? MOODS.terminal;
-  const fadeOut = Math.max(1, Math.min(4, d * 0.1));
 
-  const inputs: string[] = [];
-  const parts: string[] = [];
-  const voices: string[] = [];
-  let idx = 0;
+  // Pass one: the pad itself, synthesized directly and levelled arithmetically.
+  //
+  // This used to be an ffmpeg filter graph: one `sine` input per chord voice,
+  // each delayed with `adelay`, all mixed with `amix`. At a real video length
+  // that is ~67 inputs, and it raced — the same command produced a correct bed
+  // on one run and a bed that was loud for eight seconds and then digitally
+  // silent for the remaining ninety on the next. See `music-synth.ts` for the
+  // full account. Nothing about the sound has changed; only how it is built.
+  const pad = levelAndFade(renderPad(d, mood), BED_MEAN_DB, d);
+  const raw = `${out}.raw.wav`;
+  await fs.promises.writeFile(raw, toWav(pad));
 
-  // Chords are laid out end to end and each one overlaps its neighbour, so the
-  // bed never lands on a silent seam between them.
-  const overlap = 1.2;
-  const slots = Math.ceil(d / mood.chordSeconds);
-
-  for (let slot = 0; slot < slots; slot++) {
-    const at = slot * mood.chordSeconds;
-    const chord = mood.progression[slot % mood.progression.length];
-    // A little longer than its slot, so it is still sounding as the next enters.
-    const len = Math.min(mood.chordSeconds + overlap, d - at);
-    if (len <= 0.3) break;
-
-    chord.forEach((step, voice) => {
-      const hz = semitone(mood.root, step);
-      inputs.push("-f", "lavfi", "-i", `sine=frequency=${hz.toFixed(3)}:duration=${len.toFixed(3)}`);
-      // The top voice is quietest: a pad is felt through its root, not its top.
-      const level = [0.5, 0.32, 0.2][voice] ?? 0.2;
-      const rise = Math.min(1.4, len * 0.45);
-      const fall = Math.min(1.6, len * 0.5);
-      parts.push(
-        `[${idx}]volume=${level},` +
-          `afade=t=in:st=0:d=${rise.toFixed(3)},` +
-          `afade=t=out:st=${(len - fall).toFixed(3)}:d=${fall.toFixed(3)},` +
-          `adelay=${Math.round(at * 1000)}|${Math.round(at * 1000)}[v${idx}]`,
-      );
-      voices.push(`[v${idx}]`);
-      idx++;
-    });
+  // Pass two: duck the bed against the narration. This stays in ffmpeg because
+  // sidechain compression genuinely is its job — and this graph has two inputs,
+  // not sixty-seven.
+  if (!opts.voicePath || !fs.existsSync(opts.voicePath)) {
+    // Nothing to duck against: the levelled pad IS the bed.
+    await fs.promises.rename(raw, out);
+    return;
   }
 
-  // A breath of filtered noise so the pad has air around it rather than
-  // sounding like a synthesizer alone in a dry room.
-  inputs.push("-f", "lavfi", "-i", `anoisesrc=d=${d}:c=pink:a=0.04:seed=7`);
-  parts.push(`[${idx}]lowpass=f=620,volume=0.30[air]`);
-  voices.push("[air]");
-  idx++;
-
-  // Everything above 1.1 kHz belongs to the consonants that carry speech
-  // intelligibility, so the bed is not allowed up there at all.
-  parts.push(
-    `${voices.join("")}amix=inputs=${voices.length}:normalize=0[mix]`,
-    // Filter first, measure second: loudnorm should judge what will actually be
-    // heard, not the low end that is about to be removed. The fades come after
-    // the measurement so the normaliser cannot undo them.
-    `[mix]lowpass=f=1100,highpass=f=55,` +
-      `afade=t=in:st=0:d=2,` +
-      `afade=t=out:st=${(d - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}[bed]`,
-  );
-
-  // Pass one: the pad itself, at whatever level the synthesis happened to land
-  // on. Written to a scratch file rather than piped, because the level has to
-  // be measured off a complete file before the gain can be known.
-  const raw = `${out}.raw.wav`;
+  // The narration starts after the intro card, so the key has to be shifted
+  // by the same offset or the bed ducks in the wrong places.
+  const offsetMs = Math.round((opts.voiceOffsetSec ?? 0) * 1000);
   await ffmpeg([
-    ...inputs,
-    "-filter_complex", parts.join(";"),
-    "-map", "[bed]",
-    "-ar", "44100", "-ac", "1",
-    "-t", String(d),
-    raw,
-  ]);
-
-  // Pass two: correct the level to the target, then duck.
-  //
-  // `loudnorm` would be the obvious tool and is the wrong one here: its
-  // lookahead buffer swallows the last seconds of the stream, which on a
-  // thirty-second bed cost two and a half seconds of music at the end of the
-  // video. Measuring the finished file and applying a plain gain is exact,
-  // deterministic, and cannot shorten anything.
-  const gainDb = +(BED_MEAN_DB - (await meanLevelDb(raw))).toFixed(2);
-
-  const second: string[] = ["-i", raw];
-  const chain: string[] = [`[0]volume=${gainDb}dB[lvl]`];
-  let last = "[lvl]";
-
-  if (opts.voicePath && fs.existsSync(opts.voicePath)) {
-    // The narration starts after the intro card, so the key has to be shifted
-    // by the same offset or the bed ducks in the wrong places.
-    const offsetMs = Math.round((opts.voiceOffsetSec ?? 0) * 1000);
-    second.push("-i", opts.voicePath);
+    "-i", raw,
+    "-i", opts.voicePath,
+    "-filter_complex",
     // Padded with silence past the end of the narration, because
     // `sidechaincompress` ends when its *shortest* input ends. Without this the
     // bed is truncated to the length of the voice — so the outro tail, which is
     // exactly where the call-to-action card sits, played in silence.
-    chain.push(`[1]adelay=${offsetMs}|${offsetMs},apad[key]`);
-    // The bed is now 10 dB louder than it used to be (-22 vs -32), so the old
-    // gentle ratio would leave it sitting on top of the narration instead of
-    // stepping back under it — the ratio has to rise to compensate. Attack and
-    // release are unchanged: a hard ratio with a fast release pumps audibly,
-    // which is worse than no ducking at all, and 500ms still lets the bed
-    // return between sentences, not between words.
-    chain.push(
-      `${last}[key]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=500:makeup=1[ducked]`,
-    );
-    last = "[ducked]";
-  }
-
-  await ffmpeg([
-    ...second,
-    "-filter_complex", chain.join(";"),
-    "-map", last,
+    `[1]adelay=${offsetMs}|${offsetMs},apad[key];` +
+      // Gentle and slow. A hard ratio with a fast release pumps audibly, which
+      // is worse than no ducking at all. 500ms lets the bed return between
+      // sentences, not between words. The ratio is 6 rather than the original
+      // 4 because the bed now sits ~6 dB under the voice instead of ~16: at
+      // the old level a gentler duck was enough, at this one it is not.
+      `[0][key]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=500:makeup=1[ducked]`,
+    "-map", "[ducked]",
     "-ar", "44100", "-ac", "1",
     "-t", String(d),
     out,
