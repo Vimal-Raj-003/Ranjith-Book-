@@ -15,7 +15,14 @@ const nextConfig: NextConfig = {
   // normally. Same failure mode as pdfkit above, and `sharp` gets it for the
   // same underlying reason (a native/WASM module that must see its own real
   // path on disk).
-  serverExternalPackages: ["pdfkit", "tesseract.js", "sharp"],
+  //
+  // playwright-core is here for the same reason: it resolves its driver, its
+  // browser registry (`browsers.json`) and the cached Chromium executable from
+  // paths derived from its own package directory, so bundling it points those
+  // lookups into the bundle graph rather than at real files. Thumbnails are
+  // rendered by `src/lib/thumbnails` from inside the pipeline, which runs in
+  // the Next.js server runtime, so it must be resolved by Node.
+  serverExternalPackages: ["pdfkit", "tesseract.js", "sharp", "playwright-core"],
 };
 
 export default nextConfig;

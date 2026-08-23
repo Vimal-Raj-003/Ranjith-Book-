@@ -157,6 +157,11 @@ model Episode {
   audioPath   String?
   projectPath String?
   videoPath   String?
+  /// JSON ThumbSpec[] — {key, aspect, variant, path, width, height}, written by
+  /// `generateThumbnails`. Nullable, and never backfilled: an episode rendered
+  /// before thumbnails existed is not invalid, it simply has none, and the
+  /// delivery route treats absent and empty identically.
+  thumbnails  String?
 
   startedAt  DateTime?
   finishedAt DateTime?
