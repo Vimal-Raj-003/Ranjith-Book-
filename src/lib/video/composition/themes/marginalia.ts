@@ -37,6 +37,7 @@ export const marginalia: BookTheme = {
     cardEdge: "rgba(255,244,214,0.22)",
     cardShadow: "rgba(0,0,0,0.62)",
     hookInk: "#fdf6e6",
+    hookKey: "#ffd23f",
     hookScrim: "rgba(12,8,5,0.68)",
     ctaInk: "#231a10",
     ctaFace: "#f8f2e2",

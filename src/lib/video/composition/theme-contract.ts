@@ -38,6 +38,15 @@ export interface ThemePalette {
   cardShadow: string;
   /** Hook card body text. */
   hookInk: string;
+  /**
+   * The accent as painted ON the hook card's dark scrim, which is not the same
+   * colour as `accent` on paper. Marginalia's `accent` (#d9531e) reaches only
+   * about 4:1 against the backdrop, and the hook has roughly two seconds to be
+   * read at phone size — the thumbnail renderer already made this distinction
+   * for the identical reason, and the two must agree or a thumbnail advertises
+   * a video in a different colour than the video uses.
+   */
+  hookKey: string;
   /** The scrim behind the hook text, so the page reads through it. */
   hookScrim: string;
   /** CTA end-card body text. */

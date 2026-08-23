@@ -466,7 +466,7 @@ function sharedCss(theme: BookTheme): string {
                width:900px; text-align:center; font-size:76px; font-weight:800; line-height:1.14;
                font-family: Inter, system-ui, sans-serif; color:${p.hookInk};
                letter-spacing:-0.5px; }
-  .hook-key { color:${p.accent}; }
+  .hook-key { color:${p.hookKey}; }
 
   /* --- CTA end card (§2.5) ------------------------------------------------ */
   .cta-card { position:absolute; left:${CARD_X + 40}px; top:${Math.round(CARD_Y + CARD_H / 2 - 200)}px;
