@@ -161,7 +161,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       GROUNDING_SYSTEM,
       // The model is handed the exact verified name (or null), not just a
       // yes/no, so it can catch a WRONG name — not only an absent one.
-      buildGroundingPrompt(candidate, pages, avoidHooks, safeAuthor),
+      buildGroundingPrompt(candidate, pages, avoidHooks, safeAuthor, bookTitle),
       GROUNDING_SCHEMA,
       model,
     );

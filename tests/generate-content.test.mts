@@ -292,3 +292,40 @@ test("the happy path keeps the reservation and records a used hook", async () =>
     await prisma.usedHook.deleteMany({ where: { bookId } });
   });
 });
+
+/**
+ * THE REGRESSION TEST FOR "a fabricated source title".
+ *
+ * The grounding checker is adversarial and is handed the page text. It was
+ * never handed the BOOK TITLE, which the operator types at upload — so when a
+ * description named the book, the checker could only conclude the model had
+ * invented a source, and blocked it. On a real run that rejected the episode
+ * after two rewrites and produced no video at all.
+ *
+ * A book's title is almost never printed on a page from the middle of a
+ * chapter, so its absence from the source text proves nothing whatsoever.
+ */
+test("the grounding checker is told the book title is operator-supplied, not invented", async () => {
+  const { buildGroundingPrompt } = await import("../src/lib/content/verify");
+
+  const pkg = {
+    title: "T", hook: "H", ideaKey: "k", cta: "C",
+    description: "This passage from The Eagle Eye pulls them apart.",
+    hashtags: [], takeaway: [],
+    beats: [{ id: "hook", voiceover: "V", onScreen: "O", sourcePage: 0, startWord: 0, endWord: 1 }],
+  };
+  const pages = [{ pageIndex: 0, chapterHeading: null, words: ["busy", "is", "not", "productive"] }];
+
+  const prompt = buildGroundingPrompt(pkg as never, pages, [], null, "The Eagle Eye");
+  assert.match(prompt, /BOOK TITLE: "The Eagle Eye"/);
+  assert.match(prompt, /GIVEN FACT/,
+    "the checker must be told the title is given, or it flags the script for naming the book");
+  assert.match(prompt, /not expected to appear in the page text/);
+  // The title genuinely is absent from the pages — that is the whole point.
+  assert.ok(!pages[0].words.join(" ").includes("Eagle"));
+
+  // A book with no title supplied must not produce a dangling instruction.
+  const untitled = buildGroundingPrompt(pkg as never, pages, [], null, "   ");
+  assert.match(untitled, /BOOK TITLE: not supplied/);
+  assert.doesNotMatch(untitled, /GIVEN FACT/);
+});

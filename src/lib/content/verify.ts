@@ -71,6 +71,8 @@ Check each of these independently:
 
 2. NO INVENTION. No statistics, no named study, no biographical detail about the author, and no anecdote that is not printed on the page. If a beat asserts something the page never states, that is a blocker.
 
+   ONE EXCEPTION, and it is important: the BOOK TITLE is supplied to you separately below. It came from the operator who photographed the pages, NOT from the model, and NOT from the page text. A book's title is almost never printed on a mid-chapter page, so its absence from the source pages proves nothing. The script naming the book by that title is correct and expected — never flag it as a fabricated or invented source. A DIFFERENT title, one that is neither the supplied title nor a trivial case or spelling variant of it, IS a fabrication and is a blocker.
+
 3. WORD-INDEX GROUNDING — answer this SEPARATELY from everything else, in the "indicesGrounded" field. For every beat, read its voiceover, then read the page's numbered words at that beat's sourcePage between startWord and endWord. Ask: are these actually the words this beat is talking about? An index range can be in-bounds and forward-moving and still be wrong — it can point at the wrong sentence, a neighboring paragraph, or words several lines away from what the beat actually discusses. That mismatch is invisible to any check that only looks at the numbers; it is only visible to a reader who reads both the beat and the words. Set "indicesGrounded" to false if even one beat's range does not match what it is actually about, and name the beat in "issues" as a blocker. Also confirm ranges move forward across beats that share a page — a later beat pointing at earlier words than a beat before it is also a blocker here.
 
 4. AUTHOR IDENTITY. You will be told whether an author is verified for this book, and if so, the exact verified name. If NO author is verified: the script must name no one, and must not stand in for one either — "the writer", "the author" used generically, "whoever wrote this", or any other construction that attributes belief, argument, or intent to a person behind the page is a blocker, set "authorNamed" true. If an author IS verified: that exact name may appear and is not a problem — but the WRONG name (anyone else, including a plausible-sounding but different real author) is exactly the same fabrication as naming someone when no author was ever verified, and is a blocker; set "authorNamed" true for that too. A generic unnamed stand-in is also still a blocker even when an author is verified, unless it is unambiguously referring to the verified person.
@@ -89,6 +91,18 @@ function buildPrompt(
    *  and to the writer's prompt, so the model has the real name to compare
    *  against rather than just a yes/no. */
   verifiedAuthor: string | null,
+  /**
+   * The operator's own book title, as typed at upload.
+   *
+   * Without this the checker cannot tell an operator-supplied title from a
+   * hallucinated one, and it reasonably assumes the worst: a real run was
+   * rejected after two rewrites with "a fabricated source title" because the
+   * description named the book, and the title does not appear anywhere in the
+   * photographed pages. It almost never does — a page from the middle of a
+   * chapter does not reprint the cover. Left unfixed this blocks a video for
+   * most books whose script mentions them by name at all.
+   */
+  bookTitle: string,
 ): string {
   const pageText = pages
     .map((p) => {
@@ -98,6 +112,12 @@ function buildPrompt(
     .join("\n\n");
 
   return [
+    `BOOK TITLE: ${
+      bookTitle.trim()
+        ? `"${bookTitle.trim()}" — supplied by the operator who photographed these pages. This is a GIVEN FACT, not something the script invented, and it is not expected to appear in the page text. Naming the book by this title is correct. A different book title is a fabrication.`
+        : `not supplied — the script should not name a book.`
+    }`,
+    ``,
     `AUTHOR: ${
       verifiedAuthor
         ? `verified as "${verifiedAuthor}" — only this exact name may appear. Any other name, or a generic unnamed stand-in ("the writer", "the author", "whoever wrote this"), is a fabrication just like naming an author when none was verified.`
