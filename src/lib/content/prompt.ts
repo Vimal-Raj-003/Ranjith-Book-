@@ -159,7 +159,17 @@ Rules that are not negotiable:
   on the page.
 - onScreen is a label, not a subtitle. Six words at most.
 - The call to action is the last beat, and it asks for one thing.
-- ideaKey is the single angle this episode takes, in kebab-case.`;
+- ideaKey is the single angle this episode takes, in kebab-case.
+- hook is the first thing on screen and the line the thumbnail is built from.
+  It has about two seconds to stop someone scrolling, so make it a statement or
+  a question that lands on its own, with no set-up — not a summary of what the
+  video will cover, and not a title.
+- hookKeywords are the two or three words in hook that carry its meaning. They
+  are painted in a bright accent colour while the rest of the hook stays white,
+  in the opening card and on every thumbnail — so they must appear in hook
+  EXACTLY as written there, same spelling, same word. Pick the words a reader
+  would need if they only had time to read three of them; do not pick "the",
+  "and", or any other word that carries no meaning on its own.`;
 }
 
 export function buildUserPrompt(input: GenerateInput, revisionBrief?: string): string {

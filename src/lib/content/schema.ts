@@ -48,7 +48,17 @@ export interface Beat {
 export interface ContentPackage {
   title: string;
   hook: string;
-  /** The two or three words in `hook` carrying its meaning, painted in accent. */
+  /**
+   * The two or three words in `hook` carrying its meaning, painted in the theme
+   * accent on the opening card and on every thumbnail.
+   *
+   * Required by `CONTENT_JSON_SCHEMA` and asked for explicitly in the prompt,
+   * but deliberately still OPTIONAL in TypeScript: the CLI providers have no
+   * structured-output mode, so nothing can guarantee a reply actually carries
+   * it. Every consumer must survive it being absent, empty, or naming a word
+   * that does not appear in `hook` — the accent is a flourish, and a missing
+   * flourish must never cost a video.
+   */
   hookKeywords?: string[];
   ideaKey: string;
   archetype?: Archetype;
@@ -62,12 +72,12 @@ export interface ContentPackage {
 
 export const CONTENT_JSON_SCHEMA = {
   type: "object",
-  required: ["title", "hook", "ideaKey", "beats", "cta", "description", "hashtags", "takeaway"],
+  required: ["title", "hook", "hookKeywords", "ideaKey", "beats", "cta", "description", "hashtags", "takeaway"],
   additionalProperties: false,
   properties: {
     title: { type: "string", maxLength: 100 },
     hook: { type: "string", maxLength: 140 },
-    hookKeywords: { type: "array", items: { type: "string" }, maxItems: 3 },
+    hookKeywords: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3 },
     ideaKey: { type: "string", pattern: "^[a-z0-9-]+$" },
     archetype: { type: "string", enum: ARCHETYPES },
     beats: {
