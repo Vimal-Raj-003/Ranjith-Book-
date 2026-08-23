@@ -23,21 +23,24 @@ export interface PocketVoice {
 
 /** Curated English voices from the Pocket TTS catalog, labelled by gender. */
 export const POCKET_VOICES: PocketVoice[] = [
-  { id: "alba", label: "Alba", gender: "female", note: "warm, casual — the default" },
+  { id: "alba", label: "Alba", gender: "female", note: "warm, casual" },
   { id: "cosette", label: "Cosette", gender: "female", note: "expressive, animated" },
   { id: "vera", label: "Vera", gender: "female", note: "clear, even-paced" },
   { id: "jane", label: "Jane", gender: "female", note: "bright, friendly" },
   { id: "eve", label: "Eve", gender: "female", note: "calm, measured" },
   { id: "caro_davy", label: "Caro", gender: "female", note: "conversational" },
   { id: "michael", label: "Michael", gender: "male", note: "steady, documentary" },
-  { id: "charles", label: "Charles", gender: "male", note: "deep, deliberate" },
+  { id: "charles", label: "Charles", gender: "male", note: "deep, deliberate — the default" },
   { id: "paul", label: "Paul", gender: "male", note: "natural, everyday" },
   { id: "george", label: "George", gender: "male", note: "crisp, energetic" },
   { id: "stuart_bell", label: "Stuart", gender: "male", note: "narrator tone" },
   { id: "peter_yearsley", label: "Peter", gender: "male", note: "mature, warm" },
 ];
 
-export const DEFAULT_POCKET_VOICE = "alba";
+// BookReel content targets motivation and business audiences, and the operator
+// asked for a bold, projecting read rather than the warm/casual default —
+// Charles ("deep, deliberate") fits that brief better than Alba does.
+export const DEFAULT_POCKET_VOICE = "charles";
 
 const PORT = Number(process.env.POCKET_TTS_PORT || 8123);
 const BASE = `http://127.0.0.1:${PORT}`;

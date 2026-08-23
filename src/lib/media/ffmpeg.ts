@@ -65,9 +65,11 @@ export async function concatWithGaps(segments: string[], gapSec: number, out: st
 }
 
 /**
- * Broadcast-style voice master: remove rumble, cut boxiness, lift presence so
- * consonants cut through, tame sibilance, then even out and limit the level.
- * Targets -16 LUFS, which is what YouTube and Instagram normalize to.
+ * Broadcast-style voice master: remove rumble, cut boxiness, add body and
+ * presence so the read projects, tame sibilance, then even out and limit the
+ * level. Targets -16 LUFS, which is what YouTube and Instagram normalize to —
+ * raising that target only invites their normalizer to turn it back down and
+ * costs us headroom for nothing.
  */
 export async function masterVoice(input: string, out: string) {
   await ffmpeg([
@@ -76,9 +78,10 @@ export async function masterVoice(input: string, out: string) {
     [
       "highpass=f=85",                                  // rumble and plosives
       "equalizer=f=250:t=q:w=1.0:g=-2",                 // boxiness
-      "equalizer=f=3200:t=q:w=1.2:g=2.5",               // presence, consonant clarity
-      "equalizer=f=6800:t=q:w=2.0:g=-2.5",              // de-ess
-      "acompressor=threshold=-18dB:ratio=3:attack=8:release=180",
+      "equalizer=f=1800:t=q:w=1.4:g=1.5",               // body/authority, a bolder read
+      "equalizer=f=3200:t=q:w=1.2:g=3.5",               // presence, consonant clarity
+      "equalizer=f=6800:t=q:w=2.0:g=-3",                // de-ess (bumped: bigger presence lift + denser compression bring sibilance back up)
+      "acompressor=threshold=-20dB:ratio=3.5:attack=8:release=180",
       "alimiter=limit=0.95",
       "loudnorm=I=-16:TP=-1.5:LRA=11",
     ].join(","),
@@ -155,13 +158,16 @@ const semitone = (root: number, n: number) => root * Math.pow(2, n / 12);
 /**
  * Where the bed sits before it ducks, in LUFS.
  *
- * The narration is mastered to -16 LUFS, and music under speech conventionally
- * sits 15 to 20 loudness units beneath it. Measuring to a target rather than
- * applying a guessed dB trim is what makes the four moods land at the same
- * perceived level — trimmed by hand they differed by 9 dB, because a mood with
- * longer chords is quieter in RMS terms while peaking identically.
+ * The narration is mastered to -16 LUFS. At -32 the bed sat 16 dB under it —
+ * effectively inaudible — which is exactly the operator's complaint: "the
+ * music cannot be heard." -22 puts it about 6 dB under the voice, roughly half
+ * its perceived loudness, which is what the operator asked for. Measuring to a
+ * target rather than applying a guessed dB trim is what makes the four moods
+ * land at the same perceived level — trimmed by hand they differed by 9 dB,
+ * because a mood with longer chords is quieter in RMS terms while peaking
+ * identically.
  */
-const BED_MEAN_DB = -32;
+const BED_MEAN_DB = -22;
 
 /** Mean level of a file in dB, as ffmpeg measures it. */
 export async function meanLevelDb(file: string): Promise<number> {
@@ -290,12 +296,14 @@ export async function generateMusicBed(
     // bed is truncated to the length of the voice — so the outro tail, which is
     // exactly where the call-to-action card sits, played in silence.
     chain.push(`[1]adelay=${offsetMs}|${offsetMs},apad[key]`);
-    // Gentle and slow. A hard ratio with a fast release pumps audibly, which is
-    // worse than no ducking at all — and once the bed is already 16 dB under
-    // the voice, it only needs to step back a few more to vanish behind a
-    // sentence. 500ms lets it return between sentences, not between words.
+    // The bed is now 10 dB louder than it used to be (-22 vs -32), so the old
+    // gentle ratio would leave it sitting on top of the narration instead of
+    // stepping back under it — the ratio has to rise to compensate. Attack and
+    // release are unchanged: a hard ratio with a fast release pumps audibly,
+    // which is worse than no ducking at all, and 500ms still lets the bed
+    // return between sentences, not between words.
     chain.push(
-      `${last}[key]sidechaincompress=threshold=0.08:ratio=4:attack=20:release=500:makeup=1[ducked]`,
+      `${last}[key]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=500:makeup=1[ducked]`,
     );
     last = "[ducked]";
   }
