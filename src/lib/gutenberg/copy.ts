@@ -23,4 +23,16 @@ export const copy = {
   formatMissing: "Project Gutenberg does not offer that format for this book.",
   badBookId: "That is not a valid Project Gutenberg book id.",
   badFormat: "That is not a format this app can download.",
+
+  // The local catalogue. `catalogMissing` is the one that is not a failure:
+  // it is the honest answer to "search this" before anything has been synced,
+  // and the UI turns it into a button rather than an apology.
+  catalogMissing: "The Project Gutenberg catalogue has not been downloaded yet. Sync it once and search is instant from then on.",
+  catalogNoQuery: "Type a title, an author or a subject to search the catalogue.",
+  catalogTruncated:
+    "Project Gutenberg's catalogue file arrived incomplete, so it was discarded. The previous catalogue is untouched.",
+  catalogShape:
+    "Project Gutenberg's catalogue file was not in the expected format, so it was discarded. The previous catalogue is untouched.",
+  catalogFailed: "The catalogue sync failed. The previous catalogue is untouched.",
+  catalogBusy: "A catalogue sync is already running.",
 } as const;

@@ -71,8 +71,13 @@ function statusFailure(status: number) {
 /**
  * Fetch a URL, re-verifying the allowlist and the address guard on the initial
  * request and on every redirect it answers with.
+ *
+ * Exported because the catalogue sync and the book-text fetch are outbound
+ * calls too, and they are held to exactly this standard rather than a second,
+ * subtly weaker copy of it. There is only one place in this feature that calls
+ * `fetch`, and this is it.
  */
-async function guardedFetch(
+export async function guardedFetch(
   startUrl: string,
   allow: (hostname: string) => boolean,
   timeoutMs: number,

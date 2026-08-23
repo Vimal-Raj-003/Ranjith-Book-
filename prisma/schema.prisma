@@ -221,3 +221,42 @@ model UsedIdea {
   @@unique([bookId, ideaKey])
   @@index([bookId])
 }
+
+/// Project Gutenberg's whole catalogue, downloaded once and queried locally.
+///
+/// This model exists because searching `gutendex.com` took 34 seconds for the
+/// operator's query and 42 for the next one — slow enough that the Free Books
+/// page could not be used at all. The archive publishes the same data as one
+/// 21MB CSV; it is imported here and search becomes a local `SELECT` with no
+/// network call and therefore no timeout.
+///
+/// `generation` is what makes a failed sync harmless. A sync writes a whole new
+/// generation alongside the live one and flips a single `Setting` at the end,
+/// so a run that dies halfway leaves the previous catalogue serving unchanged
+/// rather than leaving a half-populated table indistinguishable from a complete
+/// one. `src/lib/gutenberg/catalog.ts` reads and writes this table with raw SQL
+/// — a multi-row INSERT is what makes 76,000 rows a half-minute job.
+model CatalogBook {
+  /// The sync that wrote this row. Exactly one generation is ever live.
+  generation  String
+  /// Project Gutenberg's own id — the `Text#` column, and the id every
+  /// download and text fetch is keyed by.
+  gutenbergId Int
+  /// Text | Sound | Image | Dataset | … Only `Text` is searchable here.
+  type        String
+  title       String
+  /// Raw from the feed: "Shelley, Mary Wollstonecraft, 1797-1851; …".
+  authors     String
+  /// Semicolon-separated Library of Congress subject headings.
+  subjects    String
+  language    String
+  /// ISO date the archive first issued it, as a string — the feed's own form.
+  issued      String
+  /// Always `public-domain`: the feed has no rights column and everything the
+  /// archive distributes is public domain in the US. Stored rather than assumed
+  /// so the quotation budget reads a value instead of a hardcoded belief.
+  rights      String
+
+  @@id([generation, gutenbergId])
+  @@index([generation, type])
+}

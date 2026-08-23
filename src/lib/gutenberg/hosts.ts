@@ -30,6 +30,14 @@ export const API_ORIGIN = "https://gutendex.com";
 const API_HOSTS = new Set(["gutendex.com", "www.gutendex.com"]);
 
 /**
+ * Where Project Gutenberg itself serves files — the catalogue feed and the
+ * plain-text books. A fixed origin, so every URL this app builds for those two
+ * jobs is `new URL(path, FILE_ORIGIN)` with a validated integer in the path and
+ * nothing a caller typed anywhere near the host.
+ */
+export const FILE_ORIGIN = "https://www.gutenberg.org";
+
+/**
  * Where Gutenberg serves its files. `gutenberg.org` and its subdomains cover
  * the `www.` links Gutendex returns today plus the mirrors it has used before
  * (`aleph.`, `readingroo.ms` is deliberately NOT here — it is a different
