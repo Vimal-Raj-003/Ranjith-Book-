@@ -63,6 +63,7 @@ export const strings = {
     label: "Sections",
     studio: "Studio",
     library: "Library",
+    freeBooks: "Free books",
     queue: "Queue",
     comingSoon: "Soon",
     comingSoonHint: "Not built yet",

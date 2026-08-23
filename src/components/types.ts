@@ -56,4 +56,4 @@ export interface EpisodeSummary {
   thumbnails?: ThumbnailRef[];
 }
 
-export type View = "studio" | "library" | "queue";
+export type View = "studio" | "library" | "free-books" | "queue";

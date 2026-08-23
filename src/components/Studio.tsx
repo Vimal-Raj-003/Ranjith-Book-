@@ -12,6 +12,7 @@ import Inspector from "./Inspector";
 import Sidebar from "./Sidebar";
 import { Badge, Panel } from "./ui";
 import { strings } from "@/lib/strings";
+import FreeBooks from "./FreeBooks";
 import type { EpisodeState, View } from "./types";
 
 /**
@@ -125,6 +126,8 @@ export default function Studio({ email }: { email: string }) {
             )}
 
             {view === "library" && <LibraryGrid activeId={activeId} onOpen={openEpisode} />}
+
+            {view === "free-books" && <FreeBooks />}
 
             {view === "queue" && (
               <section className="flex flex-col gap-4" aria-labelledby="queue-heading">
