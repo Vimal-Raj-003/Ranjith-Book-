@@ -3,11 +3,26 @@ import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
 import { reapStaleRuns } from "@/lib/reap";
+import { parseThumbnails } from "@/lib/thumbnails/store";
+import { publicThumbs } from "@/lib/episode-view";
+
+/** `hashtags` is stored as a JSON string[]; a malformed or legacy row must not
+ *  break the poll this rides in on, so it degrades to an empty list. */
+function parseTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Polled every 1.5s by the client while an episode runs (see `PipelineRail`).
- * Kept to the fields the rail and player actually need — the full `script`/
- * `verification` JSON blobs are for a future review screen, not this poll.
+ * Kept to the fields the rail, the player and the publish panel actually need
+ * — the full `script`/`verification` JSON blobs are for a future review
+ * screen, not this poll.
  */
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -43,6 +58,14 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       startedAt: episode.startedAt,
       finishedAt: episode.finishedAt,
       totalMs: episode.totalMs,
+      // The publish panel's copy blocks. Written by the content step, so they
+      // are null until it runs — the client renders nothing rather than an
+      // empty box.
+      hook: episode.hook,
+      cta: episode.cta,
+      description: episode.description,
+      hashtags: parseTags(episode.hashtags),
+      thumbnails: publicThumbs(parseThumbnails(episode.thumbnails)),
     });
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });
