@@ -34,6 +34,12 @@ export {
   type RightsStatus,
 } from "./quotation";
 export { findAuthorMentions, type GroundingReport, type GroundingIssue } from "./verify";
+/**
+ * The purchase line is composed here, in code, and never asked of the writer —
+ * see `./book-link`. The pipeline stores `appendBookLink(pkg.description,
+ * book.bookLink)`, not `pkg.description`.
+ */
+export { appendBookLink, normalizeBookLink, BOOK_LINK_PREFIX, MAX_BOOK_LINK_LENGTH } from "./book-link";
 
 function normalizeHook(h: string): string {
   return h.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();

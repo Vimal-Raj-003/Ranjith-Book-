@@ -12,6 +12,7 @@ import { lookupBook, resolveAuthor } from "./ingest/identity";
 import { validatePlan, type EpisodePlan } from "./ingest/plan-episodes";
 import { generateContent, beatTexts, voScriptFromPackage, type Archetype } from "./content";
 import { releaseIdea } from "./content/idea";
+import { appendBookLink } from "./content/book-link";
 import { runCliJson } from "./content/cli-provider";
 import { numberedWordLines } from "./content/prompt";
 import type { CliProvider } from "./content/cli";
@@ -568,7 +569,10 @@ export async function runEpisode(episodeId: string): Promise<void> {
         hook: pkg.hook,
         script: JSON.stringify(pkg.beats),
         voScript: voScriptFromPackage(pkg),
-        description: pkg.description,
+        // The purchase link is appended in code, never asked of the model:
+        // a model that invents or mistypes a URL is worse than no URL. With
+        // no link on the book this returns the description unchanged.
+        description: appendBookLink(pkg.description, episode.book.bookLink),
         hashtags: JSON.stringify(pkg.hashtags),
         cta: pkg.cta,
         verification: report ? JSON.stringify(report) : null,

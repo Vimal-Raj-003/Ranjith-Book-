@@ -39,6 +39,10 @@ export default function UploadDropzone({
   const { show } = useToast();
   const [items, setItems] = useState<PhotoItem[]>([]);
   const [title, setTitle] = useState("");
+  // Optional. Never validated here into an error: the server drops anything
+  // that is not an http(s) URL and stores null, so a typo can never cost the
+  // operator a batch of photographs they have already taken.
+  const [bookLink, setBookLink] = useState("");
   const [rights, setRights] = useState<string>("in-copyright");
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
@@ -51,6 +55,8 @@ export default function UploadDropzone({
   const itemsRef = useRef<PhotoItem[]>(items);
 
   const titleId = useId();
+  const bookLinkId = useId();
+  const bookLinkHintId = useId();
   const rightsId = useId();
 
   useEffect(() => {
@@ -128,6 +134,7 @@ export default function UploadDropzone({
 
     const form = new FormData();
     form.set("title", title.trim());
+    form.set("bookLink", bookLink.trim());
     form.set("rightsStatus", rights);
     for (const item of items) form.append("photos", item.file, item.file.name);
 
@@ -173,6 +180,7 @@ export default function UploadDropzone({
       for (const it of items) URL.revokeObjectURL(it.url);
       setItems([]);
       setTitle("");
+      setBookLink("");
       setUploadId(null);
     } catch (err) {
       const messageText = err instanceof Error ? err.message : strings.upload.ingestError;
@@ -201,6 +209,32 @@ export default function UploadDropzone({
             className="rounded-lg border px-3 py-2 text-[14px]"
             style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
           />
+        </div>
+
+        {/* Optional, and said so on the label rather than only in the hint —
+            a field with no "(optional)" on it reads as required, and this one
+            is the difference between a video that ends on a purchase card and
+            one that quietly does not. */}
+        <div className="flex flex-1 flex-col gap-1">
+          <label htmlFor={bookLinkId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
+            {strings.upload.bookLinkLabel}
+          </label>
+          <input
+            id={bookLinkId}
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+            value={bookLink}
+            onChange={(e) => setBookLink(e.target.value)}
+            placeholder={strings.upload.bookLinkPlaceholder}
+            aria-describedby={bookLinkHintId}
+            className="rounded-lg border px-3 py-2 text-[14px]"
+            style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
+          />
+          <p id={bookLinkHintId} className="text-[11px] leading-snug" style={{ color: "var(--mute)" }}>
+            {strings.upload.bookLinkHint}
+          </p>
         </div>
 
         <div className="flex flex-col gap-1">

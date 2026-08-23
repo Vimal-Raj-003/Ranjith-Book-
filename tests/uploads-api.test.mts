@@ -1,4 +1,5 @@
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import sharp from "sharp";
@@ -193,4 +194,56 @@ test("a batch bigger than MAX_PHOTOS is refused before any bytes are read", asyn
       return true;
     },
   );
+});
+
+/**
+ * Uploads are grouped by book title, so the second batch for a book finds an
+ * existing row. The link used to be written only on creation, which meant an
+ * operator who forgot it on the first upload — or typed the wrong one — could
+ * never fix it for that series.
+ */
+test("a book link supplied on a later upload reaches a book that already exists", async () => {
+  const title = `Deep Work ${randomUUID()}`;
+  const first = new FormData();
+  first.set("title", title);
+  first.set("rightsStatus", "in-copyright");
+  first.append("photos", await photo(80, 120), "page-1.jpg");
+  const a = await createUpload(first, null);
+
+  try {
+    const before = await prisma.book.findUniqueOrThrow({ where: { id: a.bookId } });
+    assert.equal(before.bookLink, null, "no link was given the first time");
+
+    const second = new FormData();
+    second.set("title", title);
+    second.set("rightsStatus", "in-copyright");
+    second.set("bookLink", "https://example.com/the-book");
+    second.append("photos", await photo(80, 120), "page-2.jpg");
+    const b = await createUpload(second, null);
+    assert.equal(b.bookId, a.bookId, "same title means the same book, not a fork");
+
+    const after = await prisma.book.findUniqueOrThrow({ where: { id: a.bookId } });
+    assert.equal(after.bookLink, "https://example.com/the-book");
+
+    // Leaving the field blank later is not a request to erase what is there.
+    const third = new FormData();
+    third.set("title", title);
+    third.set("rightsStatus", "in-copyright");
+    third.append("photos", await photo(80, 120), "page-3.jpg");
+    await createUpload(third, null);
+    const untouched = await prisma.book.findUniqueOrThrow({ where: { id: a.bookId } });
+    assert.equal(untouched.bookLink, "https://example.com/the-book", "a blank field must not erase the link");
+
+    // And a hostile value never reaches the row.
+    const fourth = new FormData();
+    fourth.set("title", title);
+    fourth.set("rightsStatus", "in-copyright");
+    fourth.set("bookLink", "javascript:alert(1)");
+    fourth.append("photos", await photo(80, 120), "page-4.jpg");
+    await createUpload(fourth, null);
+    const safe = await prisma.book.findUniqueOrThrow({ where: { id: a.bookId } });
+    assert.equal(safe.bookLink, "https://example.com/the-book", "a non-http(s) link is discarded, not stored");
+  } finally {
+    await prisma.book.delete({ where: { id: a.bookId } });
+  }
 });

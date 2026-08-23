@@ -158,6 +158,19 @@ Rules that are not negotiable:
   no statistics, no study, no biographical detail, no anecdote that is not printed
   on the page.
 - onScreen is a label, not a subtitle. Six words at most.
+- emoji is optional, and at most ONE emoji character per beat. It stands for
+  what that beat is actually about — the object, the act, the feeling under
+  discussion — and it is shown on screen beside the label. Never decorative
+  filler: no sparkles, no fire, no rocket bolted onto a beat that has nothing
+  to do with any of them. Never the same emoji twice in one script. If no
+  single emoji honestly stands for a beat, leave the field out of that beat
+  entirely rather than reaching for a generic one. It is shown, never spoken,
+  so it must NOT also appear in that beat's voiceover.
+- NEVER write a URL, a domain, a link, or a "buy the book" line — not in
+  voiceover, not in cta, not in description, not anywhere. Where the book can
+  be bought is added afterwards, in code, from a link the operator typed
+  themselves. A link you compose is a link you invented, and a wrong one
+  published under someone else's name is worse than no link at all.
 - The call to action is the last beat, and it asks for one thing.
 - ideaKey is the single angle this episode takes, in kebab-case.
 - hook is the first thing on screen and the line the thumbnail is built from.

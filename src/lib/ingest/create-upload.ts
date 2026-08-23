@@ -5,6 +5,7 @@ import { uploadDir } from "../paths";
 import { checkPhotoBatch, MAX_PHOTOS } from "./validate";
 import { normalizePhoto, deriveForComposition } from "./normalize";
 import { BadUpload } from "../errors";
+import { normalizeBookLink } from "../content/book-link";
 
 const RIGHTS = new Set(["public-domain", "in-copyright", "own-work"]);
 
@@ -48,6 +49,10 @@ export async function createUpload(form: FormData, userId: string | null): Promi
   const rightsStatus = String(form.get("rightsStatus") ?? "in-copyright");
   if (!RIGHTS.has(rightsStatus)) throw new BadUpload(`"${rightsStatus}" is not a rights status.`);
 
+  // Optional, and never a reason to refuse a batch: anything that is not an
+  // http(s) URL is stored as null. See `normalizeBookLink`.
+  const bookLink = normalizeBookLink(form.get("bookLink"));
+
   const entries = form.getAll("photos").filter((v): v is File => v instanceof File);
 
   // MAX_PHOTOS is enforced from the entry count alone, before a single byte
@@ -71,7 +76,18 @@ export async function createUpload(form: FormData, userId: string | null): Promi
   let book = await prisma.book.findFirst({ where: { title } });
   const bookCreatedHere = !book;
   if (!book) {
-    book = await prisma.book.create({ data: { title, rightsStatus } });
+    // Omitted rather than written when there is no link: the column is
+    // nullable, so an absent field and an explicit null are the same row.
+    book = await prisma.book.create({ data: { title, rightsStatus, ...(bookLink ? { bookLink } : {}) } });
+  } else if (bookLink && bookLink !== book.bookLink) {
+    // The book already exists, because uploads are grouped by title. Typing a
+    // link is an explicit act, so it is applied here too — otherwise an
+    // operator who forgot the link on the first upload, or who typed the wrong
+    // one, could never correct it for the series.
+    //
+    // Only a link that was actually supplied does anything: leaving the field
+    // blank on a later upload is not a request to erase the one already there.
+    book = await prisma.book.update({ where: { id: book.id }, data: { bookLink } });
   }
 
   // `upload` starts null and is set the moment `prisma.upload.create`

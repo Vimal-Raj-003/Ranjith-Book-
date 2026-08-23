@@ -96,6 +96,10 @@ export const strings = {
     chooseFiles: "Choose files",
     titleLabel: "Book title",
     titlePlaceholder: "e.g. Atomic Habits",
+    bookLinkLabel: "Book link (optional)",
+    bookLinkPlaceholder: "https://…  where people can buy it",
+    bookLinkHint:
+      "If you add one, the description ends with this link and the video finishes on a buy-the-book card. Leave it blank and neither appears. Only web addresses starting http:// or https:// are kept — anything else is ignored, and your upload still goes through.",
     rightsLabel: "Rights status",
     rightsOptions: {
       "public-domain": "Public domain",

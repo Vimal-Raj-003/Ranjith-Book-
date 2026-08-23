@@ -61,6 +61,14 @@ model Book {
   /// public-domain | in-copyright | own-work — drives the quotation budget.
   rightsStatus   String  @default("in-copyright")
 
+  /// Where to buy this book, typed by the operator at upload. Optional and
+  /// nullable, so no existing row is invalidated and nothing needs a
+  /// backfill. Only an http(s) URL is ever stored — anything else is written
+  /// as null rather than refused, because a mistyped link must not cost the
+  /// operator the whole upload. Present: the description ends with it and the
+  /// video ends on a purchase card. Absent: neither appears at all.
+  bookLink       String?
+
   /// Null unless every link of the verification chain held. Never a
   /// placeholder: an unverified author is ABSENT, not "unknown".
   author               String?

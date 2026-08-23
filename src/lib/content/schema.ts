@@ -21,6 +21,25 @@ export interface Beat {
   /** Short on-screen label, six words at most. */
   onScreen: string;
   /**
+   * One emoji standing for what THIS beat is about, shown on the cue card and
+   * available to social copy — never spoken.
+   *
+   * Optional in both directions: the CLI providers have no structured-output
+   * mode, so nothing can guarantee a reply carries it, and a beat whose
+   * meaning has no honest emoji is better off without one than with a
+   * decorative sparkle. Every consumer must survive it being absent, empty,
+   * or holding something that is not an emoji at all.
+   *
+   * It must never reach `voiceover`, and `sanitizeForSpeech` must keep
+   * stripping emoji from `voiceover` for the same reason this field exists at
+   * all: a speech engine either skips an emoji silently, leaving dead air
+   * mid-sentence, or reads its CLDR name aloud ("fire", "face with tears of
+   * joy"). `voScriptFromPackage` and `beatTexts` are built from `voiceover`
+   * alone, so this field has no path into audio — `tests/content-schema`
+   * holds that line.
+   */
+  emoji?: string;
+  /**
    * Which page this beat is about — the `pageIndex` value of one entry in
    * `GenerateInput.pages` (the number shown as "PAGE n" in the prompt), NOT
    * that entry's position in the array. The two usually coincide but are not
@@ -92,6 +111,12 @@ export const CONTENT_JSON_SCHEMA = {
           id: { type: "string" },
           voiceover: { type: "string", maxLength: 320 },
           onScreen: { type: "string", maxLength: 42 },
+          // Optional, and capped at a length that admits one emoji — a base
+          // character plus a variation selector, a skin-tone modifier, or the
+          // two regional indicators of a flag — while refusing a string of
+          // them or a sentence smuggled into the field. Never in `required`:
+          // a beat with no honest emoji must be allowed to have none.
+          emoji: { type: "string", maxLength: 8 },
           sourcePage: { type: "integer", minimum: 0 },
           startWord: { type: "integer", minimum: 0 },
           endWord: { type: "integer", minimum: 0 },
