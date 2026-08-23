@@ -779,6 +779,11 @@ export async function runEpisode(episodeId: string): Promise<void> {
         // project directory can resolve.
         pages: compPages.map((p) => ({ src: p.from, width: p.width, height: p.height })),
         focus,
+        // The poster has to look like the video it is selling. Without this
+        // the thumbnails were painted from a hardcoded copy of Marginalia's
+        // palette, so a Spotlight episode -- near-black, hot orange -- was
+        // advertised in cream and yellow.
+        theme: theme.id,
         outDir: thumbsDir(episodeId),
       });
       if (specs.length) {

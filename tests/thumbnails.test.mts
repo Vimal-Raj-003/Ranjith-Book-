@@ -6,8 +6,10 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import {
   buildThumbHtml,
+  contrast,
   escapeHtml,
   generateThumbnails,
+  headlineText,
   isThumbKey,
   normaliseFocus,
   paintKeywords,
@@ -17,8 +19,14 @@ import {
   thumbsDir,
   trimWords,
   type ThumbSpec,
+  thumbPalette,
 } from "../src/lib/thumbnails";
 import { ASPECTS } from "../src/lib/thumbnails/types";
+import {
+  BOOK_THEMES,
+  BOOK_THEME_IDS,
+  DEFAULT_BOOK_THEME_ID,
+} from "../src/lib/video/composition/themes";
 import type { ContentPackage } from "../src/lib/content/schema";
 
 const EPISODE = "ep-thumb-test";
@@ -289,4 +297,174 @@ test("parseThumbnails reads the row, and a bare column yields nothing", () => {
     0,
     "passing the column instead of the row yields nothing — the bug this test exists for",
   );
+});
+
+// ------------------------------------------------------------------ headline
+
+test("a headline is a whole thought, not the hook with an ellipsis on it", () => {
+  const base = { title: "The Quiet Operator", keywords: ["busy"], onScreen: [] as string[] };
+
+  // A hook whose first sentence already fits is used as it stands, full stop
+  // dropped — a poster does not need punctuation to end.
+  assert.equal(
+    headlineText({ ...base, hook: "Most people are busy. Almost nobody is focused." }, 8),
+    "Most people are busy",
+  );
+
+  // The regression this function exists for. The operator's own hook is ten
+  // words, so the old rule cut it to "Busy can be a performance you put…" — a
+  // fragment. The writer's own on-screen label for the hook beat says the same
+  // thing in four words and is used instead.
+  assert.equal(
+    headlineText(
+      {
+        ...base,
+        hook: "Busy can be a performance you put on for yourself.",
+        onScreen: ["Busy is a performance", "Real work is less dramatic"],
+      },
+      8,
+    ),
+    "Busy is a performance",
+  );
+
+  // A hinged hook gives up the clause carrying the keyword, and only that one:
+  // "You are not behind" also fits, and is rejected for saying nothing the
+  // keyword marked as the point.
+  assert.equal(
+    headlineText(
+      { ...base, keywords: ["exhausted"], hook: "You are not behind, you are exhausted" },
+      6,
+    ),
+    "you are exhausted",
+  );
+
+  // The title is tried before truncation is: a book's own name is a whole
+  // thought, and an overlong hook cut to four words is not.
+  assert.equal(
+    headlineText({ ...base, hook: "one two three four five six seven eight nine ten" }, 4),
+    "The Quiet Operator",
+  );
+
+  // Nothing whole fits anywhere — no beat lines, no title short enough. Only
+  // now is a cut headline the lesser evil, and it still says so with an
+  // ellipsis rather than stopping mid-air.
+  assert.equal(
+    headlineText({ title: "", keywords: [], hook: "one two three four five six seven eight nine ten" }, 4),
+    "one two three four…",
+  );
+
+  // Empty in every field is empty, not a throw.
+  assert.equal(headlineText({ title: "", hook: "", keywords: [] }, 7), "");
+  assert.equal(headlineText({ title: "Deep Work", hook: "", keywords: [] }, 7), "Deep Work");
+});
+
+// -------------------------------------------------------------------- themes
+
+test("a poster is painted in the theme the video is actually rendered in", () => {
+  const copy = { title: "Deep Work", hook: "Busy is a performance", keywords: ["performance"], cta: "Follow" };
+  const html = (theme?: string | null) =>
+    buildThumbHtml({ aspect: ASPECTS[0], variant: "bold", copy, photo: null, focus: null, theme });
+
+  // The bug this replaced: every poster carried a hardcoded copy of
+  // Marginalia's palette, so a Spotlight video was advertised in cream and
+  // yellow. Each theme's own ground and accent must reach the markup.
+  const spotlight = html("spotlight");
+  const blueprint = html("blueprint");
+  assert.notEqual(spotlight, blueprint, "two themes must not render the same document");
+
+  for (const [id, role] of [
+    ["spotlight", BOOK_THEMES.spotlight.palette.backdropDeep],
+    ["blueprint", BOOK_THEMES.blueprint.palette.backdropDeep],
+    ["terminal", BOOK_THEMES.terminal.palette.backdropDeep],
+    ["editorial", BOOK_THEMES.editorial.palette.backdropDeep],
+  ] as const) {
+    assert.ok(html(id).includes(role), `${id} paints its own backdropDeep (${role})`);
+  }
+  // And Marginalia's yellow must NOT be in a Spotlight poster.
+  assert.ok(
+    !spotlight.includes(BOOK_THEMES.marginalia.palette.marker),
+    "a Spotlight poster carries none of Marginalia's marker yellow",
+  );
+
+  // An id from a row written before the picker existed, an id that has since
+  // been renamed, and a hostile one all fall back to the default theme rather
+  // than throwing — the same guarantee the video renderer makes.
+  const fallback = html(DEFAULT_BOOK_THEME_ID);
+  for (const bad of [undefined, null, "", "nope", "toString", "__proto__"]) {
+    assert.equal(html(bad), fallback, `${String(bad)} renders the default theme`);
+  }
+});
+
+test("every theme's headline, accent and slab actually read against its own ground", () => {
+  for (const id of BOOK_THEME_IDS) {
+    const p = thumbPalette(id);
+    assert.ok(contrast(p.ink, p.groundMid) >= 4.5, `${id}: headline ink on ground (${contrast(p.ink, p.groundMid).toFixed(1)}:1)`);
+    assert.ok(contrast(p.onSlab, p.slab) >= 4.5, `${id}: keyword on its slab`);
+    // 3.5 rather than 4.5 for the accent field alone: what sits on it is a
+    // display headline eighty pixels tall and heavier than any weight WCAG's
+    // 3:1 large-text threshold contemplates. Marginalia's burnt orange cannot
+    // carry 4.5:1 against any colour in its own palette, and substituting a
+    // colour from outside the theme to reach a number would cost more than it
+    // bought.
+    assert.ok(contrast(p.onAccent, p.accent) >= 3.5, `${id}: type on the accent field`);
+    // The slab is a highlight: if it does not separate from the ground it is
+    // not highlighting anything. Editorial is the case that forced this — its
+    // marker is a pale wash on an ecru ground.
+    assert.ok(contrast(p.slab, p.groundMid) >= 1.7, `${id}: the slab separates from the ground`);
+  }
+
+  // Garbage in, default theme out — never a throw and never an empty role.
+  for (const bad of [undefined, null, "", "nope", 7 as never, {} as never]) {
+    const p = thumbPalette(bad as never);
+    assert.equal(p.id, DEFAULT_BOOK_THEME_ID);
+    for (const [role, value] of Object.entries(p)) {
+      if (role === "dark") continue;
+      assert.ok(value !== "" && value !== undefined && value !== null, `${role} is filled`);
+    }
+  }
+});
+
+test("a theme reaches the rendered posters, and an unknown one does not sink them", needsChromium, async () => {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-thumbs-"));
+  try {
+    const specs = await generateThumbnails({
+      episodeId: EPISODE,
+      pkg: pkg(),
+      pages: [],
+      focus: null,
+      theme: "not-a-theme-id",
+      outDir,
+    });
+    assert.equal(specs.length, 6, "an unrecognised theme costs nothing");
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("the same episode renders the same bytes twice", needsChromium, async () => {
+  const a = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-thumbs-a-"));
+  const b = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-thumbs-b-"));
+  try {
+    const opts = {
+      episodeId: EPISODE,
+      pkg: pkg(),
+      pages: [],
+      focus: { pageIndex: 0, x0: 100, y0: 200, x1: 900, y1: 260 },
+      theme: "spotlight",
+    };
+    const one = await generateThumbnails({ ...opts, outDir: a });
+    const two = await generateThumbnails({ ...opts, outDir: b });
+    assert.equal(one.length, 6);
+    assert.equal(two.length, 6);
+    for (const spec of one) {
+      const [x, y] = await Promise.all([
+        fs.readFile(spec.path),
+        fs.readFile(path.join(b, `${spec.key}.jpg`)),
+      ]);
+      assert.ok(x.equals(y), `${spec.key} is byte-identical across runs`);
+    }
+  } finally {
+    await fs.rm(a, { recursive: true, force: true });
+    await fs.rm(b, { recursive: true, force: true });
+  }
 });

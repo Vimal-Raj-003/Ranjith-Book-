@@ -97,3 +97,75 @@ export function paintKeywords(text: string, keywords: string[] | undefined | nul
     .map((w, i) => (hit[i] ? `<em class="kw">${escapeHtml(w)}</em>` : escapeHtml(w)))
     .join(" ");
 }
+
+/**
+ * Choose the line a poster is built around.
+ *
+ * The old rule was "the hook, cut to N words", and at 200px that was the
+ * single worst thing about these thumbnails. A hook is written to be *heard*
+ * over the opening two seconds of a video, so it is routinely nine or ten
+ * words — "Busy can be a performance you put on for yourself." — and cutting
+ * it produced "BUSY CAN BE A PERFORMANCE YOU PUT…", a fragment ending in an
+ * ellipsis. A scroller does not decode a fragment; they skip it. A truncated
+ * headline is strictly worse than a shorter complete one.
+ *
+ * So this prefers a WHOLE thought that fits, in descending order of punch, and
+ * only truncates when the package offers nothing that fits at all:
+ *
+ *  1. The hook's first sentence — usually the claim, with the qualifier in the
+ *     second sentence ("Most people are busy. Almost nobody is focused.").
+ *  2. A clause of the hook carrying a keyword. A hook hinged on a dash or a
+ *     colon has its point on one side of the hinge.
+ *  3. The hook beat's `onScreen` line. This is the most underused material in
+ *     the package: the writer is asked for at most six words of on-screen
+ *     label, which is a thumbnail headline in everything but name, and it is
+ *     the same idea in the same voice — not an invention.
+ *  4. Any other beat's `onScreen`, then the title.
+ *  5. Only now, the hook cut to budget with an ellipsis.
+ *
+ * Deterministic: a fixed candidate order and a word count, no scoring on
+ * anything that could tie differently between runs.
+ */
+export function headlineText(
+  copy: { title: string; hook: string; keywords: string[]; onScreen?: string[] },
+  maxWords: number,
+): string {
+  const words = (s: string) => clean(s).split(" ").filter(Boolean).length;
+  const fits = (s: string) => {
+    const n = words(s);
+    return n > 0 && n <= maxWords;
+  };
+
+  const hook = clean(copy.hook);
+  const sentences = hook ? hook.split(/(?<=[.!?])\s+/).filter(Boolean) : [];
+  const strip = (s: string) => clean(s).replace(/[\s.,;:—–-]+$/, "");
+
+  const candidates: string[] = [];
+  if (sentences[0]) candidates.push(strip(sentences[0]));
+
+  // Clauses, longest hinge first. Only the parts carrying a keyword are worth
+  // promoting over the beat lines — a clause with none of the hook's meaning
+  // in it is a worse headline than the writer's own short label.
+  const norm = (s: string) => clean(s).toLowerCase().replace(/[^\p{L}\p{N} ]+/gu, "");
+  const keys = (Array.isArray(copy.keywords) ? copy.keywords : []).map(norm).filter(Boolean);
+  for (const sentence of sentences) {
+    for (const part of sentence.split(/\s*[—–:;,]\s*|\s+—\s+/).filter(Boolean)) {
+      const clause = strip(part);
+      if (!fits(clause)) continue;
+      if (keys.length === 0 || keys.some((k) => norm(clause).includes(k))) candidates.push(clause);
+    }
+  }
+
+  for (const line of Array.isArray(copy.onScreen) ? copy.onScreen : []) {
+    const t = strip(line);
+    if (t) candidates.push(t);
+  }
+  const title = strip(copy.title);
+  if (title) candidates.push(title);
+
+  for (const c of candidates) {
+    if (fits(c)) return c;
+  }
+  // Nothing whole fits. Cut the longest thing we have rather than the first.
+  return trimWords(hook || title || candidates[0] || "", maxWords);
+}
