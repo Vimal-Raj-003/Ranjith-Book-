@@ -167,3 +167,75 @@ Three-pane, full-width, responsive down to one column on mobile.
 4. No new runtime dependency without a licence that permits commercial use.
 5. Author rule (§7 of the original spec) is untouched.
 6. Nothing written to `public/`; photographs stay under `WORK_ROOT`.
+
+---
+
+# Addendum — 2026-08-23 (second pass)
+
+Operator feedback after watching a finished video and using the app.
+
+## Confirmed bugs (fixed before this addendum)
+
+| Symptom | Real cause |
+|---|---|
+| "the thumbnail is not coming" | `parseThumbnails` takes the episode ROW; both API routes passed the COLUMN. Typed `unknown`, so it compiled and silently returned `[]` every time. |
+| No error anywhere explaining it | Every best-effort step appended notes to a snapshot taken at the top of `runEpisode`, so each writer erased the previous one. |
+| The store genuinely failed on a live run | The dev server held a Prisma client generated before the `thumbnails` column existed. **A schema change needs the dev server restarted, not just `prisma generate`.** |
+
+## Decisions (operator)
+
+- **Page treatment: enhanced photo + motion.** Keep the operator's real photograph. Grade it so it reads as a printed book rather than a phone snapshot, and add motion. NOT re-typeset — that would rebuild the highlight geometry and risk the marker accuracy, which currently measures 100%.
+- **Book link: typed at upload.** Optional. Present → description carries it and the video ends with a purchase CTA. Absent → both silently skipped.
+- **Free books: Project Gutenberg.** ~75,000 genuinely public-domain titles, free API (`gutendex.com`), no key. Everything on it is out of copyright, so it carries no rights risk.
+- **Author: shown only when verified.** The existing four-link verification chain decides. Verified → shown under the title. Not verified → title alone, no placeholder, no guess. This preserves the operator's original standing instruction.
+
+## 7. Page enhancement
+
+A new step between the derivative and the composition. **The enhanced image MUST have byte-identical pixel dimensions to the derivative it replaces** — every OCR box, line run, sweep step and camera key is measured in that exact pixel space, and a resize of even one pixel silently moves every highlight. Enhancement changes colour, never geometry.
+
+Applied with `sharp` (already a dependency):
+- neutralise the yellow/warm cast typical of indoor phone photos
+- lift contrast and black point so grey paper reads as white
+- gentle denoise, then unsharp mask so the print stays crisp
+- a warm paper grade back on top, so it reads as book paper, not a scan
+
+Best-effort: if enhancement fails, the original derivative is used unchanged.
+
+## 8. Motion (all seek-safe)
+
+Every addition is ONE tween on ONE property of its OWN element, `immediateRender: false`, validated by `npm run e2e:seek`.
+- **Depth drift** — a very slow scale on a dedicated `.card-drift` wrapper (never `.scaler`, never `.column`), so the page feels alive rather than static.
+- **Light sweep** — a soft gradient band translated across the card once per beat.
+- Neither may touch the camera, the strokes, or the scale that maps column space to the card.
+
+## 9. Byline
+
+A persistent line under the card: book title, and the author only when `Book.authorVerified` is true.
+
+```
+y=1370  card bottom
+y=1388  BYLINE_Y   — title · author (author only if verified), 28px, single line
+y=1450  cue band   (unchanged)
+y=1720  caption baseline (unchanged)
+```
+
+## 10. Emoji
+
+One optional emoji per beat, chosen by the writer to match that beat's meaning.
+
+**Emoji may appear ONLY on the cue card and in social copy — never in `voiceover`.** `sanitizeForSpeech` already strips them, and it must keep doing so: a speech engine either skips an emoji silently (dead air) or names it aloud.
+
+## 11. Book link and the purchase CTA
+
+- `Book.bookLink String?` — optional, entered on the upload form.
+- Present: the description ends with the link, and a final purchase card follows the CTA.
+- Absent: no link line, no purchase card. Not a placeholder, not an empty section.
+- The purchase line is composed deterministically in code, NOT asked of the model — a model that invents a URL is worse than no URL.
+- The link is validated as `http(s)` before it is stored or rendered.
+
+## 12. Free books (Project Gutenberg)
+
+- Search and browse via `gutendex.com` (no key). Cover, title, author, download formats.
+- Download EPUB / plain text / PDF where the format exists.
+- Network calls go through the existing `fetch-guard`, with a timeout, and never block a render.
+- This is a browsing and download surface. Generating episodes directly from a Gutenberg text is the natural next step and is explicitly OUT of scope here.
