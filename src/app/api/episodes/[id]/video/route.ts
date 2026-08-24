@@ -12,6 +12,24 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
+ * The `Content-Disposition` for a title, which is NOT simply the title.
+ *
+ * Header values are ByteStrings, so any character above U+00FF throws on
+ * construction and takes the whole response down with it — and this app's own
+ * title writer produces em dashes ("Productivity Isn't Hustle — The Eagle
+ * Way"), so a plain interpolation 500s on ordinary output rather than on some
+ * exotic edge case. RFC 5987 is the fix, and `/api/gutenberg/download` already
+ * uses it: the ASCII `filename` is the fallback and `filename*` carries the
+ * real one. Quotes, backslashes and control characters are replaced rather
+ * than escaped, because a bare CR/LF in the fallback would split the header.
+ */
+function disposition(title: string): string {
+  const name = `${title}.mp4`;
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/**
  * Stream a finished video to the user who made it.
  *
  * Renders live outside `public/` precisely so this check cannot be skipped, and
@@ -43,13 +61,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     return NextResponse.json({ error: "That video is no longer on disk." }, { status: 404 });
   }
 
-  const filename = `${episode.title || episode.id}.mp4`;
   const base = {
     "Content-Type": "video/mp4",
     "Accept-Ranges": "bytes",
     // Private: a shared proxy must never hand one user's video to another.
     "Cache-Control": "private, max-age=0, must-revalidate",
-    "Content-Disposition": `inline; filename="${filename}"`,
+    "Content-Disposition": disposition(episode.title || episode.id),
   };
 
   const range = req.headers.get("range");

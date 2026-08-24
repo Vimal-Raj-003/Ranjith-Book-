@@ -407,7 +407,12 @@ export async function runIngest(uploadId: string): Promise<string[]> {
       episodeIds.push(created.id);
     }
 
-    await prisma.upload.update({ where: { id: uploadId }, data: { status: "DONE", step: "Done" } });
+    // `error: null` for the same reason as the episode success path below: a
+    // retried upload must not stay branded with the failure it just recovered from.
+    await prisma.upload.update({
+      where: { id: uploadId },
+      data: { status: "DONE", step: "Done", error: null },
+    });
     return episodeIds;
   } catch (err) {
     await prisma.upload.update({
@@ -834,7 +839,11 @@ export async function runEpisode(episodeId: string): Promise<void> {
     // showing "RUNNING" / "Rendering the video" forever.
     await prisma.episode.update({
       where: { id: episodeId },
-      data: { status: "DONE", videoPath: outputAbs },
+      // `error: null` because this row may be a re-run of one that failed, and
+      // a DONE episode still carrying the previous attempt's error reads as a
+      // contradiction to anything that looks past `status` — the API returns
+      // both fields, and the next reader of them will not be this component.
+      data: { status: "DONE", videoPath: outputAbs, error: null },
     });
   } catch (err) {
     await releaseIdea(episode.bookId, episode.ideaKey ?? episode.id);
