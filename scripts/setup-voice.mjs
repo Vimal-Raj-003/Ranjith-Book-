@@ -16,19 +16,21 @@ const POCKET = path.join(os.homedir(), ".local", "bin", "pocket-tts");
 
 function have(cmd) {
   try {
-    execFileSync("which", [cmd], { stdio: "ignore" });
+    execFileSync(os.platform() === "win32" ? "where" : "which", [cmd], { stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 }
 
-if (fs.existsSync(POCKET) || have("pocket-tts")) {
+if (fs.existsSync(POCKET) || fs.existsSync(`${POCKET}.exe`) || have("pocket-tts")) {
   console.log("Pocket TTS is already installed.");
   process.exit(0);
 }
 
-const uv = fs.existsSync(path.join(BIN_DIR, "uv")) ? path.join(BIN_DIR, "uv") : have("uv") ? "uv" : null;
+const EXE = os.platform() === "win32" ? ".exe" : "";
+const localUv = path.join(BIN_DIR, `uv${EXE}`);
+const uv = fs.existsSync(localUv) ? localUv : have("uv") ? "uv" : null;
 
 const UV_TARGET = {
   "darwin-arm64": "aarch64-apple-darwin",

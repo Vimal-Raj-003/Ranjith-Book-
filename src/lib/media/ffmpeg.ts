@@ -8,8 +8,13 @@ import { renderPad, levelAndFade, toWav, type MusicMood } from "./music-synth";
 const exec = promisify(execFile);
 
 function resolveBin(name: "ffmpeg" | "ffprobe"): string {
-  const local = path.join(process.cwd(), "tools", "bin", name);
-  if (fs.existsSync(local)) return local;
+  // Windows binaries carry the .exe suffix; checking the bare name only would
+  // walk straight past a perfectly good tools/bin download and spawn ENOENT.
+  const suffixes = process.platform === "win32" ? [".exe", ""] : [""];
+  for (const suffix of suffixes) {
+    const local = path.join(process.cwd(), "tools", "bin", name + suffix);
+    if (fs.existsSync(local)) return local;
+  }
   const env = name === "ffmpeg" ? process.env.FFMPEG_PATH : process.env.FFPROBE_PATH;
   return env || name;
 }
@@ -20,6 +25,8 @@ export const FFPROBE = resolveBin("ffprobe");
 export async function ffmpeg(args: string[]) {
   return exec(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args], {
     maxBuffer: 1024 * 1024 * 32,
+    // Console windows on Windows, one per invocation — see `hf()` in video/render.ts.
+    windowsHide: true,
   });
 }
 
@@ -29,7 +36,7 @@ export async function durationOf(file: string): Promise<number> {
     "-show_entries", "format=duration",
     "-of", "default=noprint_wrappers=1:nokey=1",
     file,
-  ]);
+  ], { windowsHide: true });
   const n = parseFloat(stdout.trim());
   if (!Number.isFinite(n)) throw new Error(`Could not read duration of ${path.basename(file)}`);
   return n;
@@ -166,7 +173,7 @@ export async function meanLevelDb(file: string): Promise<number> {
   const { stderr } = await exec(
     FFMPEG,
     ["-hide_banner", "-i", file, "-af", "volumedetect", "-f", "null", "-"],
-    { maxBuffer: 1024 * 1024 * 8 },
+    { maxBuffer: 1024 * 1024 * 8, windowsHide: true },
   ).catch((e: { stderr?: string }) => ({ stderr: e.stderr ?? "" }));
   const mean = /mean_volume: (-?[\d.]+) dB/.exec(stderr ?? "")?.[1];
   const n = Number(mean);

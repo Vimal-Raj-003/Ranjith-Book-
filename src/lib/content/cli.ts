@@ -20,7 +20,13 @@ export function run(
   opts: { cwd: string; input?: string; timeoutMs: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, {
+      cwd: opts.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      // See `hf()` in video/render.ts: without this the CLI flashes a console
+      // window onto the desktop on every call, rewrites included.
+      windowsHide: true,
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;

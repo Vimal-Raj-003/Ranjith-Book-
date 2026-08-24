@@ -49,7 +49,10 @@ const BOOT_TIMEOUT_MS = 5 * 60_000;
 function candidateBins(): string[] {
   const bins = [];
   if (process.env.POCKET_TTS_BIN) bins.push(process.env.POCKET_TTS_BIN);
-  bins.push(path.join(os.homedir(), ".local", "bin", "pocket-tts"));
+  const home = path.join(os.homedir(), ".local", "bin", "pocket-tts");
+  // uv installs a .exe on Windows and an extensionless binary elsewhere.
+  if (process.platform === "win32") bins.push(`${home}.exe`);
+  bins.push(home);
   bins.push("pocket-tts");
   return bins;
 }
@@ -57,11 +60,15 @@ function candidateBins(): string[] {
 async function resolveBin(): Promise<string | null> {
   for (const bin of candidateBins()) {
     try {
-      if (bin.includes("/")) {
+      // path.join yields backslashes on Windows, so a "/" test would misread
+      // an absolute path as a bare command name and hand it to the PATH lookup.
+      if (bin.includes(path.sep) || bin.includes("/")) {
         await fs.access(bin);
         return bin;
       }
-      await exec("which", [bin]);
+      await exec(process.platform === "win32" ? "where" : "which", [bin], {
+        windowsHide: true,
+      });
       return bin;
     } catch {
       /* try the next candidate */
@@ -98,6 +105,9 @@ async function ensureServer(): Promise<void> {
       detached: true,
       stdio: "ignore",
       env: process.env,
+      // This one is long-lived and detached: without this its console window
+      // does not flash, it sits on the desktop for the rest of the session.
+      windowsHide: true,
     });
     child.unref();
 

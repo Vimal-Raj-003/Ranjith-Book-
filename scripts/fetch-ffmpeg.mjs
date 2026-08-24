@@ -12,15 +12,17 @@ const BIN_DIR = path.join(process.cwd(), "tools", "bin");
 
 function onPath(name) {
   try {
-    execFileSync("which", [name], { stdio: "ignore" });
+    execFileSync(os.platform() === "win32" ? "where" : "which", [name], { stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 }
 
+const EXE = os.platform() === "win32" ? ".exe" : "";
+
 function alreadyLocal(name) {
-  return fs.existsSync(path.join(BIN_DIR, name));
+  return fs.existsSync(path.join(BIN_DIR, name + EXE));
 }
 
 const missing = ["ffmpeg", "ffprobe"].filter((b) => !alreadyLocal(b) && !onPath(b));
@@ -64,6 +66,42 @@ if (os.platform() === "darwin") {
   }
   fs.rmSync(work, { recursive: true, force: true });
   fs.rmSync(tar, { force: true });
+} else if (os.platform() === "win32") {
+  // Gyan.dev publishes the reference static Windows builds: one zip carries
+  // both binaries with no runtime to install alongside them.
+  const zip = path.join(BIN_DIR, "ffmpeg.zip");
+  const work = path.join(BIN_DIR, "ffmpeg-extract");
+  console.log("Downloading static ffmpeg (windows-x64)…");
+  const res = await fetch("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip");
+  if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+  fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
+
+  fs.rmSync(work, { recursive: true, force: true });
+  // Expand-Archive is present on every supported Windows; tar/unzip are not.
+  execFileSync("powershell", [
+    "-NoProfile", "-Command",
+    `Expand-Archive -LiteralPath '${zip}' -DestinationPath '${work}' -Force`,
+  ], { stdio: "inherit" });
+
+  // The zip nests everything under a versioned folder, so find the binaries
+  // rather than assuming a path that changes with every release.
+  const found = new Map();
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name === "ffmpeg.exe" || e.name === "ffprobe.exe") found.set(e.name, full);
+    }
+  };
+  walk(work);
+
+  for (const name of ["ffmpeg.exe", "ffprobe.exe"]) {
+    const src = found.get(name);
+    if (!src) throw new Error(`${name} was not in the downloaded archive`);
+    fs.copyFileSync(src, path.join(BIN_DIR, name));
+  }
+  fs.rmSync(work, { recursive: true, force: true });
+  fs.rmSync(zip, { force: true });
 } else {
   console.log(
     `Missing: ${missing.join(", ")}. Install ffmpeg for your platform, or set FFMPEG_PATH and FFPROBE_PATH.`,

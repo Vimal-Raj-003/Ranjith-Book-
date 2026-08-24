@@ -7,6 +7,17 @@ import { npxCommand } from "@/lib/npx";
 
 const exec = promisify(execFile);
 
+/**
+ * Preloaded into the renderer on Windows so its browsers do not each throw a
+ * console window onto the desktop. See the shim's own header for the why.
+ * Forward slashes because NODE_OPTIONS is re-parsed as a command line, where a
+ * backslash is an escape character rather than a separator.
+ */
+const HIDE_SHIM = path
+  .join(process.cwd(), "scripts", "no-console-windows.cjs")
+  .split(path.sep)
+  .join("/");
+
 const CLI_ENV = () => ({
   ...process.env,
   // Static binaries downloaded into tools/bin — HyperFrames shells out to these.
@@ -16,6 +27,11 @@ const CLI_ENV = () => ({
   PATH: `${path.join(process.cwd(), "tools", "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
   FFMPEG_PATH: FFMPEG,
   FFPROBE_PATH: FFPROBE,
+  ...(process.platform === "win32"
+    ? {
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require "${HIDE_SHIM}"`.trim(),
+      }
+    : {}),
 });
 
 export interface ProjectFiles {
@@ -63,6 +79,15 @@ async function hf(dir: string, args: string[], timeoutMs: number) {
     env: CLI_ENV(),
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024 * 64,
+    // A render fans out to a dozen parallel `chrome-headless-shell` workers,
+    // and without this EVERY ONE of them allocated its own console and threw a
+    // black window onto the desktop, stealing focus from whatever the operator
+    // was doing. CREATE_NO_WINDOW (which is what this flag sets) gives the
+    // child a console with no window, and grandchildren inherit that console
+    // rather than allocating their own — so hiding this one process is what
+    // keeps the whole render subtree off the screen. "headless" is about the
+    // browser painting no page; it was never a promise about a console window.
+    windowsHide: true,
   });
 }
 
