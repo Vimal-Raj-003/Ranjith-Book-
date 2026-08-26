@@ -71,6 +71,15 @@ For every beat:
   voiceover depend on text from a page other than the single page its
   sourcePage and word range name.
 
+- THE LAST BEAT IS THE CALL TO ACTION, and it is the one exception to every
+  rule above. It asks the viewer to do something rather than discussing the
+  page, so there are no words it is "about" and no range can honestly describe
+  it. Point its sourcePage and word range at the passage its ask grows out of
+  - normally the same passage the beat before it just covered - and keep it
+  in bounds and moving forward like any other. Do not hunt for a better match:
+  there is none. That range is somewhere for the marker to rest while the ask
+  is spoken, not a claim about what you are saying.
+
 A wrong index is worse than no highlight: the marker will sweep words that
 have nothing to do with what is being said, and that mismatch is the first
 thing a viewer notices.
