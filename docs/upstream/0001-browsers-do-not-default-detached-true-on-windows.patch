@@ -1,0 +1,47 @@
+From: BookReel <noreply@anthropic.com>
+Subject: [PATCH] fix(browsers): do not default `detached` to true on Windows
+
+`launch()` spawns the browser with both `detached: opts.detached` and
+`windowsHide: true`. libuv maps those onto DETACHED_PROCESS and
+CREATE_NO_WINDOW respectively, and Win32 documents CREATE_NO_WINDOW as
+ignored when it is combined with DETACHED_PROCESS.
+
+So on Windows the default `opts.detached ??= true` silently cancels the
+`windowsHide: true` set four lines below it. The browser starts with no
+console to inherit, allocates its own, and that console is visible: every
+headless launch drops a black window onto the user's desktop. A tool that
+fans out to several browsers drops several, and they steal focus as they
+appear.
+
+Measured on Windows 11 x64, Node 22.22.0, @puppeteer/browsers 3.2.1,
+puppeteer-core 25.8.0, chrome-headless-shell 152.0.7977.30:
+
+  a single puppeteer-core launch()   stock: +3 visible windows   patched: +0
+  a real multi-browser render        stock: 16 windows           patched:  0
+
+Only the default changes, so a caller that explicitly asks for
+`detached: true` on Windows still gets it.
+
+---
+ packages/browsers/src/launch.ts | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/packages/browsers/src/launch.ts b/packages/browsers/src/launch.ts
+--- a/packages/browsers/src/launch.ts
++++ b/packages/browsers/src/launch.ts
+@@ -154,7 +154,14 @@
+         // `detached: true` makes child process a leader of a new process group,
+         // making it possible to isolate process trees and prevent console signal propagation.
+         // @see https://nodejs.org/api/child_process.html#child_process_options_detached
+-        opts.detached ??= true;
++        //
++        // NOT on Windows, where it is actively harmful: libuv maps `detached`
++        // to DETACHED_PROCESS and `windowsHide` to CREATE_NO_WINDOW, and Win32
++        // ignores CREATE_NO_WINDOW when DETACHED_PROCESS is also set. Defaulting
++        // this to true there silently cancels the `windowsHide: true` set below,
++        // and every browser lands a visible console window on the user's
++        // desktop. An explicit `detached: true` from a caller is still honoured.
++        opts.detached ??= process.platform !== 'win32';
+         const stdio = this.#configureStdio({
+           pipe: opts.pipe,
+         });
