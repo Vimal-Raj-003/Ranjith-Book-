@@ -23,9 +23,21 @@ to the viewer.
 You may quote the page directly ONCE across the whole script, for at most 25
 words, and only where the author's exact wording is the point (a striking
 phrase, a line the whole beat turns on). Every other beat is entirely your
-own sentences ABOUT the passage. If you catch yourself stringing together
-more than a handful of consecutive words straight from the page outside that
-one allowed quote, stop and rewrite it as commentary instead.
+own sentences ABOUT the passage.
+
+Your draft is measured against a mechanical rule, so here it is exactly:
+ANY run of FIVE OR MORE consecutive words matching the page counts as
+quotation — wherever it appears, whether or not you meant it as a quote —
+and every such run added together must stay under 8% of your total narration.
+One deliberate quote is not what breaks this. What breaks it is a dozen
+five- and six-word echoes of the page's own phrasing, dropped in without
+noticing, each one harmless-looking and adding up past the limit.
+
+So after every sentence you write, check it against the page: if five of
+your words in a row also appear in that order on the page, rephrase them.
+Change the shape of the sentence rather than swapping one word in the middle
+— a run survives a synonym. Say the same idea the way you would say it to
+someone who has not read the page.
 
 This is both a legal requirement — reading an in-copyright book's prose at
 length is an unlicensed audiobook, and YouTube and Instagram will act on it —

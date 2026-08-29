@@ -10,6 +10,7 @@ import {
   checkQuotationBudget,
   MAX_QUOTE_WORDS,
   MAX_VERBATIM_SHARE,
+  RUN_FLOOR,
   type QuotationReport,
   type RightsStatus,
 } from "./quotation";
@@ -210,17 +211,28 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
   function quotationBrief(q: QuotationReport, rights: RightsStatus): string {
     const lines = [
       `A quotation-budget check found this draft reproduces too much of the source page verbatim.`,
+      // The floor is the part a writer cannot guess. Told only "do not quote
+      // too much", a model rewrites the one passage it thinks of as a quote
+      // and leaves a dozen unnoticed five-word echoes exactly where they were.
+      `WHAT COUNTS: any run of ${RUN_FLOOR} or more consecutive words matching the page, anywhere in the narration — not just passages you thought of as quotes. Ordinary phrasing you echoed without noticing counts exactly the same as a deliberate quote.`,
     ];
-    if (q.excerpt) {
+    if (q.excerpt && q.longestRun > MAX_QUOTE_WORDS) {
       lines.push(
-        q.longestRun > MAX_QUOTE_WORDS
-          ? `The longest verbatim run is ${q.longestRun} words — over the ${MAX_QUOTE_WORDS}-word limit for a single quote: "${q.excerpt}"`
-          : `The longest verbatim run (${q.longestRun} words, within the per-quote limit) is: "${q.excerpt}"`,
+        `The longest run is ${q.longestRun} words — over the ${MAX_QUOTE_WORDS}-word limit for a single quote: "${q.excerpt}"`,
+      );
+    }
+    if (q.excerpts.length) {
+      const shown = q.excerpts.slice(0, 12);
+      lines.push(
+        `The ${q.excerpts.length} run${q.excerpts.length === 1 ? "" : "s"} counted against you${
+          shown.length < q.excerpts.length ? ` (the ${shown.length} longest shown)` : ""
+        }:`,
+        ...shown.map((e) => `  - "${e}"`),
       );
     }
     lines.push(
       `Overall about ${Math.round(q.verbatimShare * 100)}% of the narration is quoted verbatim from the page, against an ${Math.round(MAX_VERBATIM_SHARE * 100)}% limit for this book's rights status ("${rights}").`,
-      `Rewrite the whole package: paraphrase that passage in your own words instead of quoting it, keep AT MOST ONE short quote (well under ${MAX_QUOTE_WORDS} words) only if a quote is truly essential, and make sure every other sentence is your own commentary — not the page's phrasing — so the total quoted share drops well under the limit.`,
+      `Rewrite the whole package: take the runs listed above one at a time and say each in different words — change the shape of the sentence, not just a synonym here and there, because a run stays a run if you only swap one word in the middle. Keep AT MOST ONE short quote (well under ${MAX_QUOTE_WORDS} words) and only where the exact wording is genuinely the point. Everything else must be your own commentary about the passage.`,
     );
     return lines.join("\n");
   }
@@ -268,7 +280,22 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         kind: "quotation",
         brief: quotationBrief(quotation, rightsStatus),
         finalMessage:
-          `The narration reproduces too much of the page (longest run ${quotation.longestRun} words vs the ${MAX_QUOTE_WORDS}-word limit, ${Math.round(quotation.verbatimShare * 100)}% verbatim vs the ${Math.round(MAX_VERBATIM_SHARE * 100)}% limit)` +
+          // Only the limit that actually broke. Printing both unconditionally
+          // reported "longest run 9 words vs the 25-word limit" for a draft
+          // whose longest run was FINE, sending the operator after the wrong
+          // number entirely.
+          `The narration reproduces too much of the page (` +
+          [
+            quotation.longestRun > MAX_QUOTE_WORDS
+              ? `longest quote ${quotation.longestRun} words vs the ${MAX_QUOTE_WORDS}-word limit`
+              : null,
+            quotation.verbatimShare > MAX_VERBATIM_SHARE
+              ? `${Math.round(quotation.verbatimShare * 100)}% of the narration is verbatim against an ${Math.round(MAX_VERBATIM_SHARE * 100)}% limit — spread over ${quotation.excerpts.length} run${quotation.excerpts.length === 1 ? "" : "s"} of ${RUN_FLOOR}+ words, not one long quote`
+              : null,
+          ]
+            .filter(Boolean)
+            .join("; ") +
+          `)` +
           rewriteNote +
           ` This book's rights status is "${rightsStatus}", which is what caps quotation at all — a public-domain or own-work book has no quotation budget. If you own this material or it is out of copyright, set that rights status on the book to remove this limit entirely.`,
         data: quotation,

@@ -43,6 +43,16 @@ export interface QuotationReport {
   withinBudget: boolean;
   /** The offending passage, so the operator can be shown what tripped it. */
   excerpt: string | null;
+  /**
+   * EVERY qualifying run, longest first — not just the single longest.
+   *
+   * A share breach is almost never one long lift; it is a scatter of five- and
+   * six-word echoes that the writer never registered as quoting at all. Naming
+   * only the longest one tells a rewrite to fix the passage least likely to be
+   * the problem, which is how a rewrite comes back over budget in a different
+   * place. The whole list is what makes the feedback actionable.
+   */
+  excerpts: string[];
 }
 
 const tokens = (s: string) =>
@@ -61,7 +71,14 @@ export function checkQuotationBudget(
   const s = tokens(source);
 
   if (n.length === 0) {
-    return { longestRun: 0, verbatimShare: 0, subfloorShare: 0, withinBudget: true, excerpt: null };
+    return {
+      longestRun: 0,
+      verbatimShare: 0,
+      subfloorShare: 0,
+      withinBudget: true,
+      excerpt: null,
+      excerpts: [],
+    };
   }
 
   const positions = new Map<string, number[]>();
@@ -99,21 +116,26 @@ export function checkQuotationBudget(
    * by jumping past a run once it's counted so its interior positions are
    * never recounted as further runs of their own.
    */
-  const qualifyingTotal = (floor: number): number => {
+  const qualifyingRuns = (floor: number): { total: number; runs: string[] } => {
     let total = 0;
+    const runs: string[] = [];
     for (let i = 0; i < n.length; ) {
       const best = matchLenAt(i);
       if (best >= floor) {
         total += best;
+        runs.push(n.slice(i, i + best).join(" "));
         i += best;
       } else {
         i += 1;
       }
     }
-    return total;
+    return { total, runs };
   };
 
-  const totalAtFloor = qualifyingTotal(RUN_FLOOR);
+  const qualifyingTotal = (floor: number): number => qualifyingRuns(floor).total;
+
+  const atFloor = qualifyingRuns(RUN_FLOOR);
+  const totalAtFloor = atFloor.total;
   const verbatimShare = totalAtFloor / n.length;
   const subfloorShare = qualifyingTotal(SUBFLOOR_RUN) / n.length;
 
@@ -143,5 +165,6 @@ export function checkQuotationBudget(
     subfloorShare,
     withinBudget,
     excerpt: longestRun >= RUN_FLOOR ? n.slice(longestAt, longestAt + longestRun).join(" ") : null,
+    excerpts: [...atFloor.runs].sort((a, b) => b.length - a.length),
   };
 }
