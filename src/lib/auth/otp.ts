@@ -41,11 +41,26 @@ export async function requestCode(rawEmail: string) {
   // three per-10-minute slots on a request that could never have been delivered,
   // so a misconfigured mailbox would also lock the user out of retrying.
   //
-  // Dev bypass only ever substitutes *delivery* here: if SMTP is configured we
-  // always send a real email, even with AUTH_DEV_LOGIN=1 set, so turning on
-  // real SMTP is enough by itself to get back to production-like behavior.
+  // AUTH_DEV_LOGIN does two different jobs depending on whether SMTP exists.
+  //
+  //   no SMTP  -> `devBypass`: nothing is emailed, the code comes back in the
+  //               response because there is no other way to get it.
+  //   SMTP set -> `devReveal`: the real email is still sent, exactly as in
+  //               production, and the code is ALSO returned so a developer on
+  //               localhost does not have to go and read an inbox (and dig it
+  //               out of a spam folder) on every sign-in.
+  //
+  // Delivery is never weakened by the second case — that was the original
+  // reason SMTP overrode the bypass entirely, and it still holds: configuring
+  // real SMTP gets you production-like *delivery*. What it no longer does is
+  // hide the code from a developer who has explicitly asked to see it.
+  //
+  // Both are gated by `isDevLoginEnabled()`, which requires BOTH
+  // NODE_ENV !== "production" AND AUTH_DEV_LOGIN=1, so neither can happen on
+  // a deployed instance however the env is set.
   const smtp = mailConfig();
-  const devBypass = !smtp && isDevLoginEnabled();
+  const devReveal = isDevLoginEnabled();
+  const devBypass = !smtp && devReveal;
   if (!smtp && !devBypass) {
     throw new AuthError(
       "Email is not configured on this server yet. Set SMTP_USER and SMTP_PASS.",
@@ -91,6 +106,23 @@ export async function requestCode(rawEmail: string) {
   }
 
   await sendLoginCode(email, code);
+
+  if (devReveal) {
+    console.warn(
+      `[DEV LOGIN] The code was emailed as usual, and is also being returned in ` +
+        `the response for ${email}: ${code}. This only happens because ` +
+        `NODE_ENV !== "production" and AUTH_DEV_LOGIN=1.`,
+    );
+    return {
+      email,
+      dev: true,
+      devCode: code,
+      warning:
+        "DEVELOPMENT ONLY: this code was emailed normally and is shown here as well, " +
+        "because NODE_ENV !== 'production' and AUTH_DEV_LOGIN=1. It is never returned in production.",
+    };
+  }
+
   return { email };
 }
 

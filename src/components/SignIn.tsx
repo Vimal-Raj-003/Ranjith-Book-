@@ -16,6 +16,10 @@ export default function SignIn() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Only ever set from the server's `devCode`, which it returns solely when
+  // NODE_ENV !== "production" and AUTH_DEV_LOGIN=1. In any other build this
+  // stays null and the block below never renders.
+  const [devCode, setDevCode] = useState<string | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -37,9 +41,17 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
     setNote(null);
+    setDevCode(null);
     try {
-      await post("/api/auth/request", { email });
+      const data = await post("/api/auth/request", { email });
       setStage("code");
+      // Fill the field in as well as showing it: on localhost the point is to
+      // sign in without leaving the page, and retyping six digits you can
+      // already see is busywork.
+      if (typeof data?.devCode === "string") {
+        setDevCode(data.devCode);
+        setCode(data.devCode);
+      }
       setNote(resend ? "New code sent." : `Code sent to ${email}.`);
     } catch (err) {
       setError((err as Error).message);
@@ -221,6 +233,26 @@ export default function SignIn() {
             <p className="mt-4 text-[13px]" style={{ color: "var(--cyan)" }}>
               {note}
             </p>
+          )}
+          {devCode && (
+            <div
+              className="mt-4 rounded-lg border px-3 py-2.5"
+              style={{ borderColor: "var(--amber)", color: "var(--amber)" }}
+            >
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em]">
+                Development mode
+              </div>
+              <div
+                className="mt-1.5 font-mono text-[26px] font-semibold tracking-[0.3em]"
+                style={{ color: "var(--ink)" }}
+              >
+                {devCode}
+              </div>
+              <p className="mt-1.5 text-[12px] leading-relaxed">
+                Filled in below and also emailed. Shown here only because this server runs
+                with AUTH_DEV_LOGIN=1 outside production.
+              </p>
+            </div>
           )}
         </div>
 
