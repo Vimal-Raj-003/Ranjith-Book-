@@ -204,6 +204,8 @@ export async function renderProject(
   outputAbs: string,
   quality: "draft" | "high",
   mode: RenderMode = "local",
+  /** Parallel capture workers (1–8) for a local render; undefined = HyperFrames' own "auto". */
+  workers?: number,
 ) {
   await fs.mkdir(path.dirname(outputAbs), { recursive: true });
 
@@ -219,7 +221,8 @@ export async function renderProject(
       90 * 60_000,
     );
   } else {
-    await hf(dir, ["render", "--quality", quality, "--output", outputAbs], 60 * 60_000);
+    const w = workers && Number.isInteger(workers) && workers >= 1 && workers <= 8 ? ["--workers", String(workers)] : [];
+    await hf(dir, ["render", "--quality", quality, "--output", outputAbs, ...w], 60 * 60_000);
   }
 
   const stat = await fs.stat(outputAbs);

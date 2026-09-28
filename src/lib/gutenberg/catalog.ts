@@ -67,7 +67,7 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { prisma, getSetting, setSetting } from "@/lib/db";
-import { WORK_ROOT } from "@/lib/paths";
+import { CACHE_ROOT } from "@/lib/paths";
 import { guardedFetch, type FetchDeps } from "./client";
 import { copy } from "./copy";
 import { FILE_ORIGIN, isFileHost } from "./hosts";
@@ -78,7 +78,7 @@ import { fail, ok, type FormatKey, type FreeBook, type BookSearchPage, type Resu
 export const CATALOG_URL = new URL("/cache/epub/feeds/pg_catalog.csv", FILE_ORIGIN).toString();
 
 /** Where the downloaded feed is kept, beside the other working files. */
-export const CATALOG_DIR = path.join(WORK_ROOT, "gutenberg");
+export const CATALOG_DIR = path.join(CACHE_ROOT, "gutenberg");
 const CATALOG_FILE = path.join(CATALOG_DIR, "pg_catalog.csv");
 
 /** Which generation search reads. Flipping this is the swap. */

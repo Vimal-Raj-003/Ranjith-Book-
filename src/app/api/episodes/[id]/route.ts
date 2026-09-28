@@ -60,6 +60,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       notes: episode.notes ? (JSON.parse(episode.notes) as string[]) : [],
       partNumber: episode.partNumber,
       seriesTotal: episode.seriesTotal,
+      kind: episode.kind,
       durationSec: episode.durationSec,
       hasVideo: Boolean(episode.videoPath),
       startedAt: episode.startedAt,

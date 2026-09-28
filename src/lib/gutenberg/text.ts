@@ -35,14 +35,14 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { WORK_ROOT } from "@/lib/paths";
+import { CACHE_ROOT } from "@/lib/paths";
 import { FILE_TIMEOUT_MS, guardedFetch, readCapped, toBookId, type FetchDeps } from "./client";
 import { copy } from "./copy";
 import { FILE_ORIGIN, isFileHost } from "./hosts";
 import { fail, ok, type Result } from "./types";
 
 /** Where a fetched book is kept so the second request costs nothing. */
-export const TEXT_CACHE_DIR = path.join(WORK_ROOT, "gutenberg", "text");
+export const TEXT_CACHE_DIR = path.join(CACHE_ROOT, "gutenberg", "text");
 
 /**
  * A generous ceiling that is still a ceiling. The longest things in the

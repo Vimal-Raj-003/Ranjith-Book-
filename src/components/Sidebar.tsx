@@ -9,6 +9,7 @@ import type { View } from "./types";
 
 const ITEMS: { id: View; label: string; available: boolean }[] = [
   { id: "studio", label: strings.nav.studio, available: true },
+  { id: "books", label: strings.nav.books, available: true },
   { id: "library", label: strings.nav.library, available: true },
   { id: "free-books", label: strings.nav.freeBooks, available: true },
   { id: "queue", label: strings.nav.queue, available: false },

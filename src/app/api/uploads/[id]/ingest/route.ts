@@ -28,6 +28,10 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     if (upload.userId && upload.userId !== user.id) {
       return NextResponse.json({ error: "Not found", code: "not_found" }, { status: 404 });
     }
+    // A PDF has no photographs to read; it is analysed by /api/books/[id]/analyze.
+    if (upload.kind === "pdf") {
+      return NextResponse.json({ error: "This upload is a PDF. Analyse it from the Book PDFs section.", code: "wrong_kind" }, { status: 400 });
+    }
 
     void runIngest(id)
       .then((episodeIds) => Promise.allSettled(episodeIds.map((epId) => runEpisode(epId))))

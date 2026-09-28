@@ -30,6 +30,47 @@ export async function ffmpeg(args: string[]) {
   });
 }
 
+/**
+ * Measured silences in an audio file: stretches of at least `minDur` seconds
+ * below `noiseDb`. Evidence of where speech is NOT, used to correct word
+ * timing at the edges of speech (see `snapToSound` in word-timing.ts).
+ */
+export async function detectSilences(
+  file: string,
+  noiseDb = -35,
+  minDur = 0.15,
+): Promise<{ start: number; end: number }[]> {
+  // silencedetect reports on stderr at info level, so this does not go
+  // through `ffmpeg()`, which runs at -loglevel error.
+  const { stderr } = await exec(
+    FFMPEG,
+    ["-hide_banner", "-i", file, "-af", `silencedetect=noise=${noiseDb}dB:d=${minDur}`, "-f", "null", "-"],
+    { maxBuffer: 1024 * 1024 * 32, windowsHide: true },
+  );
+  const out: { start: number; end: number }[] = [];
+  let start: number | null = null;
+  for (const line of stderr.split("\n")) {
+    const s = line.match(/silence_start: (-?[\d.]+)/);
+    const e = line.match(/silence_end: ([\d.]+)/);
+    if (s) start = Math.max(0, parseFloat(s[1]));
+    if (e && start !== null) {
+      out.push({ start, end: parseFloat(e[1]) });
+      start = null;
+    }
+  }
+  // silencedetect reports one pause as two back-to-back silences where the
+  // narration's clips were joined (e.g. 41.502–42.455 then 42.456–43.371).
+  // It is one pause: treated as two, a word pinned inside it was moved only
+  // to the join, still a second before the voice.
+  const merged: { start: number; end: number }[] = [];
+  for (const q of out) {
+    const last = merged[merged.length - 1];
+    if (last && q.start - last.end < 0.03) last.end = Math.max(last.end, q.end);
+    else merged.push({ ...q });
+  }
+  return merged;
+}
+
 export async function durationOf(file: string): Promise<number> {
   const { stdout } = await exec(FFPROBE, [
     "-v", "error",

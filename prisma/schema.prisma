@@ -80,20 +80,37 @@ model Book {
   episodes  Episode[]
   usedHooks UsedHook[]
   usedIdeas UsedIdea[]
+  ideas     ContentIdea[]
   createdAt DateTime @default(now())
 }
 
-/// One batch of photographs.
+/// One batch of photographs, or one book PDF.
 model Upload {
   id        String  @id @default(cuid())
   bookId    String
   book      Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
   userId    String?
+  /// photos | pdf. A photo batch goes through `runIngest`; a PDF goes through
+  /// `runBookAnalysis` and ends in `ContentIdea` rows rather than episodes.
+  kind      String  @default("photos")
   status    String  @default("QUEUED")
   step      String  @default("Queued")
   error     String?
+  /// The uploaded PDF, under WORK_ROOT. Null for a photo batch.
+  sourcePath String?
+  pageCount  Int?
+  /// JSON {label, done, total} — the finer-grained position inside `step`
+  /// ("Page 37 of 200"), so a long step never looks frozen.
+  progress   String?
+  /// JSON string[] of advisory findings, the same role `Episode.notes` plays.
+  notes      String?
+  /// JSON AnalysisStats — how many candidates were found, dropped and why.
+  stats      String?
   pages     Page[]
   episodes  Episode[]
+  sections  Section[]
+  chunks    Chunk[]
+  ideas     ContentIdea[]
   createdAt DateTime @default(now())
   /// Bumped by every `prisma.upload.update` in `runIngest` (once per step
   /// transition). `reap.ts` uses this — not `createdAt` — to tell "stuck on
@@ -122,8 +139,93 @@ model Page {
   alignment           String? // JSON AlignedWord[]
   alignmentConfidence Float?
 
+  /// PDF pages only. The number printed on the page ("xii", "37"), when the
+  /// PDF records one — distinct from `pageIndex`, the position in the file.
+  pageLabel     String?
+  /// text-layer | ocr | vision | none — where this page's words came from.
+  textSource    String?
+  /// Mean Tesseract word confidence (0-100), for OCR'd pages only.
+  ocrConfidence Float?
+
   @@index([uploadId])
   @@unique([uploadId, pageIndex])
+}
+
+/// A chapter or section of a PDF, detected from its outline, its headings, or
+/// (failing both) a fixed page run. `skip` marks front and back matter —
+/// contents, copyright, index — which is never mined for ideas.
+model Section {
+  id        String  @id @default(cuid())
+  uploadId  String
+  upload    Upload  @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  index     Int
+  title     String
+  level     Int     @default(1)
+  startPage Int
+  endPage   Int
+  /// toc | heading | fallback
+  source    String
+  skip      Boolean @default(false)
+  wordCount Int     @default(0)
+
+  @@unique([uploadId, index])
+}
+
+/// A ~200-word passage of a PDF, the unit of embedding and retrieval.
+/// `spans` ties every word back to a page and a word index on that page —
+/// the same (sourcePage, startWord, endWord) coordinates a script beat cites.
+model Chunk {
+  id           String @id @default(cuid())
+  uploadId     String
+  upload       Upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  index        Int
+  sectionIndex Int
+  startPage    Int
+  endPage      Int
+  spans        String // JSON SourceRef[]
+  text         String
+  wordCount    Int
+  /// Float32 little-endian, L2-normalised. Null if embedding was unavailable.
+  embedding    Bytes?
+
+  @@unique([uploadId, index])
+}
+
+/// One video-worthy idea found in a PDF. Every idea is grounded: `sourceRefs`
+/// point at the exact words on the exact pages it came from, and an idea whose
+/// quotes could not be found in the book is never written here at all.
+model ContentIdea {
+  id              String  @id @default(cuid())
+  uploadId        String
+  upload          Upload  @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  bookId          String
+  book            Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  rank            Int
+  ideaKey         String
+  title           String
+  coreIdea        String
+  hook            String
+  whyItMatters    String
+  angle           String
+  hookPotential   String
+  storyPotential  String
+  practicalValue  String
+  visualPotential String
+  sectionTitle    String?
+  sourcePages     String  // JSON number[] — page indices, ascending
+  sourceRefs      String  // JSON SourceRef[]
+  sourceText      String  // the cited words, verbatim from the page text
+  relatedPages    String? // JSON number[] — other pages retrieved by similarity
+  /// JSON IdeaScores. Internal: used to rank, never shown to the operator.
+  scores          String
+  score           Float
+  /// PROPOSED | SELECTED
+  status          String  @default("PROPOSED")
+  episodes        Episode[]
+  createdAt       DateTime @default(now())
+
+  @@unique([uploadId, ideaKey])
+  @@index([bookId])
 }
 
 /// One video.
@@ -140,6 +242,14 @@ model Episode {
   seriesTotal Int    @default(1)
   theme       String @default("marginalia")
   ideaKey     String?
+
+  /// photo | idea. A photo episode covers a page range of a photographed
+  /// upload; an idea episode is made from one ContentIdea of a book PDF.
+  kind          String       @default("photo")
+  /// The video's frame. Only "9:16" is rendered today.
+  format        String       @default("9:16")
+  contentIdeaId String?
+  contentIdea   ContentIdea? @relation(fields: [contentIdeaId], references: [id], onDelete: SetNull)
 
   status String  @default("QUEUED")
   step   String  @default("Queued")
@@ -159,8 +269,18 @@ model Episode {
   revised      Boolean @default(false)
 
   visualPlan  String? // JSON: page, word ranges, sweep timings, cue placements
+  /// JSON Scene[] — what was on screen when, and what in the book each scene
+  /// was grounded in (see lib/video/scenes). Null for an episode rendered
+  /// before scenes existed, which is not invalid, only plainer.
+  scenePlan   String?
   captions    String? // JSON CaptionLine[]
   srt         String?
+  /// JSON {source, model, perBeat, words[{w,s,e,b,i,src}]} — when each script
+  /// word was spoken, from the recorded voice (see media/narration-timing.ts).
+  wordTimings  String?
+  /// audio | mixed | estimated — whether subtitles and highlights follow the
+  /// recorded voice, or fell back to an estimate. Null on older episodes.
+  timingSource String?
   durationSec Float?
   audioPath   String?
   projectPath String?
@@ -182,6 +302,7 @@ model Episode {
   @@index([bookId])
   @@index([uploadId])
   @@index([userId])
+  @@index([contentIdeaId])
 }
 
 model StepRun {

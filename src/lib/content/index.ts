@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import { prisma } from "../db";
 import { ContentRejectedError } from "../errors";
 import { reserveIdea, releaseIdea } from "./idea";
-import type { Archetype, ContentPackage, GenerateInput } from "./schema";
-import { voScriptFromPackage } from "./schema";
+import type { Archetype, ContentPackage, GenerateInput, IdeaBrief, LengthSpec, ScriptLength } from "./schema";
+import { LENGTHS, spokenWordCount, voScriptFromPackage } from "./schema";
+import { checkRanges } from "./ranges";
 import { generateWithCli, runCliJson } from "./cli-provider";
 import type { CliProvider } from "./cli";
 import {
@@ -74,15 +75,68 @@ export interface GenerateContentOpts {
   provider: CliProvider;
   model?: string;
   onStep?: (step: string) => Promise<void> | void;
+  /** The book-analysis idea a long episode is built around. */
+  brief?: IdeaBrief;
+  /** Absent means "short", the photo-episode shape, which has no length gate. */
+  length?: ScriptLength;
+  /**
+   * Called with each draft the moment it is handed to the grounding checker,
+   * so the caller can prepare that draft's audio while the check runs. The
+   * caller must use such work ONLY for the package this function finally
+   * returns — a draft passed here may still be rejected.
+   */
+  onCheckStart?: (candidate: ContentPackage) => void;
 }
 
 export interface GenerateResult {
   pkg: ContentPackage;
   report: GroundingReport | null;
   revised: boolean;
+  /** Word ranges repaired in code on the approved draft (see ./ranges). */
+  rangeRepairs?: string[];
 }
 
 const MAX_REVISIONS: number = 2;
+
+export interface LengthIssue {
+  beats: number;
+  words: number;
+  problem: string;
+  brief: string;
+}
+
+/**
+ * The long-episode length gate: beat count and spoken word count inside the
+ * spec. Null when the spec has no word range (a short episode) or the draft
+ * fits. Pure, so it is tested without a model.
+ */
+export function checkLength(pkg: Pick<ContentPackage, "beats">, spec: LengthSpec): LengthIssue | null {
+  if (spec.minWords === null || spec.maxWords === null) return null;
+  const beats = pkg.beats.length;
+  const words = spokenWordCount(pkg);
+  const problems: string[] = [];
+  if (beats < spec.minBeats || beats > spec.maxBeats) {
+    problems.push(`${beats} beats, outside the ${spec.minBeats}–${spec.maxBeats} a 1–2 minute episode needs`);
+  }
+  if (words < spec.minWords || words > spec.maxWords) {
+    problems.push(`${words} spoken words, outside the ${spec.minWords}–${spec.maxWords} that make 60–120 seconds`);
+  }
+  if (!problems.length) return null;
+  const target = Math.round((spec.minWords + spec.maxWords) / 2);
+  return {
+    beats,
+    words,
+    problem: `The script ran to ${problems.join(" and ")}`,
+    brief:
+      `A length check found this draft has ${problems.join(" and ")}. ` +
+      (words > spec.maxWords
+        ? `Cut it to about ${target} words: tighten every beat and drop anything that restates an earlier point. `
+        : words < spec.minWords
+          ? `Develop it to about ${target} words: go further into the book's own example or argument for this one idea — never pad, and never add a claim the page does not support. `
+          : "") +
+      `Keep between ${spec.minBeats} and ${spec.maxBeats} beats. Every other rule still applies.`,
+  };
+}
 
 /**
  * Writes a script, then hands it to a SEPARATE, adversarial grounding pass
@@ -122,7 +176,14 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     provider,
     model,
     onStep,
+    brief: ideaBrief,
+    length = "short",
+    onCheckStart,
   } = opts;
+  const lengthSpec = LENGTHS[length];
+  const pageLengths = new Map(pages.map((p) => [p.pageIndex, p.words.length]));
+  /** Range repairs made on the draft that was finally approved (reset per draft). */
+  let rangeRepairs: string[] = [];
 
   const previous = await prisma.usedHook.findMany({
     where: { bookId },
@@ -152,6 +213,10 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       ideaKey,
       pages,
       avoidHooks: [...avoidHooks, ...extraAvoid],
+      // Spread so a short (photo) input carries neither key at all and is
+      // exactly the object it always was.
+      ...(ideaBrief ? { brief: ideaBrief } : {}),
+      ...(length !== "short" ? { length } : {}),
     };
     return generateWithCli(input, provider, model, brief);
   };
@@ -190,7 +255,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
    * message escape early — see `MAX_REVISIONS` handling in the main loop).
    */
   interface GateIssue {
-    kind: "author" | "quotation";
+    kind: "author" | "quotation" | "length" | "ranges";
     /** Fed back to the writer exactly like `revisionBrief(report)` is. */
     brief: string;
     /** Used only once the rewrite ceiling is reached with this still failing. */
@@ -254,6 +319,24 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
    * a rewrite reliably fixes.
    */
   const gate = (candidate: ContentPackage): GateIssue | null => {
+    // Word ranges, checked in code: the most common reason drafts were sent
+    // back, and one no model call is needed to see (see ./ranges).
+    const ranges = checkRanges(candidate.beats, pageLengths);
+    if (ranges.problems.length) {
+      return {
+        kind: "ranges",
+        brief: [
+          "A word-range check found problems before the grounding check ran:",
+          ...ranges.problems.map((p) => `- ${p}`),
+          "Rewrite the whole package with every range fixed. Every other rule still applies.",
+        ].join("\n"),
+        finalMessage: `The script's word ranges were still invalid (${ranges.problems[0]})${rewriteNote}`,
+        data: ranges.problems,
+      };
+    }
+    candidate.beats = ranges.beats;
+    rangeRepairs.push(...ranges.repairs);
+
     const mentions = findAuthorMentions(candidate, safeAuthor);
     if (mentions.length) {
       // Two different fabrications, and the message must not conflate them:
@@ -302,6 +385,19 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       };
     }
 
+    // Length, for a long episode only. After author and quotation on purpose:
+    // those are legal and factual rails; this one is about fit, and a rewrite
+    // aimed at fixing a quotation problem should not be spent on word counts.
+    const lengthIssue = checkLength(candidate, lengthSpec);
+    if (lengthIssue) {
+      return {
+        kind: "length",
+        brief: lengthIssue.brief,
+        finalMessage: `${lengthIssue.problem}${rewriteNote}`,
+        data: lengthIssue,
+      };
+    }
+
     return null;
   };
 
@@ -335,6 +431,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     // author gate are legal/factual safety rails and must never become
     // advisory just because a rewrite was available.
     for (let round = 0; ; round++) {
+      rangeRepairs = [];
       const issue = gate(pkg);
       if (issue) {
         if (round >= MAX_REVISIONS) {
@@ -343,7 +440,11 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         await onStep?.(
           issue.kind === "quotation"
             ? "Rewriting after the quotation-budget check"
-            : "Rewriting after the author check",
+            : issue.kind === "length"
+              ? "Rewriting after the length check"
+              : issue.kind === "ranges"
+                ? "Rewriting after the word-range check"
+                : "Rewriting after the author check",
         );
         pkg = await write([], issue.brief);
         revised = true;
@@ -353,6 +454,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       // Independent grounding check. Nothing is spoken until the script is
       // validated, so a blocker is rewritten and re-checked rather than shipped.
       await onStep?.("Checking the script against the page");
+      onCheckStart?.(pkg);
       report = await check(pkg);
       if (!needsRevision(report)) break;
 
@@ -388,5 +490,5 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     throw err;
   }
 
-  return { pkg, report, revised };
+  return { pkg, report, revised, rangeRepairs };
 }

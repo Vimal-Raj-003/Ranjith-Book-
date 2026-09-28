@@ -1,5 +1,5 @@
 import { runCli, extractJson, type CliProvider } from "./cli";
-import { CONTENT_JSON_SCHEMA, type ContentPackage, type GenerateInput } from "./schema";
+import { CONTENT_JSON_SCHEMA, contentJsonSchema, type ContentPackage, type GenerateInput } from "./schema";
 import { buildSystemPrompt, buildUserPrompt } from "./prompt";
 
 /**
@@ -26,7 +26,8 @@ export async function generateWithCli(
   revisionBrief?: string,
 ): Promise<ContentPackage> {
   const system =
-    buildSystemPrompt({ hasAuthor: input.author !== null }) + jsonContract(CONTENT_JSON_SCHEMA);
+    buildSystemPrompt({ hasAuthor: input.author !== null, length: input.length }) +
+    jsonContract(input.length === "long" ? contentJsonSchema("long") : CONTENT_JSON_SCHEMA);
   const user = buildUserPrompt(input, revisionBrief);
   const reply = await runCli(provider, system, user, model);
   return extractJson<ContentPackage>(reply);

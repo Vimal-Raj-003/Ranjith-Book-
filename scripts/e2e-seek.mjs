@@ -88,7 +88,14 @@ async function stateAt(page, t) {
       // riskiest-shape-in-the-composition as #card-pop) and #buy-card. Same
       // reasoning as above: an untracked tweened element is an untested one.
       for (const el of document.querySelectorAll(
-        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, #cta-card, #buy-card",
+        // The scene stack (Phase 3C) added the riskiest shape yet: one layer
+        // per scene, each with its own inner elements, all tweened from a
+        // generic data-driven loop. Every one is tracked — the layers, every
+        // animated element inside them, the card's own visibility, the crop
+        // zoom and the backdrop glow — because an untracked tweened element
+        // is an untested one, and this is where a whole template could be
+        // silently wrong.
+        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el]",
       )) {
         const cs = getComputedStyle(el);
         const key =
@@ -98,7 +105,11 @@ async function stateAt(page, t) {
               ? `caption:${el.dataset.caption}`
               : el.dataset.cue !== undefined
                 ? `cue:${el.dataset.cue}`
-                : el.id;
+                : el.dataset.scene !== undefined
+                  ? `scene:${el.dataset.scene}`
+                  : el.dataset.el !== undefined
+                    ? `el:${el.closest("[data-scene]")?.dataset.scene}:${el.dataset.el}`
+                    : el.id;
         out[key] = Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
       }
       return out;
@@ -120,7 +131,7 @@ async function stateAt(page, t) {
  * caught by running this harness against Marginalia alone, and all of them
  * render as a video that is subtly wrong in a way no test would explain.
  */
-async function checkTheme(browser, id, theme) {
+async function checkTheme(browser, id, theme, withScenes = false) {
   // The byline and the purchase card (spec 2026-08-23 §9/§11) are the
   // present-only branches of the composition: with no `bookLink` there is no
   // #buy-card element in the document at all, so widening the selector above
@@ -129,7 +140,7 @@ async function checkTheme(browser, id, theme) {
   // fixture keeps describing the geometry case it was written for, and so the
   // "absent" shape it already covers stays covered by every other consumer.
   const html = buildComposition({
-    ...fixtureInput({ theme }),
+    ...fixtureInput({ theme, withScenes }),
     bookTitle: "The Fixture Book of Very Long Titles Indeed",
     author: "A Verified Author",
     bookLink: "https://example.com/fixture-book",
@@ -236,7 +247,10 @@ async function main() {
   try {
     let failures = 0;
     for (const [id, theme] of themes) {
-      failures += await checkTheme(browser, id, theme);
+      // Both shapes: the page-only composition every photographed episode
+      // still renders, and the scene stack an idea episode renders.
+      failures += await checkTheme(browser, id, theme, false);
+      failures += await checkTheme(browser, `${id}+scenes`, theme, true);
     }
 
     if (failures) {

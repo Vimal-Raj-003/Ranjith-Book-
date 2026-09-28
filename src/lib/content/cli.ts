@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 
 const exec = promisify(execFile);
+import { callKind, recordCall } from "./cli-metrics";
 
 /**
  * Run a command, optionally writing the prompt to stdin. Prompts carry a whole
@@ -137,20 +138,64 @@ async function scratchDir(): Promise<string> {
 }
 
 /**
- * Claude Code in headless mode. Tools are disabled and the working directory is
- * a throwaway folder, so the run can only produce text.
+ * Remove a scratch directory, and never fail the call because of it.
+ *
+ * On Windows the CLI's own process can still hold a handle on its working
+ * directory for a moment after it exits, and `fs.rm` then throws EBUSY. In a
+ * `finally` that rejection REPLACES the successful return — a model call that
+ * produced a perfectly good answer was reported as a failure, which is exactly
+ * how a real visual-director call was lost ("Visual planning failed (EBUSY:
+ * resource busy or locked, rmdir ...)"). One retry after a short pause clears
+ * the usual case; anything still locked is left for the operating system's own
+ * temp cleanup, which is a leaked directory of a few kilobytes rather than a
+ * lost minute of model work.
+ */
+export async function discardScratch(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 120));
+    }
+  }
+}
+
+/**
+ * The flags that make a headless call a plain model call rather than a coding
+ * agent. Measured (see `cli-metrics.ts`): with only `--append-system-prompt`
+ * and `--allowed-tools ""`, every call still carried ~30,000 tokens of Claude
+ * Code's own system prompt, tool definitions, MCP servers and skills — none of
+ * it relevant to writing or checking a script, and ~50x the cost of the call
+ * it rode on. `--allowed-tools` only governs permission; `--tools ""` is what
+ * removes the tools. Same model, same effort: nothing about the answer the
+ * pipeline asked for changes, only what surrounds it.
+ */
+export const LEAN_FLAGS = [
+  "--tools", "",
+  "--strict-mcp-config",
+  "--disable-slash-commands",
+  "--no-session-persistence",
+];
+
+/**
+ * Claude Code in headless mode, as a plain model call: our system prompt
+ * REPLACES Claude Code's (it is complete on its own), no tools, no MCP
+ * servers, no skills, in a throwaway folder — so the run can only produce
+ * text, and pays only for the prompt it was actually given.
  */
 async function runClaudeCli(system: string, user: string, model?: string): Promise<string> {
   const cwd = await scratchDir();
+  const kind = callKind(system);
+  const t0 = Date.now();
+  let envelope: { is_error?: boolean; result?: string; subtype?: string } | null = null;
   try {
-    // Tools are disabled, so the run can only produce text — no turn cap needed.
-    const args = [
-      "-p",
-      "--output-format", "json",
-      "--append-system-prompt", system,
-      "--allowed-tools", "",
-      "--permission-mode", "default",
-    ];
+    // BOOKREEL_CLI_LEAN=0 restores the original invocation exactly — a
+    // rollback switch, and the baseline the lean flags were measured against.
+    const args =
+      process.env.BOOKREEL_CLI_LEAN === "0"
+        ? ["-p", "--output-format", "json", "--append-system-prompt", system, "--allowed-tools", "", "--permission-mode", "default"]
+        : ["-p", "--output-format", "json", "--system-prompt", system, ...LEAN_FLAGS, "--permission-mode", "default"];
     if (model) args.push("--model", model);
 
     const { stdout } = await run(cliBin("claude-cli"), args, {
@@ -159,7 +204,6 @@ async function runClaudeCli(system: string, user: string, model?: string): Promi
       timeoutMs: TIMEOUT_MS,
     });
 
-    let envelope: { is_error?: boolean; result?: string; subtype?: string };
     try {
       envelope = JSON.parse(stdout);
     } catch {
@@ -170,13 +214,19 @@ async function runClaudeCli(system: string, user: string, model?: string): Promi
 
     // Accept any run that produced text, even one flagged as an error: a turn
     // limit still yields a complete answer.
-    if (typeof envelope.result === "string" && envelope.result.trim()) return envelope.result;
+    if (typeof envelope!.result === "string" && envelope!.result.trim()) {
+      await recordCall(kind, Date.now() - t0, envelope);
+      return envelope!.result;
+    }
 
     throw new CliError(
-      `Claude CLI returned no content (${envelope.subtype ?? "unknown"}). Run \`claude\` once in a terminal to confirm you are signed in.`,
+      `Claude CLI returned no content (${envelope!.subtype ?? "unknown"}). Run \`claude\` once in a terminal to confirm you are signed in.`,
     );
+  } catch (err) {
+    await recordCall(kind, Date.now() - t0, envelope, err instanceof Error ? err.message : String(err));
+    throw err;
   } finally {
-    await fs.rm(cwd, { recursive: true, force: true });
+    await discardScratch(cwd);
   }
 }
 
@@ -204,7 +254,7 @@ async function runCodexCli(system: string, user: string, model?: string): Promis
     }
     throw new CliError(`Codex CLI failed: ${message.slice(0, 300)}`);
   } finally {
-    await fs.rm(cwd, { recursive: true, force: true });
+    await discardScratch(cwd);
   }
 }
 

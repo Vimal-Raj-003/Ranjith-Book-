@@ -45,6 +45,9 @@ export interface PipelineRailProps {
   steps?: StepTiming[];
   /** Total run time, for the share-of-run column. */
   totalMs?: number | null;
+  /** The stages to draw. Defaults to the photo pipeline's `STEPS`; a book PDF
+   *  analysis passes its own `ANALYSIS_STEPS`. */
+  stepList?: readonly string[];
 }
 
 /**
@@ -58,7 +61,7 @@ export interface PipelineRailProps {
  * and whether a segment went red — and one line carries the only stage that
  * is news. The full list is a keypress away and unchanged when it is opened.
  */
-export default function PipelineRail({ step, status, error, steps, totalMs }: PipelineRailProps) {
+export default function PipelineRail({ step, status, error, steps, totalMs, stepList = STEPS }: PipelineRailProps) {
   // Timings are keyed by step NAME rather than by index: the rail renders
   // ingest and episode stages as one list, while StepRun rows exist only for
   // the episode half, so the two are not positionally aligned.
@@ -69,7 +72,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs }: Pi
   const measured = (steps ?? []).reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
   const slowest = (steps ?? []).reduce((max, t) => Math.max(max, t.durationMs ?? 0), 0);
 
-  const currentIndex = STEPS.findIndex((s) => s === step);
+  const currentIndex = stepList.findIndex((s) => s === step);
   const isDone = status === "DONE";
   const isFailed = status === "FAILED";
 
@@ -83,11 +86,11 @@ export default function PipelineRail({ step, status, error, steps, totalMs }: Pi
   };
 
   const headline = isDone
-    ? STEPS[STEPS.length - 1]
+    ? stepList[stepList.length - 1]
     : currentIndex >= 0
-      ? STEPS[currentIndex]
+      ? stepList[currentIndex]
       : strings.run.notStarted;
-  const position = isDone ? STEPS.length : currentIndex >= 0 ? currentIndex + 1 : 0;
+  const position = isDone ? stepList.length : currentIndex >= 0 ? currentIndex + 1 : 0;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -95,7 +98,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs }: Pi
           colour. Announcing it twice is noise in a region that already
           re-announces on every poll. */}
       <div className="rail-meter" aria-hidden>
-        {STEPS.map((s, i) => (
+        {stepList.map((s, i) => (
           <span key={s} className={`rail-seg${stateOf(i) === "current" && !isFailed ? " node-active" : ""}`} data-state={stateOf(i)} />
         ))}
       </div>
@@ -108,7 +111,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs }: Pi
           {headline}
         </span>
         <span className="shrink-0 font-mono text-[11px]" style={{ color: "var(--mute-2)" }}>
-          {strings.run.stepCount(position, STEPS.length)}
+          {strings.run.stepCount(position, stepList.length)}
         </span>
       </div>
 
@@ -120,7 +123,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs }: Pi
 
       <Disclosure quiet summary={strings.run.allSteps}>
         <ol role="list" className="flex flex-col gap-0.5">
-          {STEPS.map((s, i) => {
+          {stepList.map((s, i) => {
             const state = stateOf(i);
             const color =
               state === "failed"

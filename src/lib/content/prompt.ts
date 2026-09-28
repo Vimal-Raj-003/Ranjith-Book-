@@ -1,4 +1,4 @@
-import type { GenerateInput } from "./schema";
+import { LENGTHS, type GenerateInput, type IdeaBrief, type ScriptLength } from "./schema";
 
 /**
  * Stated once, up front, in its own unmissable block rather than folded into
@@ -71,9 +71,11 @@ For every beat:
 - Both indices must be numbers that actually appear in the numbered word
   list for that page. Do not invent an index past the last number you were
   shown.
-- When two beats in a row discuss the same page, their word ranges should
-  themselves move forward (later beats pointing at later words), matching
-  the order you actually talk about the passage in.
+- When two beats in a row discuss the same page, the later beat's startWord
+  must be AT OR AFTER the earlier beat's endWord — never before it, and never
+  overlapping it. Sharing the one boundary word is fine; going back is not —
+  and every beat except the call to action must also cover at least one word
+  past that boundary. Order your beats to follow the passage so this holds.
 - A SINGLE BEAT MAY ONLY COVER WORDS ON ONE PAGE. If the idea you are
   discussing continues onto the next page, do NOT write one beat whose
   commentary draws on both — write two consecutive beats instead, split
@@ -86,11 +88,12 @@ For every beat:
 - THE LAST BEAT IS THE CALL TO ACTION, and it is the one exception to every
   rule above. It asks the viewer to do something rather than discussing the
   page, so there are no words it is "about" and no range can honestly describe
-  it. Point its sourcePage and word range at the passage its ask grows out of
-  - normally the same passage the beat before it just covered - and keep it
-  in bounds and moving forward like any other. Do not hunt for a better match:
-  there is none. That range is somewhere for the marker to rest while the ask
-  is spoken, not a claim about what you are saying.
+  it. Point its sourcePage at the page the beat before it covered, and start
+  its range AT that beat's endWord (for example, if the beat before it ended
+  at word 175, use startWord 175 and an endWord of 175 or later) — never at
+  an earlier word, even to repeat the same passage. Do not hunt for a better
+  match: there is none. That range is somewhere for the marker to rest while
+  the ask is spoken, not a claim about what you are saying.
 
 A wrong index is worse than no highlight: the marker will sweep words that
 have nothing to do with what is being said, and that mismatch is the first
@@ -126,8 +129,43 @@ export function numberedWordLines(words: string[], perLine = 12): string {
   return lines.join("\n");
 }
 
-export function buildSystemPrompt(opts: { hasAuthor: boolean }): string {
-  return `You write 60-to-90-second vertical video scripts, each about a single passage of a book.
+/**
+ * The rule most rewrites were spent enforcing. Measured on real runs, the
+ * grounding checker's rejections were overwhelmingly one thing: a concrete
+ * detail the page does not contain — a phone in a book from 1910, "walking the
+ * dog" where the page says "chaining up the St. Bernard", an office door, a
+ * colleague, an age. "Invent nothing" did not stop them, because an
+ * illustration does not feel like a claim to the writer; to the checker it is
+ * one. Saying so up front is the same rule the checker enforces, stated where
+ * it can prevent a rewrite instead of causing one.
+ */
+export const CONCRETE_DETAIL_RULE = `The same goes for DETAIL. Every concrete scene, object, example, setting,
+  number or date you describe must be on the page you cite. Do not add
+  illustrative everyday examples, modern touches (phones, apps, offices,
+  commutes), or specifics the page does not give — however natural they feel,
+  the checker rejects them and the whole script is rewritten. If a point needs
+  an example, use the book's own; if the page gives none, state the point
+  plainly.`;
+
+/**
+ * Only for `length: "long"`. Appended after everything else, so a short
+ * (photo-episode) prompt is byte-for-byte what it was before long scripts
+ * existed.
+ */
+function longRules(): string {
+  const spec = LENGTHS.long;
+  return `
+
+THIS IS A LONG EPISODE: ${spec.seconds.replace(/-/g, " ")} of finished video.
+- Write between ${spec.minBeats} and ${spec.maxBeats} beats.
+- The voiceover of all beats together must be between ${spec.minWords} and ${spec.maxWords} words — aim for about ${Math.round((spec.minWords! + spec.maxWords!) / 2)}. Count them. A script outside that range is sent back.
+- Shape: open on the hook, set up why it matters, develop the ONE idea you were given with the book's own example or argument, show what it looks like in practice, land a clear takeaway, then the call to action. Every beat moves the idea forward; no beat restates the one before it.
+- The idea you were given is the spine of the episode. Stay on it — do not drift into other ideas from the same pages.`;
+}
+
+export function buildSystemPrompt(opts: { hasAuthor: boolean; length?: ScriptLength }): string {
+  const length = opts.length ?? "short";
+  return `You write ${LENGTHS[length].seconds} vertical video scripts, each about a single passage of a book.
 
 ${TRANSFORMATIVE_RULE}
 
@@ -178,6 +216,7 @@ Rules that are not negotiable:
 - Every claim must be supported by the page text you are given. Invent nothing —
   no statistics, no study, no biographical detail, no anecdote that is not printed
   on the page.
+- ${CONCRETE_DETAIL_RULE}
 - onScreen is a label, not a subtitle. Six words at most.
 - emoji is optional, and at most ONE emoji character per beat. It stands for
   what that beat is actually about — the object, the act, the feeling under
@@ -203,7 +242,34 @@ Rules that are not negotiable:
   in the opening card and on every thumbnail — so they must appear in hook
   EXACTLY as written there, same spelling, same word. Pick the words a reader
   would need if they only had time to read three of them; do not pick "the",
-  "and", or any other word that carries no meaning on its own.`;
+  "and", or any other word that carries no meaning on its own.${length === "long" ? longRules() : ""}`;
+}
+
+/**
+ * The idea book analysis found, stated before the pages. Its quotes are named
+ * by page and word range so the writer can cite them as beats — but they are
+ * where to look, not what to say: every rule about commentary and quotation
+ * applies exactly as it does to any other script.
+ */
+export function ideaBriefBlock(brief: IdeaBrief): string {
+  const quotes = brief.quotes
+    .map((q) => `- PAGE ${q.pageIndex}, words ${q.startWord}–${q.endWord}: "${q.text}"`)
+    .join("\n");
+  return [
+    `THE IDEA THIS EPISODE IS ABOUT (found in the book by an editor; build the whole script around it):`,
+    `Idea: ${brief.coreIdea}`,
+    quotes ? `Where the book says it:\n${quotes}` : "",
+    `The editor's working title and suggested opening are below. They are LABELS, not evidence: the`,
+    `editor may have added background knowledge that is NOT on these pages (a date, an age, a name, a`,
+    `number, a claim about the book's history or fame). Use them only for the angle. Never repeat any`,
+    `fact from them unless the pages themselves state it — the grounding check rejects anything that`,
+    `is not printed on the page, however well known it is.`,
+    `Working title: ${brief.title}`,
+    brief.hook ? `Suggested opening: ${brief.hook}` : "",
+    brief.whyItMatters ? `Why it matters: ${brief.whyItMatters}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function buildUserPrompt(input: GenerateInput, revisionBrief?: string): string {
@@ -223,6 +289,7 @@ export function buildUserPrompt(input: GenerateInput, revisionBrief?: string): s
     input.avoidHooks.length
       ? `Openings already used for this book — do not reuse or paraphrase any of them:\n${input.avoidHooks.map((h) => `- ${h}`).join("\n")}`
       : "",
+    input.brief ? ideaBriefBlock(input.brief) : "",
     ``,
     `Each word below is prefixed with its index, restarting at 0 on every new page.`,
     `The list is broken into lines of about a dozen words; the [bracketed] number at the start of a line is that line's first index — use it to count from instead of the top of the page.`,

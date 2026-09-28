@@ -1,4 +1,7 @@
 import type { BookTheme } from "./theme-contract";
+import { embed, esc } from "./escape";
+import { renderScene, sceneCss, SCENE_FADE, type SceneAnim } from "../scenes/render";
+import { PAGE_KINDS, type Scene, type SceneTone } from "../scenes/types";
 import type { SweepStep, CameraKey } from "../sweep";
 import type { CaptionLine } from "../../media/captions";
 import type { ContentPackage } from "../../content/schema";
@@ -289,35 +292,39 @@ export interface CompositionInput {
    * render was built for without asking a viewer to transcribe it.
    */
   bookLink?: string | null;
+
+  /**
+   * The scene plan (Phase 3C). Absent — for a photographed episode, or any
+   * caller that has not planned scenes — renders EXACTLY what this function
+   * rendered before scenes existed: the page card alone, visible throughout,
+   * with no scene stack, no zoom and no glow. Present, it decides what is on
+   * screen when: book scenes show the card, every other kind gets its own
+   * cross-faded layer, and the card is hidden while they hold the frame.
+   */
+  scenes?: Scene[];
 }
 
-/**
- * `<` is escaped inside the embedded JSON because a single `</script>` anywhere
- * in book text closes the tag early, GSAP never runs, and the render comes out
- * blank — a failure that looks like a renderer bug and is not.
- */
-function embed(data: unknown): string {
-  return JSON.stringify(data).replace(/</g, "\\u003c");
-}
+/** How the backdrop glow sits for each scene tone: quiet, lifted, or wide. */
+const GLOW_BY_TONE: Record<SceneTone, { o: number; y: number; s: number }> = {
+  neutral: { o: 0.45, y: 0, s: 1.05 },
+  warm: { o: 0.58, y: 2, s: 1.0 },
+  cool: { o: 0.46, y: -6, s: 1.1 },
+  bright: { o: 0.72, y: -3, s: 1.22 },
+  deep: { o: 0.3, y: 7, s: 1.16 },
+};
 
 /**
- * The other embedding site: text written directly into the page as markup
- * (the on-screen cue label, the hook, the call to action), rather than into
- * JSON read back by JavaScript. A `.textContent` assignment never needs this
- * — the DOM API does not parse its argument as markup — but anything the
- * server writes as literal HTML does, and a `</script>` here would close the
- * tag just as early as one inside the JSON payload. Escaping only the JSON
- * site and not this one is exactly the "not just one site" failure this
- * function exists to prevent.
+ * How far a `book-crop` scene magnifies the card.
+ *
+ * Bounded tightly, and the cap is the load-bearing number: a printed line runs
+ * the FULL width of the page, so magnifying about the centre eats the margins
+ * first and then the words themselves. Measured on real renders — at 1.8x
+ * every line was cut mid-word at both edges, at 1.35x the text still touched
+ * them. 1.22x spends roughly the page's own margin and no more. The zoom's job
+ * is to make the cited lines comfortably readable, not to crop to them.
  */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+const CROP_MIN = 1.12;
+const CROP_MAX = 1.22;
 
 /** Cumulative top offset of each page inside the one scrolling column. */
 function offsetsFor(pages: { width: number; height: number }[]): number[] {
@@ -733,6 +740,12 @@ function sharedCss(theme: BookTheme): string {
      tweens writing 'transform' on one element do not compose, they overwrite,
      and the page-change pop and the drift are on different clocks. */
   .card-drift { position:absolute; inset:0; transform-origin:50% 50%; }
+  /* The crop zoom's own wrapper (§3C), for the same reason .card-drift is
+     separate from .card-pop: a third tween writing 'transform' on either of
+     those would overwrite the other, and this one is on a third clock again —
+     it changes only when a scene changes. About 50% 50%, which is where the
+     camera has already parked the words being spoken. */
+  .card-zoom { position:absolute; inset:0; transform-origin:50% 50%; }
   .scaler { position:absolute; left:0; top:0; transform-origin: top left; }
   .column { position:relative; }
   .page { position:absolute; left:0; }
@@ -976,6 +989,64 @@ const TIMELINE_JS = `
     tl.fromTo(buyEl, { autoAlpha: 0 }, { autoAlpha: 1, duration: BUY_FADE, ease: "none", immediateRender: false }, data.buy.start);
   }
 
+  // --- the scene stack (§3C) ----------------------------------------------
+  // One generic loop over declared records, rather than per-scene generated
+  // JavaScript. Every record is one tween of one primitive on one element, and
+  // the builder has already proved no element receives two that overlap
+  // (\`overlappingAnims\`), which is what makes the whole stack seek-safe.
+  (data.anims || []).forEach(function (a) {
+    var el = a.e < 0
+      ? document.querySelector('[data-scene="' + a.s + '"]')
+      : document.querySelector('[data-scene="' + a.s + '"] [data-el="' + a.e + '"]');
+    if (!el) return;
+    var d = Math.max(0.001, a.d);
+    if (a.k === "in") {
+      tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: d, ease: "power1.out", immediateRender: false }, a.t);
+    } else if (a.k === "out") {
+      tl.to(el, { autoAlpha: 0, duration: d, ease: "power1.in" }, a.t);
+    } else if (a.k === "rise") {
+      tl.fromTo(el, { autoAlpha: 0, y: a.v || 20 }, { autoAlpha: 1, y: 0, duration: d, ease: "power2.out", immediateRender: false }, a.t);
+    } else if (a.k === "pop") {
+      tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.7 }, { autoAlpha: 1, scale: 1, duration: d, ease: "back.out(1.6)", immediateRender: false }, a.t);
+    } else if (a.k === "wipe") {
+      tl.fromTo(el, { autoAlpha: 1, scaleX: 0 }, { autoAlpha: 1, scaleX: 1, duration: d, ease: "power2.out", immediateRender: false }, a.t);
+    } else if (a.k === "grow") {
+      tl.fromTo(el, { autoAlpha: 1, scaleY: 0 }, { autoAlpha: 1, scaleY: 1, duration: d, ease: "power2.out", immediateRender: false }, a.t);
+    } else if (a.k === "draw") {
+      tl.fromTo(el, { autoAlpha: 1, strokeDashoffset: a.v || 0 }, { autoAlpha: 1, strokeDashoffset: 0, duration: d, ease: "power1.inOut", immediateRender: false }, a.t);
+    }
+  });
+
+  // The page card is shown only while a book scene holds the frame. Its rest
+  // state is SET rather than tweened, so a composition whose first scene is
+  // not a book scene does not flash the page on frame zero.
+  var cardEl = document.getElementById("card");
+  if (cardEl && data.cardVis) {
+    gsap.set(cardEl, { autoAlpha: data.cardVis.start });
+    data.cardVis.at.forEach(function (c) {
+      tl.to(cardEl, { autoAlpha: c.v, duration: Math.max(0.001, c.d), ease: "power1.inOut" }, c.t);
+    });
+  }
+
+  // The crop zoom, on its own wrapper. One tween per change, never overlapping
+  // because scenes are sequential.
+  var zoomEl = document.getElementById("card-zoom");
+  if (zoomEl && (data.zooms || []).length) {
+    gsap.set(zoomEl, { scale: 1 });
+    data.zooms.forEach(function (z) {
+      tl.to(zoomEl, { scale: z.v, duration: Math.max(0.001, z.d), ease: "power2.inOut" }, z.t);
+    });
+  }
+
+  // The backdrop glow moves with the content: one tween per scene on one
+  // element, so the background is never the same for two minutes.
+  var glowEl = document.getElementById("scene-glow");
+  if (glowEl && (data.glow || []).length) {
+    data.glow.forEach(function (g) {
+      tl.to(glowEl, { opacity: g.o, yPercent: g.y, scale: g.s, duration: Math.max(0.001, g.d), ease: "sine.inOut" }, g.t);
+    });
+  }
+
   // An explicit tail marker: a zero-duration, no-op set at the declared end of
   // the composition. Without it, when the last camera key is skipped (the
   // ordinary "camera settles, then holds for the CTA" shape — see the
@@ -1004,6 +1075,80 @@ const TIMELINE_JS = `
   window.__timelines["main"] = tl;
 })();
 `;
+
+/* ===========================================================================
+ * Scene stack (Phase 3C)
+ *
+ * The page card is NOT one of the scene layers, and that is the whole design.
+ * The page column and its camera are continuous across the video — one column,
+ * one scroll, one marker advancing through it — so the card cannot be rebuilt
+ * per scene. It stays where it has always been and its VISIBILITY is driven by
+ * the scene list instead: shown for book scenes, faded out while another
+ * template holds the frame, and already scrolled to the right place when it
+ * comes back.
+ * ======================================================================== */
+
+interface Keyed {
+  t: number;
+  d: number;
+}
+
+/**
+ * When the card is on screen. Returns its state at t=0 and one fade per
+ * change, so a run of consecutive book scenes costs one tween, not one each.
+ */
+export function cardVisibility(scenes: Scene[], shift: number): { start: number; at: (Keyed & { v: number })[] } {
+  if (scenes.length === 0) return { start: 1, at: [] };
+  // PAGE kinds, not book kinds: a `quote` scene is a book scene — it shows the
+  // book's own words and cites the page — but it renders them on their own
+  // layer. Leaving the page card up behind it puts light quote text over a
+  // light page, which on a real render came out invisible.
+  const wants = scenes.map((s) => (PAGE_KINDS.includes(s.kind) ? 1 : 0));
+  const at: (Keyed & { v: number })[] = [];
+  for (let i = 1; i < scenes.length; i++) {
+    if (wants[i] === wants[i - 1]) continue;
+    // Hand over mid-dissolve: the incoming layer is fading in across the same
+    // window, so neither a blank frame nor a double image appears between them.
+    at.push({ t: Math.max(0, shift + scenes[i].start - SCENE_FADE * 0.5), d: SCENE_FADE, v: wants[i] });
+  }
+  return { start: wants[0], at };
+}
+
+/**
+ * How far the card is magnified, per book scene.
+ *
+ * A crop zooms the card's CONTENT rather than repositioning it, because the
+ * camera has already parked the words being spoken at the card's vertical
+ * centre (`cameraTrack`'s MIDDLE). Scaling about that centre therefore closes
+ * in on exactly those words, and cannot fight the camera the way an absolute
+ * pan would. Bounded at CROP_MAX so a stroke the camera had to clamp (at the
+ * very top or bottom of the column, where it cannot centre) is still inside
+ * the card when magnified.
+ */
+export function cardZooms(scenes: Scene[], shift: number, cardHeightInColumnPx: number): (Keyed & { v: number })[] {
+  const out: (Keyed & { v: number })[] = [];
+  let current = 1;
+  for (const s of scenes) {
+    if (!PAGE_KINDS.includes(s.kind)) continue;
+    let target = 1;
+    if (s.kind === "book-crop" && s.crop) {
+      const h = Math.max(1, s.crop.y1 - s.crop.y0);
+      target = Math.min(CROP_MAX, Math.max(CROP_MIN, cardHeightInColumnPx / (h * 3)));
+    }
+    if (Math.abs(target - current) < 0.02) continue;
+    out.push({ t: Math.max(0, shift + s.start), d: Math.min(1.4, Math.max(0.5, (s.end - s.start) * 0.35)), v: Math.round(target * 1000) / 1000 });
+    current = target;
+  }
+  return out;
+}
+
+/** The backdrop glow's state per scene, so the background moves with the content. */
+export function glowKeys(scenes: Scene[], shift: number): (Keyed & { o: number; y: number; s: number })[] {
+  return scenes.map((scene) => {
+    const g = GLOW_BY_TONE[scene.tone] ?? GLOW_BY_TONE.neutral;
+    return { t: Math.max(0, shift + scene.start - SCENE_FADE), d: SCENE_FADE * 1.6, ...g };
+  });
+}
 
 export function buildComposition(input: CompositionInput): string {
   const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music } = input;
@@ -1114,6 +1259,18 @@ export function buildComposition(input: CompositionInput): string {
 
   const lightSweeps = sweepPasses(beats, AUDIO_OFFSET, duration);
 
+  // --- the scene stack (§3C) ------------------------------------------------
+  // Absent scenes must render the pre-3C composition exactly, so every piece
+  // below collapses to nothing rather than to a default.
+  const scenes = input.scenes ?? [];
+  const rect = { x: CARD_X, y: CARD_Y, w: CARD_W, h: CARD_H };
+  const rendered = scenes.map((s) => renderScene({ ...s, start: AUDIO_OFFSET + s.start, end: AUDIO_OFFSET + s.end }, rect));
+  const sceneHtml = rendered.filter((r) => r !== null).map((r) => r!.markup).join("\n");
+  const anims: SceneAnim[] = rendered.flatMap((r) => r?.anims ?? []);
+  const cardVis = scenes.length ? cardVisibility(scenes, AUDIO_OFFSET) : null;
+  const zooms = scenes.length ? cardZooms(scenes, AUDIO_OFFSET, cardViewportHeight(columnWidth)) : [];
+  const glow = scenes.length ? glowKeys(scenes, AUDIO_OFFSET) : [];
+
   const data = embed({
     strokes,
     camera: cameraData,
@@ -1125,6 +1282,18 @@ export function buildComposition(input: CompositionInput): string {
     cta: ctaData,
     buy: buyData,
     duration,
+    anims,
+    cardVis,
+    zooms,
+    glow,
+    // For tests and for the record: what was on screen, and when.
+    scenes: scenes.map((s) => ({
+      i: s.index,
+      kind: s.kind,
+      start: Math.round((AUDIO_OFFSET + s.start) * 1000) / 1000,
+      end: Math.round((AUDIO_OFFSET + s.end) * 1000) / 1000,
+      page: s.source.pageIndex,
+    })),
   });
 
   const pagesHtml = pages.map((p, i) => pageMarkup(p, offsets[i])).join("\n");
@@ -1178,27 +1347,31 @@ export function buildComposition(input: CompositionInput): string {
 <meta name="viewport" content="width=${FRAME.width}, height=${FRAME.height}" />
 <title>${esc(pkg.title)}</title>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
-<style>${sharedCss(theme)}${theme.css()}</style>
+<style>${sharedCss(theme)}${sceneCss(theme, rect)}${theme.css()}</style>
 </head>
 <body>
 <div id="root" class="stage" data-composition-id="main" data-start="0" data-width="${FRAME.width}" data-height="${FRAME.height}" data-duration="${duration.toFixed(3)}" data-fps="${FPS}">
   <div class="clip" id="scene" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="0">
     ${theme.backdrop()}
+    ${scenes.length ? `<div class="scene-glow" id="scene-glow"></div>` : ""}
     <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
     <div class="card" id="card">
       <div class="card-pop" id="card-pop">
         <div class="card-drift" id="card-drift">
           ${theme.cardFace()}
-          <div class="scaler" style="transform:scale(${scale.toFixed(6)});">
-            <div class="column" id="column" style="width:${columnWidth}px;height:${columnHeight}px;">
-              ${pagesHtml}
-              ${strokesHtml}
+          <div class="card-zoom" id="card-zoom">
+            <div class="scaler" style="transform:scale(${scale.toFixed(6)});">
+              <div class="column" id="column" style="width:${columnWidth}px;height:${columnHeight}px;">
+                ${pagesHtml}
+                ${strokesHtml}
+              </div>
             </div>
           </div>
         </div>
       </div>
       <div class="card-sweep"><div class="card-sweep-band" id="card-sweep"></div></div>
     </div>
+    ${sceneHtml}
     ${theme.overlay()}
     ${bylineHtml}
     <div class="cues">

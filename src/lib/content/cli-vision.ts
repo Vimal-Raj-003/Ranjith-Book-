@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractJson, CliError, run, cliBin, type CliProvider } from "./cli";
+import { extractJson, CliError, run, cliBin, discardScratch, type CliProvider } from "./cli";
+import { recordCall } from "./cli-metrics";
 
 const TIMEOUT_MS = 6 * 60_000;
 
@@ -48,37 +49,53 @@ export async function runCliVisionJson<T>(
       `\n\nReturn ONLY a single JSON object — no prose, no markdown fence, no explanation before or after.` +
       ` It must validate against this JSON Schema:\n${JSON.stringify(schema)}`;
 
+    // Unlike the text path this keeps Claude Code's own system prompt (which
+    // is what tells it how to use the Read tool) and offers exactly one tool,
+    // Read — but still drops the MCP servers, skills and session files that
+    // every call otherwise loads and pays for (see LEAN_FLAGS in ./cli).
     const args = [
       "-p",
       "--output-format", "json",
       "--append-system-prompt", system + contract,
+      "--tools", "Read",
       "--allowed-tools", "Read",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--no-session-persistence",
       "--permission-mode", "acceptEdits",
     ];
     if (model) args.push("--model", model);
 
-    const { stdout } = await run(cliBin(provider), args, {
-      cwd,
-      input: user,
-      timeoutMs: TIMEOUT_MS,
-    });
-
-    let envelope: { result?: string; subtype?: string };
+    const t0 = Date.now();
+    let envelope: { result?: string; subtype?: string } | null = null;
     try {
-      envelope = JSON.parse(stdout);
-    } catch {
+      const { stdout } = await run(cliBin(provider), args, {
+        cwd,
+        input: user,
+        timeoutMs: TIMEOUT_MS,
+      });
+
+      try {
+        envelope = JSON.parse(stdout);
+      } catch {
+        throw new CliError(
+          `The Claude CLI did not return JSON while reading a page. Run \`claude\` once in a terminal to confirm you are signed in.\n${stdout.slice(0, 200)}`,
+        );
+      }
+
+      if (typeof envelope!.result === "string" && envelope!.result.trim()) {
+        await recordCall("page-reader", Date.now() - t0, envelope);
+        return extractJson<T>(envelope!.result);
+      }
+
       throw new CliError(
-        `The Claude CLI did not return JSON while reading a page. Run \`claude\` once in a terminal to confirm you are signed in.\n${stdout.slice(0, 200)}`,
+        `The Claude CLI read no content from the page (${envelope!.subtype ?? "unknown"}).`,
       );
+    } catch (err) {
+      await recordCall("page-reader", Date.now() - t0, envelope, err instanceof Error ? err.message : String(err));
+      throw err;
     }
-
-    if (typeof envelope.result === "string" && envelope.result.trim())
-      return extractJson<T>(envelope.result);
-
-    throw new CliError(
-      `The Claude CLI read no content from the page (${envelope.subtype ?? "unknown"}).`,
-    );
   } finally {
-    await fs.rm(cwd, { recursive: true, force: true });
+    await discardScratch(cwd);
   }
 }

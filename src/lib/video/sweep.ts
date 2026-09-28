@@ -1,6 +1,7 @@
 import type { Box } from "../ingest/ocr";
 import type { LineRun } from "../ingest/lines";
 import { runsForRange } from "../ingest/lines";
+import { normalizeToken } from "../ingest/align";
 
 export interface SweepStep {
   box: Box;
@@ -76,6 +77,143 @@ export function sweepForBeat(
     t = end;
   }
 
+  return steps;
+}
+
+/** A spoken word with its real time in the voice track (see `media/word-timing.ts`). */
+export interface SpokenWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/** A run of spoken words matching the page at least this long is the page being read aloud. */
+export const QUOTE_RUN = 3;
+
+/**
+ * Page words the narration reads aloud, with when each is spoken: LCS of the
+ * spoken words against the cited page words, keeping only runs of QUOTE_RUN
+ * or more consecutive matches — a shared "the" or "and" is not a quotation.
+ */
+export function quotedAnchors(
+  spoken: SpokenWord[],
+  pageWords: string[],
+  startWord: number,
+  endWord: number,
+): Map<number, { start: number; end: number }> {
+  const s = spoken.map((w) => normalizeToken(w.word));
+  const pageIdx: number[] = [];
+  for (let i = startWord; i <= endWord && i < pageWords.length; i++) pageIdx.push(i);
+  const p = pageIdx.map((i) => normalizeToken(pageWords[i]));
+
+  const n = s.length;
+  const m = p.length;
+  const dp: Uint16Array[] = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = s[i] && s[i] === p[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const pairs: [number, number][] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (s[i] && s[i] === p[j]) {
+      pairs.push([i, j]);
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+
+  const anchors = new Map<number, { start: number; end: number }>();
+  let k = 0;
+  while (k < pairs.length) {
+    let e = k;
+    while (e + 1 < pairs.length && pairs[e + 1][0] === pairs[e][0] + 1 && pairs[e + 1][1] === pairs[e][1] + 1) e++;
+    if (e - k + 1 >= QUOTE_RUN) {
+      for (let r = k; r <= e; r++) {
+        const [si, pj] = pairs[r];
+        anchors.set(pageIdx[pj], { start: spoken[si].start, end: spoken[si].end });
+      }
+    }
+    k = e + 1;
+  }
+  return anchors;
+}
+
+/**
+ * The marker, timed from the real audio. Every stroke starts and ends on a
+ * spoken word's actual start or end — never on a fraction of the beat.
+ *
+ *   - Lines holding words the narration reads aloud (see `quotedAnchors`) are
+ *     swept exactly while those words are spoken.
+ *   - The other cited lines are commentary's context, not speech: nothing on
+ *     them is said, so there is no word to wait for. They are swept in
+ *     reading order across the spoken words between the anchored lines around
+ *     them (or across the whole beat, when nothing is quoted), one stroke per
+ *     line, each boundary snapped to a real word boundary.
+ *
+ * `spoken` is this beat's words; `pageWords` is the cited page's word list.
+ */
+export function timedSweepForBeat(
+  lines: LineRun[],
+  startWord: number,
+  endWord: number,
+  spoken: SpokenWord[],
+  pageWords: string[],
+): SweepStep[] {
+  const runs = runsForRange(lines, startWord, endWord);
+  const words = spoken.filter((w) => Number.isFinite(w.start) && Number.isFinite(w.end) && w.end >= w.start);
+  if (runs.length === 0 || words.length === 0) return [];
+
+  const anchors = quotedAnchors(words, pageWords, startWord, endWord);
+  const anchored = runs.map((r) => {
+    const times = r.wordIndices.map((i) => anchors.get(i)).filter((t): t is { start: number; end: number } => !!t);
+    return times.length ? { start: Math.min(...times.map((t) => t.start)), end: Math.max(...times.map((t) => t.end)) } : null;
+  });
+
+  const steps: SweepStep[] = [];
+  let r = 0;
+  let cursor = words[0].start;
+  while (r < runs.length) {
+    const a = anchored[r];
+    if (a) {
+      const start = Math.max(a.start, cursor);
+      steps.push({ box: runs[r].box, start, end: Math.max(a.end, start) });
+      cursor = Math.max(a.end, start);
+      r++;
+      continue;
+    }
+    // A stretch of unanchored lines, up to the next anchored one (or the end).
+    let k = r;
+    while (k < runs.length && !anchored[k]) k++;
+    const limit = k < runs.length ? anchored[k]!.start : words[words.length - 1].end;
+    const pool = words.filter((w) => w.start >= cursor - 1e-6 && w.end <= limit + 1e-6);
+    const count = k - r;
+    if (pool.length === 0) {
+      // No spoken word falls in this stretch: the lines share the real gap.
+      const span = Math.max(0, limit - cursor);
+      for (let q = 0; q < count; q++) {
+        steps.push({ box: runs[r + q].box, start: cursor + (span * q) / count, end: cursor + (span * (q + 1)) / count });
+      }
+    } else {
+      // Word boundaries: stroke q runs from word b[q] to the end of word b[q+1]-1.
+      // Never backwards: with fewer words than lines, two lines can land on
+      // the same word, and the later one must not start before the earlier ends.
+      let last = cursor;
+      for (let q = 0; q < count; q++) {
+        const from = Math.floor((pool.length * q) / count);
+        const to = Math.max(from, Math.floor((pool.length * (q + 1)) / count) - 1);
+        const start = Math.max(last, q === 0 ? cursor : pool[from].start);
+        const end = Math.max(start, q === count - 1 ? limit : pool[Math.min(to, pool.length - 1)].end);
+        steps.push({ box: runs[r + q].box, start, end });
+        last = end;
+      }
+    }
+    cursor = limit;
+    r = k;
+  }
   return steps;
 }
 

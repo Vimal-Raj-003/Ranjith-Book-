@@ -5,6 +5,7 @@ import PipelineRail from "./PipelineRail";
 import RunClock from "./RunClock";
 import { Disclosure, StatusBadge } from "./ui";
 import { strings } from "@/lib/strings";
+import { EPISODE_STEPS } from "@/lib/pipeline-steps";
 import type { EpisodeState } from "./types";
 
 export const POLL_MS = 1500;
@@ -116,6 +117,9 @@ export default function EpisodeCard({
             error={episode.error}
             steps={episode.steps}
             totalMs={episode.totalMs}
+            // An idea episode has no photo ingest in front of it, so its rail
+            // is the nine episode stages alone, not "step 6 of 14".
+            {...(episode.kind === "idea" ? { stepList: EPISODE_STEPS } : {})}
           />
         </div>
 

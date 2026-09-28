@@ -22,7 +22,18 @@ const nextConfig: NextConfig = {
   // lookups into the bundle graph rather than at real files. Thumbnails are
   // rendered by `src/lib/thumbnails` from inside the pipeline, which runs in
   // the Next.js server runtime, so it must be resolved by Node.
-  serverExternalPackages: ["pdfkit", "tesseract.js", "sharp", "playwright-core"],
+  //
+  // @huggingface/transformers and onnxruntime-node (book analysis embeddings)
+  // load a native ONNX Runtime binding and model files from their own package
+  // directories — the same failure mode again if bundled.
+  serverExternalPackages: [
+    "pdfkit",
+    "tesseract.js",
+    "sharp",
+    "playwright-core",
+    "@huggingface/transformers",
+    "onnxruntime-node",
+  ],
 };
 
 export default nextConfig;

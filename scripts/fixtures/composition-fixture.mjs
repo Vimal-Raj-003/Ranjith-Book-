@@ -10,9 +10,9 @@
 import { buildCaptions } from "../../src/lib/media/captions.ts";
 
 /**
- * @param {{ theme: unknown }} opts
+ * @param {{ theme: unknown, withScenes?: boolean }} opts
  */
-export function fixtureInput({ theme }) {
+export function fixtureInput({ theme, withScenes = false }) {
   const pages = [
     { src: "assets/page-00.jpg", width: 1000, height: 1400 },
     { src: "assets/page-01.jpg", width: 1000, height: 1400 },
@@ -87,7 +87,33 @@ export function fixtureInput({ theme }) {
     { t: 13.4, y: 3000 },
   ];
 
+  // One scene of every kind (Phase 3C), covering the whole narration in order.
+  // Deliberately exercises all eight layer templates plus both book kinds, so
+  // the seek harness proves the scene stack and not just one template of it.
+  const icon = (name) => ({ name, paths: '<path d="M12 7v5l3 3" />', query: name, score: 0.5 });
+  const sceneAt = (i, kind, start, end, tone, extra) => ({
+    index: i, kind, start, end, tone, sentences: [i], beatIndex: Math.min(i, pkgBeats.length - 1),
+    source: { pageIndex: Math.min(i % 3, 2), startWord: 0, endWord: 3 },
+    reason: "fixture", concept: "a clock", ...extra,
+  });
+  const scenes = [
+    sceneAt(0, "kinetic-text", 0, 2.0, "deep", { words: [
+      { word: "A", start: 0.1, end: 0.5 }, { word: "quiet", start: 0.6, end: 1.1 }, { word: "opening.", start: 1.2, end: 1.9 },
+    ] }),
+    sceneAt(1, "book-page", 2.0, 4.3, "warm", {}),
+    sceneAt(2, "icon-concept", 4.3, 6.6, "cool", { icons: [icon("clock"), icon("bulb")], items: ["time", "ideas"] }),
+    sceneAt(3, "book-crop", 6.6, 8.9, "warm", { crop: { x0: 40, y0: 300, x1: 900, y1: 440 } }),
+    sceneAt(4, "comparison", 8.9, 10.2, "bright", { left: "before", right: "after", icons: [icon("clock"), icon("bulb")] }),
+    sceneAt(5, "steps", 10.2, 11.2, "cool", { steps: ["first", "second", "third"] }),
+    sceneAt(6, "growth-curve", 11.2, 12.0, "bright", { curve: { points: [4, 12, 30, 70], label: "compounding" } }),
+    sceneAt(7, "timeline", 12.0, 12.7, "cool", { steps: ["then", "now"] }),
+    sceneAt(8, "stat", 12.7, 13.1, "deep", { stat: { value: "3", label: "degrees" } }),
+    sceneAt(9, "quote", 13.1, 13.5, "warm", { quote: { text: "What stands in the way becomes the way", page: 2 } }),
+  ];
+
   return {
+    ...(withScenes ? { scenes } : {}),
+    bookTitle: "Fixture Book",
     pkg: {
       title: "Fixture Book",
       hook: pkgBeats[0].voiceover,

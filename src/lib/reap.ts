@@ -1,4 +1,5 @@
 import { prisma } from "./db";
+import { isEpisodeLive } from "./episodes/live";
 
 /**
  * A run only makes progress while the server process that started it is alive.
@@ -24,7 +25,13 @@ export async function reapStaleRuns(): Promise<number> {
     select: { id: true, step: true },
   });
 
-  for (const run of stale) {
+  // Episodes this process is still running or holding in its queue are alive
+  // by definition, however long they have waited: an idea episode queued
+  // behind three renders can sit untouched for longer than the cutoff, and a
+  // 2-minute video's render step can run past it. Only a run with no live
+  // process behind it — what a restart leaves — is reaped.
+  const reapable = stale.filter((r) => !isEpisodeLive(r.id));
+  for (const run of reapable) {
     await prisma.stepRun.updateMany({
       where: { episodeId: run.id, status: "RUNNING" },
       data: { status: "FAILED", endedAt: new Date() },
@@ -67,5 +74,5 @@ export async function reapStaleRuns(): Promise<number> {
     });
   }
 
-  return stale.length + staleUploads.length;
+  return reapable.length + staleUploads.length;
 }

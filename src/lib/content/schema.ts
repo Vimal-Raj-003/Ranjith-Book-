@@ -140,6 +140,65 @@ export interface GenerateInput {
   /** Page text the episode covers, page by page, as transcribed. */
   pages: { pageIndex: number; chapterHeading: string | null; words: string[] }[];
   avoidHooks: string[];
+  /** The book-analysis idea this episode is made from. Absent for a photo episode. */
+  brief?: IdeaBrief;
+  /** Absent means "short" — the photo pipeline's original 60–90 s shape. */
+  length?: ScriptLength;
+}
+
+/**
+ * How long a script runs. `short` is the original photo-episode shape and
+ * stays exactly as it was; `long` is a 1–2 minute idea episode.
+ */
+export type ScriptLength = "short" | "long";
+
+export interface LengthSpec {
+  minBeats: number;
+  maxBeats: number;
+  /** Spoken words across every beat's voiceover, inclusive. Null = unchecked. */
+  minWords: number | null;
+  maxWords: number | null;
+  /** What the writer is told the video runs, for its sense of pace. */
+  seconds: string;
+}
+
+export const LENGTHS: Record<ScriptLength, LengthSpec> = {
+  short: { minBeats: 4, maxBeats: 8, minWords: null, maxWords: null, seconds: "60-to-90-second" },
+  // 170–280 words is 60–120 s of finished video at the narrator's pace:
+  // Pocket TTS speaks ~150–165 words a minute, plus the pause between beats,
+  // the 0.7 s lead-in and the 1.8 s outro.
+  long: { minBeats: 7, maxBeats: 12, minWords: 170, maxWords: 280, seconds: "60-to-120-second" },
+};
+
+/**
+ * The idea a long episode is built around, from `ContentIdea`. Its quotes are
+ * the passages book analysis located on the page — the writer is told where
+ * they are so its beats can cite them, and every beat is still held to the
+ * same page-and-word grounding as any other script.
+ */
+export interface IdeaBrief {
+  title: string;
+  coreIdea: string;
+  hook: string;
+  whyItMatters: string;
+  quotes: { pageIndex: number; startWord: number; endWord: number; text: string }[];
+}
+
+/** Spoken words in a package — what the long-episode length gate counts. */
+export function spokenWordCount(pkg: Pick<ContentPackage, "beats">): number {
+  return pkg.beats.reduce((n, b) => n + b.voiceover.split(/\s+/).filter(Boolean).length, 0);
+}
+
+/** `CONTENT_JSON_SCHEMA` with the beat count of the given length. */
+export function contentJsonSchema(length: ScriptLength = "short") {
+  const spec = LENGTHS[length];
+  return {
+    ...CONTENT_JSON_SCHEMA,
+    properties: {
+      ...CONTENT_JSON_SCHEMA.properties,
+      beats: { ...CONTENT_JSON_SCHEMA.properties.beats, minItems: spec.minBeats, maxItems: spec.maxBeats },
+    },
+  };
 }
 
 /**

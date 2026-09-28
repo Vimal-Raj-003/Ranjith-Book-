@@ -23,9 +23,23 @@ export const EPISODE_STEPS = [
   "Preparing page assets",
   "Recording the voiceover",
   "Timing the captions",
+  "Planning the scenes",
   "Building the composition",
   "Checking the composition",
   "Rendering the video",
 ] as const;
 
 export const STEPS = [...INGEST_STEPS, ...EPISODE_STEPS];
+
+/**
+ * A book PDF's run, from upload to a shortlist of video ideas. Separate from
+ * `STEPS` on purpose: a PDF analysis ends in ideas, not in an episode, so its
+ * rail is its own five stages rather than a prefix of the fourteen above.
+ */
+export const ANALYSIS_STEPS = [
+  "Extracting the PDF",
+  "Running OCR",
+  "Analyzing the book",
+  "Finding content ideas",
+  "Ranking the ideas",
+] as const;

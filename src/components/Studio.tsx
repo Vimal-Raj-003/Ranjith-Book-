@@ -13,6 +13,7 @@ import Sidebar from "./Sidebar";
 import { Badge, Disclosure, Panel } from "./ui";
 import { strings } from "@/lib/strings";
 import FreeBooks from "./FreeBooks";
+import BooksView from "./BooksView";
 import type { EpisodeState, View } from "./types";
 
 /**
@@ -148,6 +149,8 @@ export default function Studio({ email }: { email: string }) {
                 </div>
               </>
             )}
+
+            {view === "books" && <BooksView />}
 
             {view === "library" && <LibraryGrid activeId={activeId} onOpen={openEpisode} />}
 

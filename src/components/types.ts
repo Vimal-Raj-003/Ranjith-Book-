@@ -29,6 +29,8 @@ export interface EpisodeState {
   notes: string[];
   partNumber: number;
   seriesTotal: number;
+  /** photo | idea. Absent from rows served before idea episodes existed. */
+  kind?: string;
   hasVideo: boolean;
   startedAt: string | null;
   finishedAt: string | null;
@@ -61,4 +63,61 @@ export interface EpisodeSummary {
   thumbnails?: ThumbnailRef[];
 }
 
-export type View = "studio" | "library" | "free-books" | "queue";
+export type View = "studio" | "books" | "library" | "free-books" | "queue";
+
+// --- Book PDFs -------------------------------------------------------------
+// Built by `src/lib/analysis/view.ts` for `GET /api/books` and `/api/books/[id]`.
+
+export interface IdeaSourcePage {
+  /** 1-based position in the PDF. */
+  number: number;
+  /** The number printed on the page, when it differs from `number`. */
+  label: string | null;
+  pageId: string | null;
+}
+
+export interface IdeaView {
+  id: string;
+  rank: number;
+  title: string;
+  hook: string;
+  coreIdea: string;
+  whyItMatters: string;
+  angle: string;
+  hookPotential: string;
+  storyPotential: string;
+  practicalValue: string;
+  visualPotential: string;
+  sectionTitle: string | null;
+  sourcePages: IdeaSourcePage[];
+  relatedPages: number[];
+  sourceText: string;
+  selected: boolean;
+  /** The idea's latest video, if one has been generated. Polled for detail via
+   *  `GET /api/episodes/[id]`. */
+  episode: { id: string; status: string } | null;
+}
+
+export interface AnalysisView {
+  id: string;
+  bookTitle: string;
+  status: string;
+  step: string;
+  error: string | null;
+  progress: { label: string; done: number; total: number } | null;
+  notes: string[];
+  pageCount: number | null;
+  stats: Record<string, number | boolean> | null;
+  ideas: IdeaView[];
+  createdAt: string;
+}
+
+export interface AnalysisSummary {
+  id: string;
+  bookTitle: string;
+  status: string;
+  step: string;
+  pageCount: number | null;
+  ideaCount: number;
+  createdAt: string;
+}
