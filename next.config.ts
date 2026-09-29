@@ -26,6 +26,13 @@ const nextConfig: NextConfig = {
   // @huggingface/transformers and onnxruntime-node (book analysis embeddings)
   // load a native ONNX Runtime binding and model files from their own package
   // directories — the same failure mode again if bundled.
+  // NOT here: @tabler/icons. It is data, not code — it ships only SVGs and a
+  // metadata JSON, with no JavaScript entry point at all — and Turbopack
+  // refuses to externalise it: "Package @tabler/icons can't be external …
+  // Only .mjs, .cjs, .js, .json, or .node can be handled by Node.js."
+  // Listing it therefore buys nothing and emits that warning on every build.
+  // `video/scenes/icons.ts` locates the package by walking the filesystem
+  // instead, and never asks the bundler to resolve an asset.
   serverExternalPackages: [
     "pdfkit",
     "tesseract.js",

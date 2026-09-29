@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import { sentencesOf, slotSentences, normalizeRanges, enforceDurations, MIN_SCENE_SEC, MAX_SCENE_SEC } from "../src/lib/video/scenes/plan";
 import { validateScenes, groundedIn, numberIsSaid, MIN_BOOK_SCENES, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { renderScene, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
@@ -8,7 +10,7 @@ import { cardVisibility, cardZooms, glowKeys, buildComposition, CARD_X, CARD_Y, 
 import { bookThemeById } from "../src/lib/video/composition/themes";
 import type { CompositionInput } from "../src/lib/video/composition/build";
 import { lexicalEmbedder } from "../src/lib/analysis/embed";
-import { resolveIcon, iconText } from "../src/lib/video/scenes/icons";
+import { resolveIcon, iconText, iconIndex, iconPaths, findIcons, resetIconIndex, takeIconTrouble } from "../src/lib/video/scenes/icons";
 import type { Beat } from "../src/lib/content/schema";
 import type { TimedWord } from "../src/lib/media/word-timing";
 import type { Scene, SceneSpec, VisualKind } from "../src/lib/video/scenes/types";
@@ -382,6 +384,63 @@ test("an icon's search text carries its name, category and tags", () => {
 test("nothing is returned when no icon means what was asked for", async () => {
   const icon = await resolveIcon("qwertyuiop asdfghjkl zxcvbnm", { embedder: lexicalEmbedder, minScore: 0.95 });
   assert.equal(icon, null);
+});
+
+test("the icon catalogue is found from the real package, not from a derived path", async () => {
+  // The bug this guards: the package directory was derived as "three levels
+  // above a resolved icon". Inside Next.js the resolver returns a virtual
+  // path containing a `[project]` segment, so that arithmetic produced
+  // `<cwd>/[project]/node_modules/@tabler/icons` and every icon lookup died
+  // with ENOENT — which failed the whole "Planning the scenes" step.
+  resetIconIndex();
+  const index = await iconIndex(lexicalEmbedder);
+  assert.ok(index.names.length > 3000, `${index.names.length} icons`);
+  assert.equal(index.names.length, index.vectors.length);
+  assert.ok(index.tagged, "the tag metadata was read, so matching is the strong kind");
+  assert.ok(index.names.includes("clock") && index.names.includes("barrier-block"));
+  // And the icons themselves are readable, which is what actually gets drawn.
+  assert.match((await iconPaths("clock")) ?? "", /<path/);
+  assert.equal(await iconPaths("definitely-not-an-icon"), null);
+});
+
+test("a missing icon package degrades to no icons, with a reason, instead of failing the video", async () => {
+  // The original bug in its general form: the package could not be read, and
+  // the exception took down the whole "Planning the scenes" step. Pointing the
+  // lookup at a directory that does not exist reproduces that condition
+  // without needing a bundler.
+  const prev = process.env.BOOKREEL_TABLER_DIR;
+  process.env.BOOKREEL_TABLER_DIR = path.join(os.tmpdir(), "bookreel-no-such-icons");
+  resetIconIndex();
+  takeIconTrouble();
+  try {
+    assert.deepEqual(await findIcons("a clock", 3, { embedder: lexicalEmbedder }), []);
+    assert.match(takeIconTrouble() ?? "", /could not be found/);
+    assert.equal(await iconPaths("clock"), null);
+  } finally {
+    if (prev === undefined) delete process.env.BOOKREEL_TABLER_DIR;
+    else process.env.BOOKREEL_TABLER_DIR = prev;
+    resetIconIndex();
+  }
+});
+
+test("an icon lookup that fails is reported and returns no icon — it never throws", async () => {
+  // Any breakage here (package gone, index unreadable, embedder down) must
+  // degrade to "no icon for this phrase", which the caller already handles by
+  // showing the narration. It must never fail the episode, which is exactly
+  // what happened when the path was wrong.
+  takeIconTrouble();
+  const broken = {
+    id: "broken-embedder",
+    embed: async () => {
+      throw new Error("embedder unavailable");
+    },
+  };
+  resetIconIndex();
+  const found = await findIcons("a clock and calendar", 3, { embedder: broken });
+  assert.deepEqual(found, [], "no icons, no exception");
+  assert.match(takeIconTrouble() ?? "", /embedder unavailable/, "and the reason is recorded for the notes");
+  assert.equal(takeIconTrouble(), null, "reading it clears it");
+  resetIconIndex();
 });
 
 // --- the whole plan, without a model -------------------------------------------------

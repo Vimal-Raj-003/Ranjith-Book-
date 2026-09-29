@@ -18,6 +18,7 @@ import type { Box } from "../../ingest/ocr";
 import { locateQuote, tokenStream } from "../../analysis/quotes";
 import type { StructuredPage } from "../../analysis/types";
 import { DIRECTOR_SCHEMA, DIRECTOR_SYSTEM, buildDirectorPrompt } from "./director";
+import { takeIconTrouble } from "./icons";
 import { enforceDurations, normalizeRanges, sentencesOf, slotSentences, MAX_SCENES, MIN_SCENES } from "./plan";
 import { validateScenes, type ValidateContext } from "./validate";
 import type { Scene, SceneSpec, ScenePlanReport } from "./types";
@@ -137,6 +138,16 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
     locate: quoteLocator(opts.pageWords),
   };
   const report = await validateScenes(resolved, ctx);
+
+  // Icons are optional by design — a phrase with no good picture simply gets
+  // none — so a lookup that FAILED is indistinguishable from one that found
+  // nothing unless it is reported. Without this, a machine with the icon
+  // package missing would quietly render every icon scene as plain text and
+  // look like a directing choice.
+  const iconTrouble = takeIconTrouble();
+  if (iconTrouble) {
+    notes.push(`Icons were unavailable (${iconTrouble}) — scenes that would have used one show the narration instead.`);
+  }
 
   // Close the pauses between scenes. A scene ends on its last spoken word and
   // the next begins on its first, so between them lies the silence the speaker
