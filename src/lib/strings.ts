@@ -150,15 +150,20 @@ export const strings = {
     videoReady: "Your video is ready.",
     episodeLabel: (part: number, total: number) => (total > 1 ? `Episode ${part} of ${total}` : "Episode"),
     failed: "This run failed.",
+    cancelled: "This run was cancelled.",
     loadError: "This episode could not be loaded. It may have been removed.",
     select: (title: string) => `Show ${title} in the preview`,
     selected: "Showing in the preview",
+    cancelGeneration: "Cancel generation",
+    cancelling: "Cancelling…",
+    cancelError: "Could not cancel that run. Try again.",
     statusLabel: (status: string) =>
       ({
         QUEUED: "Queued",
         RUNNING: "Running",
         DONE: "Done",
         FAILED: "Failed",
+        CANCELLED: "Cancelled",
       })[status] ?? status,
   },
   preview: {
@@ -167,6 +172,7 @@ export const strings = {
     none: "Nothing to preview yet. Start a run, or pick an episode from your library.",
     building: "The video appears here the moment the render finishes.",
     failed: "This run failed before a video was rendered.",
+    cancelled: "This run was cancelled before a video was rendered.",
     unsupported: "Your browser cannot play this video. Download it instead.",
     download: "Download video",
     loadError: "This video could not be loaded. Try reloading the page, or download it directly.",
@@ -293,7 +299,13 @@ export const strings = {
         .join(" "),
     videosHeading: "Videos",
     videoStatus: (status: string) =>
-      ({ QUEUED: "Video queued", RUNNING: "Making video", DONE: "Video ready", FAILED: "Video failed" })[status] ?? status,
+      ({
+        QUEUED: "Video queued",
+        RUNNING: "Making video",
+        DONE: "Video ready",
+        FAILED: "Video failed",
+        CANCELLED: "Video cancelled",
+      })[status] ?? status,
     select: "Select",
     selectLabel: (title: string) => `Select “${title}” for a video`,
     selectError: "Could not save that selection. Try again.",

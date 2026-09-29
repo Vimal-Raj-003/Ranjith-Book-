@@ -15,6 +15,7 @@ import type { EpisodeState } from "./types";
 export default function VideoPreview({ episode }: { episode: EpisodeState | null }) {
   const ready = Boolean(episode?.hasVideo);
   const failed = episode?.status === "FAILED";
+  const cancelled = episode?.status === "CANCELLED";
 
   // The native <video> element has its own well-defined `error` event — it
   // fires (in well under a second, measured) the moment the source turns out
@@ -63,7 +64,9 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
                   ? strings.preview.loadError
                   : failed
                     ? strings.preview.failed
-                    : strings.preview.building}
+                    : cancelled
+                      ? strings.preview.cancelled
+                      : strings.preview.building}
             </p>
           )}
         </div>

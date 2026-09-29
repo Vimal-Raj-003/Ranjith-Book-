@@ -561,6 +561,10 @@ body {
   border-color: color-mix(in srgb, var(--rose) 45%, transparent);
   color: var(--rose);
 }
+.badge-cancelled {
+  border-color: color-mix(in srgb, var(--mute) 45%, transparent);
+  color: var(--mute);
+}
 
 /* Library ---------------------------------------------------------------- */
 .library-grid {
@@ -805,6 +809,9 @@ body {
 }
 .rail-seg[data-state="failed"] {
   background: var(--rose);
+}
+.rail-seg[data-state="cancelled"] {
+  background: var(--mute);
 }
 
 @media (prefers-reduced-motion: reduce) {

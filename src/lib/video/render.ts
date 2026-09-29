@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { FFMPEG, FFPROBE } from "../media/ffmpeg";
 import { npxCommand } from "@/lib/npx";
+import { abortOpts, wasCancelled, CancelledError } from "../cancel";
 
 const exec = promisify(execFile);
 
@@ -79,6 +80,7 @@ async function hf(dir: string, args: string[], timeoutMs: number) {
     env: CLI_ENV(),
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024 * 64,
+    ...abortOpts(),
     // A render fans out to a dozen parallel `chrome-headless-shell` workers,
     // and without this EVERY ONE of them allocated its own console and threw a
     // black window onto the desktop, stealing focus from whatever the operator
@@ -182,6 +184,14 @@ export async function checkProject(dir: string): Promise<CheckResult> {
     const { stdout } = await hf(dir, ["check", "--json"], 10 * 60_000);
     return { ok: true, notes: summarize(stdout) };
   } catch (err) {
+    // Everything else here is treated as an advisory finding, never fatal —
+    // but a cancellation is not a finding about the composition, it is the
+    // operator stopping the run, and must keep propagating so "Rendering the
+    // video" never starts after it. `wasCancelled()`, not `err instanceof
+    // CancelledError`: `hf()` rejects with whatever `execFile` gives back on
+    // an aborted signal (an `AbortError`, not our own class), so checking the
+    // signal itself is what actually tells the two apart.
+    if (wasCancelled()) throw new CancelledError();
     const e = err as { stdout?: string; stderr?: string; message?: string };
     const raw = (e.stdout || "") + (e.stderr || "");
     const notes = summarize(raw);

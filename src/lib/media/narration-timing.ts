@@ -21,6 +21,7 @@ import { buildCaptions, buildCaptionsFromWords, type CaptionLine } from "./capti
 import { timeBeat, speechSpan, snapToSound, fitToSound, soundBounds, type AsrWord, type Silence, type TimedWord } from "./word-timing";
 import { detectSilences } from "./ffmpeg";
 import type { BeatAudio, VoiceoverResult } from "./tts";
+import { abortOpts, wasCancelled, CancelledError } from "../cancel";
 
 /** The speech model. `BOOKREEL_ALIGN_MODEL` overrides it (e.g. "small.en"); read per call, not at import. */
 export function alignModel(): string {
@@ -71,8 +72,15 @@ async function runAlign(python: string, job: object, workDir: string): Promise<A
   const jobFile = path.join(workDir, "align-job.json");
   const outFile = path.join(workDir, "align-out.json");
   await fs.writeFile(jobFile, JSON.stringify(job));
+  const cancel = abortOpts();
+  if (cancel.signal?.aborted) throw new CancelledError();
+
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(python, [SCRIPT, jobFile, outFile], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(python, [SCRIPT, jobFile, outFile], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      ...cancel,
+    });
     let failure: string | null = null;
     let stderr = "";
     let buf = "";
@@ -96,11 +104,12 @@ async function runAlign(python: string, job: object, workDir: string): Promise<A
     child.stderr.on("data", (d) => (stderr = (stderr + d.toString()).slice(-1500)));
     child.on("error", (err) => {
       clearTimeout(timer);
-      reject(new Error(`could not start: ${err.message}`));
+      reject(wasCancelled() ? new CancelledError() : new Error(`could not start: ${err.message}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (failure) reject(new Error(failure));
+      if (wasCancelled()) reject(new CancelledError());
+      else if (failure) reject(new Error(failure));
       else if (code !== 0) reject(new Error(`exited ${code}: ${stderr.trim().split("\n").slice(-1)[0] ?? ""}`));
       else resolve();
     });
@@ -150,6 +159,11 @@ export async function timeNarration(voice: VoiceoverResult, workDir: string): Pr
       workDir,
     );
   } catch (err) {
+    // A cancellation is not "word timing failed, fall back to an estimate" —
+    // it is the operator stopping the run, and must keep propagating so the
+    // pipeline does not spend the render step on a video nobody asked to
+    // keep waiting for.
+    if (err instanceof CancelledError) throw err;
     return estimated(voice, [
       `Subtitle and highlight timing is ESTIMATED, not taken from the audio: word timing failed (${err instanceof Error ? err.message : String(err)}).`,
     ]);

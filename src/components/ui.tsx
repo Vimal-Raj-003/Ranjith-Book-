@@ -35,7 +35,7 @@ export function Panel({
   );
 }
 
-export type BadgeTone = "soon" | "live" | "done" | "failed" | "plain";
+export type BadgeTone = "soon" | "live" | "done" | "failed" | "cancelled" | "plain";
 
 export function Badge({ tone = "plain", children }: { tone?: BadgeTone; children: React.ReactNode }) {
   return <span className={`badge${tone === "plain" ? "" : ` badge-${tone}`}`}>{children}</span>;
@@ -44,7 +44,15 @@ export function Badge({ tone = "plain", children }: { tone?: BadgeTone; children
 /** A run status rendered as a badge, with the tone matching its meaning. */
 export function StatusBadge({ status, label }: { status: string; label: string }) {
   const tone: BadgeTone =
-    status === "DONE" ? "done" : status === "FAILED" ? "failed" : status === "RUNNING" ? "live" : "plain";
+    status === "DONE"
+      ? "done"
+      : status === "FAILED"
+        ? "failed"
+        : status === "CANCELLED"
+          ? "cancelled"
+          : status === "RUNNING"
+            ? "live"
+            : "plain";
   return <Badge tone={tone}>{label}</Badge>;
 }
 

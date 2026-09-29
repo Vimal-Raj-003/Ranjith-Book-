@@ -9,7 +9,7 @@ import { EPISODE_STEPS } from "@/lib/pipeline-steps";
 import type { EpisodeState } from "./types";
 
 export const POLL_MS = 1500;
-const TERMINAL = new Set(["DONE", "FAILED"]);
+const TERMINAL = new Set(["DONE", "FAILED", "CANCELLED"]);
 
 /**
  * One episode's rail, polled every 1.5s until it reaches a terminal state.
@@ -33,6 +33,39 @@ export default function EpisodeCard({
 }) {
   const [episode, setEpisode] = useState<EpisodeState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  // `cancelling` is this component's own optimistic "the click landed" flag,
+  // not a status the server tracks — the poll above is what actually moves
+  // `episode.status` to CANCELLED once the pipeline unwinds, at which point
+  // TERMINAL stops polling and this flag no longer matters. Reset whenever a
+  // fresh episode is shown, so a stale "Cancelling…" from a previous episode
+  // never bleeds into this one.
+  useEffect(() => {
+    setCancelling(false);
+    setCancelError(null);
+  }, [episodeId]);
+
+  async function handleCancel() {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      const res = await fetch(`/api/episodes/${episodeId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setCancelError((body?.error as string) || strings.run.cancelError);
+        setCancelling(false);
+      }
+      // On success, `cancelling` stays true until the next poll reports a
+      // terminal status — there is real work still winding down (a child
+      // process to actually die, the idea reservation to release) between
+      // "the signal was sent" and "the row says CANCELLED".
+    } catch {
+      setCancelError(strings.run.cancelError);
+      setCancelling(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -153,12 +186,28 @@ export default function EpisodeCard({
           >
             {active ? strings.run.selected : strings.run.select(title)}
           </button>
+          {episode.status === "RUNNING" && (
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="rounded-lg border px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
+              style={{ borderColor: "color-mix(in srgb, var(--rose) 45%, transparent)", color: "var(--rose)" }}
+            >
+              {cancelling ? strings.run.cancelling : strings.run.cancelGeneration}
+            </button>
+          )}
           {episode.hasVideo && (
             <span className="text-[12px] font-semibold" style={{ color: "var(--cyan)" }}>
               {strings.run.videoReady}
             </span>
           )}
         </div>
+        {cancelError && (
+          <p role="alert" className="text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
+            {cancelError}
+          </p>
+        )}
       </div>
     </article>
   );

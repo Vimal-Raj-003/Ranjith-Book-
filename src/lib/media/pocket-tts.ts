@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { currentSignal } from "../cancel";
 
 const exec = promisify(execFile);
 
@@ -144,10 +145,14 @@ export async function synthPocket(text: string, out: string, voice: string): Pro
   form.set("text", text);
   form.set("voice_url", voice || DEFAULT_POCKET_VOICE);
 
+  // The server itself is shared and long-lived (`ensureServer` above never
+  // tears it down) — cancelling one episode must only abort ITS request, not
+  // touch the server other episodes' beats are also using it through.
+  const ambient = currentSignal();
   const res = await fetch(`${BASE}/tts`, {
     method: "POST",
     body: form,
-    signal: AbortSignal.timeout(4 * 60_000),
+    signal: ambient ? AbortSignal.any([ambient, AbortSignal.timeout(4 * 60_000)]) : AbortSignal.timeout(4 * 60_000),
   });
 
   if (!res.ok) {

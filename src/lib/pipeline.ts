@@ -33,6 +33,7 @@ import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } f
 import { bookThemeById, isBookThemeId, DEFAULT_BOOK_THEME_ID } from "./video/composition/themes";
 import { writeProject, checkProject, renderProject } from "./video/render";
 import type { BookTheme } from "./video/composition/theme-contract";
+import { beginCancellable, endCancellable, throwIfCancelled, wasCancelled } from "./cancel";
 
 /**
  * `BookTheme.mood` and `generateMusicBed`'s `style` option come from two
@@ -519,15 +520,42 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
   const callCtx: { episodeId: string; step?: string } = { episodeId, step: EPISODE_STEPS[1] };
   callContext.enterWith(callCtx);
 
+  // Makes this run's cancellation signal ambient for everything below: the
+  // CLI spawner, ffmpeg, faster-whisper, the renderer, all read it without a
+  // `signal` parameter threaded through every function in between (the same
+  // trick `callContext` above already relies on). `endCancellable` runs from
+  // `fail()` (every failure AND cancellation path calls it) and once more
+  // after the success path's final write, so the registry never keeps a
+  // stale entry for a run that finished.
+  beginCancellable(episodeId);
+
   const provider = await contentProvider();
   const model = await cliModel();
 
+  // Called before every step transition, so a cancellation lands between
+  // steps even when the step that was running did not itself spawn anything
+  // abort-aware (e.g. the plain DB/sharp work in "Preparing page assets").
+  const startStep = async (name: string) => {
+    throwIfCancelled();
+    await timer.start(name);
+  };
+
   const fail = async (err: unknown) => {
+    // `wasCancelled()`, not `err instanceof CancelledError`: most of what
+    // reaches here is Node's own `AbortError` from a killed child process or
+    // an aborted fetch, not our own class — the ambient signal itself is the
+    // only reliable way to tell "the operator cancelled this" from any other
+    // failure, across every subprocess kind the pipeline spawns.
+    const cancelled = wasCancelled();
     await timer.fail();
     await prisma.episode.update({
       where: { id: episodeId },
-      data: { status: "FAILED", error: message(err) },
+      data: {
+        status: cancelled ? "CANCELLED" : "FAILED",
+        error: cancelled ? "Cancelled by the operator." : message(err),
+      },
     });
+    endCancellable(episodeId);
   };
 
   // An idea episode (Phase 3a) is made from one ContentIdea of a book PDF: the
@@ -613,7 +641,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         };
       });
 
-      await timer.start(EPISODE_STEPS[0]); // Reserving the idea
+      await startStep(EPISODE_STEPS[0]); // Reserving the idea
       const result = await generateContent({
         bookId: episode.bookId,
         bookTitle: episode.book.title,
@@ -633,8 +661,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
           // both belong to the same step. Measured on a real run, the first
           // draft alone was 254s -- 51% of the whole episode -- and it was being
           // billed to "Reserving the idea", a step that does almost nothing.
-          if (/checking/i.test(step)) await timer.start(EPISODE_STEPS[2]); // Grounding check
-          else if (/writing/i.test(step)) await timer.start(EPISODE_STEPS[1]); // Writing the script
+          if (/checking/i.test(step)) await startStep(EPISODE_STEPS[2]); // Grounding check
+          else if (/writing/i.test(step)) await startStep(EPISODE_STEPS[1]); // Writing the script
         },
       });
       pkg = result.pkg;
@@ -673,7 +701,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       },
     });
 
-    await timer.start(EPISODE_STEPS[3]); // Preparing page assets
+    await startStep(EPISODE_STEPS[3]); // Preparing page assets
     const compPages = await Promise.all(
       pages.map(async (p) => {
         const derivedPath = p.derivedPath ?? p.filePath;
@@ -690,7 +718,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       }),
     );
 
-    await timer.start(EPISODE_STEPS[4]); // Recording the voiceover
+    await startStep(EPISODE_STEPS[4]); // Recording the voiceover
     const approvedTexts = beatTexts(pkg);
     let prepared: Prepared | null = null;
     const spec = speculative as { texts: string[]; job: Promise<Prepared> } | null;
@@ -725,7 +753,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       }
     }
 
-    await timer.start(EPISODE_STEPS[5]); // Timing the captions
+    await startStep(EPISODE_STEPS[5]); // Timing the captions
     // Word timing from the recorded voice (faster-whisper over the mastered
     // track, matched to the script). Subtitles, highlights and each beat's
     // speech window all come from it. Where it is unavailable the estimate is
@@ -860,7 +888,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     // What is on screen, sentence by sentence. Best-effort in the same sense
     // the music bed is: a failed director call costs variety, never the video
     // (`planScenes` falls back to the narration itself, grouped into scenes).
-    await timer.start(EPISODE_STEPS[6]); // Planning the scenes
+    await startStep(EPISODE_STEPS[6]); // Planning the scenes
     const pageWords = new Map<number, string[]>();
     for (const p of pages) {
       if (p.visionText) pageWords.set(p.pageIndex, wordsOf(JSON.parse(p.visionText) as PageText));
@@ -891,7 +919,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
 
     const hasMusic = await musicJob;
 
-    await timer.start(EPISODE_STEPS[7]); // Building the composition
+    await startStep(EPISODE_STEPS[7]); // Building the composition
     const html = buildComposition({
       pkg,
       beats: timedBeats,
@@ -997,13 +1025,13 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
 
     // Checking the composition is non-fatal: any finding is recorded as a
     // note, but the render still runs — only the render itself is fatal.
-    await timer.start(EPISODE_STEPS[8]); // Checking the composition
+    await startStep(EPISODE_STEPS[8]); // Checking the composition
     const check = await checkProject(projectDir);
     if (!check.ok || check.notes.length) {
       await appendNotes(episodeId, check.notes.map((n) => `Composition check: ${n}`));
     }
 
-    await timer.start(EPISODE_STEPS[9]); // Rendering the video
+    await startStep(EPISODE_STEPS[9]); // Rendering the video
     const quality = ((await getSetting("renderQuality")) as "draft" | "high" | null) ?? "draft";
     const mode = ((await getSetting("renderMode")) as "local" | "cloud" | null) ?? "local";
     const outputAbs = path.join(RENDER_DIR, `${episodeId}.mp4`);
@@ -1023,6 +1051,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       // both fields, and the next reader of them will not be this component.
       data: { status: "DONE", videoPath: outputAbs, error: null },
     });
+    endCancellable(episodeId);
   } catch (err) {
     await releaseIdea(episode.bookId, episode.ideaKey ?? episode.id);
     await fail(err);

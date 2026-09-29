@@ -7,6 +7,7 @@ import path from "node:path";
 
 const exec = promisify(execFile);
 import { callKind, recordCall } from "./cli-metrics";
+import { abortOpts, wasCancelled, CancelledError } from "../cancel";
 
 /**
  * Run a command, optionally writing the prompt to stdin. Prompts carry a whole
@@ -20,6 +21,15 @@ export function run(
   args: string[],
   opts: { cwd: string; input?: string; timeoutMs: number },
 ): Promise<{ stdout: string; stderr: string }> {
+  // The 360s hard timeout below is unconditional and unrelated to this: it
+  // exists because the CLI itself can genuinely hang, with no cancellation in
+  // play at all. `abortOpts()` is a SEPARATE, faster way out — an operator
+  // cancelling the episode this call belongs to — and Node kills the same
+  // child the same way (SIGKILL) the instant it fires, rather than waiting
+  // out however much of the 360s is left.
+  const cancel = abortOpts();
+  if (cancel.signal?.aborted) return Promise.reject(new CancelledError());
+
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       cwd: opts.cwd,
@@ -27,6 +37,7 @@ export function run(
       // See `hf()` in video/render.ts: without this the CLI flashes a console
       // window onto the desktop on every call, rewrites included.
       windowsHide: true,
+      ...cancel,
     });
     let stdout = "";
     let stderr = "";
@@ -36,7 +47,25 @@ export function run(
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      reject(new CliError(`${bin} timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
+      // Whatever the process had written before it was killed is the only
+      // forensic trail a hang leaves — previously discarded, so a timeout and
+      // a process that produced literally nothing looked identical in the
+      // logs. Tail-truncated (not head) because a JSON-mode reply, if any
+      // ever started, would have its most telling content — the cutoff point
+      // — at the end.
+      const tail = (s: string, n = 500) => (s.length > n ? `…${s.slice(-n)}` : s);
+      const collected = [
+        stdout.trim() ? `stdout: ${tail(stdout.trim())}` : null,
+        stderr.trim() ? `stderr: ${tail(stderr.trim())}` : null,
+      ]
+        .filter(Boolean)
+        .join("; ");
+      reject(
+        new CliError(
+          `${bin} timed out after ${Math.round(opts.timeoutMs / 1000)}s` +
+            (collected ? ` (${collected})` : " (no output was produced before it was killed)"),
+        ),
+      );
     }, opts.timeoutMs);
 
     child.stdout.on("data", (d) => (stdout += d.toString()));
@@ -46,7 +75,11 @@ export function run(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      reject(new CliError(`${bin} could not be started: ${err.message}`));
+      // Node kills the child and emits this the instant `cancel.signal`
+      // aborts — before `close`, so this is the reliable place to catch it
+      // rather than trying to tell a real spawn failure apart from a kill by
+      // exit code alone.
+      reject(wasCancelled() ? new CancelledError() : new CliError(`${bin} could not be started: ${err.message}`));
     });
 
     child.on("close", (code) => {
@@ -55,8 +88,10 @@ export function run(
       clearTimeout(timer);
       // A non-zero exit is not always a failure: the Claude CLI exits 1 when it
       // stops on a turn limit even though it already produced a full answer.
-      // Let the caller inspect stdout before deciding.
-      if (code === 0 || stdout.trim()) resolve({ stdout, stderr });
+      // Let the caller inspect stdout before deciding. `wasCancelled()` first,
+      // in case a SIGKILL from the abort reached `close` before `error` did.
+      if (wasCancelled()) reject(new CancelledError());
+      else if (code === 0 || stdout.trim()) resolve({ stdout, stderr });
       else reject(new CliError(`${bin} exited with code ${code}: ${stderr.slice(-400) || "no output"}`));
     });
 

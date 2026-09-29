@@ -384,9 +384,32 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
     const perWindow = ideasPerWindow(windows.length);
     let finished = 0;
     let lastError = "";
+    // Each of these calls is a real Claude CLI subprocess and genuinely runs
+    // 40 s to 5+ minutes (measured on real books) — there is no way to make
+    // "reading a passage" fast without cutting the passage or the reasoning
+    // short, and neither is on the table here. What WAS wrong is that
+    // `report.progress` below only fired once a window finished: with
+    // WINDOW_CONCURRENCY windows running at once, the very first update could
+    // be minutes away, and the progress panel showed nothing at all up to
+    // that point — indistinguishable from a hang even though three real model
+    // calls were in flight the whole time. This line is the fix: it reports
+    // the moment a window is PICKED UP, before its model call is even sent,
+    // so the operator sees which passages are actively being read straight
+    // away instead of staring at a blank step for however long the slowest
+    // of the first batch takes. `done`/`total` still count only FINISHED
+    // windows — the progress bar itself never lies about how much is done —
+    // only the label changes to say what is happening right now.
     const results = await mapLimit(windows, WINDOW_CONCURRENCY, async (w) => {
       const prompt = windowPrompt(w, chunks, pages!, sections, bookTitle, perWindow);
       for (let attempt = 1; attempt <= 2; attempt++) {
+        await report.progress(
+          attempt === 1
+            ? `Reading passage ${w.index + 1} of ${windows.length}…`
+            : `Reading passage ${w.index + 1} of ${windows.length} again…`,
+          finished,
+          windows.length,
+          true,
+        );
         try {
           const reply = await runCliJson<unknown>(provider, CANDIDATE_SYSTEM, prompt, CANDIDATE_SCHEMA, model);
           await report.progress(`Read passage ${++finished} of ${windows.length}`, finished, windows.length, true);
@@ -427,12 +450,18 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
 
     // 5: ranking, dedup, selection.
     await report.step("Ranking the ideas");
+    // Same reasoning as the window loop above: one real model call, reading
+    // every candidate at once, genuinely takes a couple of minutes — this
+    // says so up front rather than leaving the step name as the only visible
+    // sign that anything is happening for the whole call.
+    await report.progress(`Scoring ${candidates.length} candidate ideas…`, 0, candidates.length, true);
     const sectionTitles = new Map(sections.map((s) => [s.index, s.title]));
     let scored: ScoredCandidate[];
     try {
       let reply: unknown = null;
       let rankError: unknown = null;
       for (let attempt = 1; attempt <= 2 && reply === null; attempt++) {
+        if (attempt > 1) await report.progress(`Scoring ${candidates.length} candidate ideas again…`, 0, candidates.length, true);
         try {
           reply = await runCliJson<unknown>(provider, RANK_SYSTEM, rankPrompt(bookTitle, candidates, sectionTitles), RANK_SCHEMA, model);
         } catch (err) {

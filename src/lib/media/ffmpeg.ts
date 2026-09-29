@@ -4,8 +4,18 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { renderPad, levelAndFade, toWav, type MusicMood } from "./music-synth";
+import { abortOpts } from "../cancel";
 
-const exec = promisify(execFile);
+const execRaw = promisify(execFile);
+/** Every ffmpeg/ffprobe call in this file goes through here, so honouring an
+ *  episode cancellation is one change instead of one at each call site. */
+function exec(
+  bin: string,
+  args: string[],
+  opts: { maxBuffer?: number; windowsHide?: boolean; timeout?: number },
+): Promise<{ stdout: string; stderr: string }> {
+  return execRaw(bin, args, { ...opts, ...abortOpts() });
+}
 
 function resolveBin(name: "ffmpeg" | "ffprobe"): string {
   // Windows binaries carry the .exe suffix; checking the bare name only would

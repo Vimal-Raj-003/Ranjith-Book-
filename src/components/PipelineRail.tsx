@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { STEPS } from "@/lib/pipeline-steps";
 import { Disclosure } from "./ui";
 import { strings } from "@/lib/strings";
@@ -21,7 +22,7 @@ import { formatDuration } from "@/lib/format-duration";
  */
 export { STEPS };
 
-export type RunStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | string;
+export type RunStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED" | string;
 
 /** One timed step, as `GET /api/episodes/[id]` returns it. */
 export interface StepTiming {
@@ -66,6 +67,25 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
   // ingest and episode stages as one list, while StepRun rows exist only for
   // the episode half, so the two are not positionally aligned.
   const timing = new Map((steps ?? []).map((t) => [t.step, t]));
+
+  // A step mid-flight and a step about to time out look identical without
+  // this: both just say the step's name, unmoving, for as long as either
+  // takes. Ticking the running step's own elapsed time — from its StepRun's
+  // `startedAt`, the same field a finished step's duration already comes
+  // from — is the cheapest signal that distinguishes "still going" from
+  // "stopped responding", with no change to what actually runs the step.
+  const isRunning = status === "RUNNING";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isRunning]);
+  const runningTiming = timing.get(step);
+  const runningElapsedMs =
+    isRunning && runningTiming && runningTiming.durationMs == null
+      ? now - new Date(runningTiming.startedAt).getTime()
+      : null;
   // The denominator for the share column is the sum of what was actually
   // measured, not `totalMs`: total includes time outside any step, and a
   // column of percentages that does not add to 100 reads as a bug.
@@ -75,11 +95,16 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
   const currentIndex = stepList.findIndex((s) => s === step);
   const isDone = status === "DONE";
   const isFailed = status === "FAILED";
+  // A stopped-by-the-operator run is a terminal state like FAILED — it must
+  // not keep showing "current"/amber, which reads as still in progress — but
+  // it is not an error, so it gets its own neutral colour rather than rose.
+  const isCancelled = status === "CANCELLED";
 
   const stateOf = (i: number) => {
     const passed = isDone || (currentIndex >= 0 && i < currentIndex);
-    const isCurrent = !isDone && i === currentIndex;
-    if (isFailed && isCurrent) return "failed" as const;
+    const isCurrent = !isDone && !isCancelled && i === currentIndex;
+    if (isFailed && i === currentIndex) return "failed" as const;
+    if (isCancelled && i === currentIndex) return "cancelled" as const;
     if (passed) return "passed" as const;
     if (isCurrent) return "current" as const;
     return "todo" as const;
@@ -106,9 +131,14 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
       <div className="flex items-baseline justify-between gap-3">
         <span
           className="min-w-0 truncate font-mono text-[12.5px]"
-          style={{ color: isFailed ? "var(--rose)" : "var(--ink)", fontWeight: 600 }}
+          style={{ color: isFailed ? "var(--rose)" : isCancelled ? "var(--mute)" : "var(--ink)", fontWeight: 600 }}
         >
           {headline}
+          {runningElapsedMs != null && (
+            <span className="ml-1.5 tabular-nums" style={{ color: "var(--amber)", fontWeight: 400 }}>
+              · {formatDuration(runningElapsedMs)}
+            </span>
+          )}
         </span>
         <span className="shrink-0 font-mono text-[11px]" style={{ color: "var(--mute-2)" }}>
           {strings.run.stepCount(position, stepList.length)}
@@ -121,6 +151,14 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
         </span>
       )}
 
+      {/* Not `role="alert"`: the operator caused this themselves, it is not
+          something that went wrong and needs their attention. */}
+      {isCancelled && (
+        <span className="text-[11px] leading-snug" style={{ color: "var(--mute)" }}>
+          {strings.run.cancelled}
+        </span>
+      )}
+
       <Disclosure quiet summary={strings.run.allSteps}>
         <ol role="list" className="flex flex-col gap-0.5">
           {stepList.map((s, i) => {
@@ -128,11 +166,13 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
             const color =
               state === "failed"
                 ? "var(--rose)"
-                : state === "passed"
-                  ? "var(--cyan)"
-                  : state === "current"
-                    ? "var(--amber)"
-                    : "var(--mute-2)";
+                : state === "cancelled"
+                  ? "var(--mute)"
+                  : state === "passed"
+                    ? "var(--cyan)"
+                    : state === "current"
+                      ? "var(--amber)"
+                      : "var(--mute-2)";
 
             return (
               <li key={s} role="listitem" className="flex items-start gap-2.5 py-0.5">
@@ -145,7 +185,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
                   className="min-w-0 flex-1 truncate font-mono text-[12px] leading-snug"
                   style={{
                     color: state === "todo" ? "var(--mute-2)" : "var(--ink)",
-                    fontWeight: state === "current" || state === "failed" ? 600 : 400,
+                    fontWeight: state === "current" || state === "failed" || state === "cancelled" ? 600 : 400,
                   }}
                 >
                   {s}
@@ -165,12 +205,24 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
                         style={{
                           // The single slowest step is the only one worth
                           // drawing the eye to — that is the thing an operator
-                          // would act on.
-                          color: ms != null && ms === slowest && slowest > 0 ? "var(--amber)" : "var(--mute)",
-                          fontWeight: ms != null && ms === slowest && slowest > 0 ? 600 : 400,
+                          // would act on. The running row gets the same
+                          // colour for the same reason: a number that is
+                          // visibly climbing is the thing to watch right now.
+                          color:
+                            (ms != null && ms === slowest && slowest > 0) || (ms == null && s === step && runningElapsedMs != null)
+                              ? "var(--amber)"
+                              : "var(--mute)",
+                          fontWeight:
+                            (ms != null && ms === slowest && slowest > 0) || (ms == null && s === step && runningElapsedMs != null)
+                              ? 600
+                              : 400,
                         }}
                       >
-                        {ms == null ? strings.run.stepRunning : formatDuration(ms)}
+                        {ms != null
+                          ? formatDuration(ms)
+                          : s === step && runningElapsedMs != null
+                            ? formatDuration(runningElapsedMs)
+                            : strings.run.stepRunning}
                       </span>
                     </span>
                   );

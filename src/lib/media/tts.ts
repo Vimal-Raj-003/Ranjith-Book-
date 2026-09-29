@@ -5,6 +5,7 @@ import path from "node:path";
 import { ffmpeg, durationOf, concatWithGaps, masterVoice } from "./ffmpeg";
 import { synthPocket, DEFAULT_POCKET_VOICE } from "./pocket-tts";
 import { getSetting } from "../db";
+import { abortOpts, currentSignal, throwIfCancelled } from "../cancel";
 
 const exec = promisify(execFile);
 
@@ -41,14 +42,11 @@ async function synthSystem(text: string, out: string, voice: string) {
     );
   }
   const raw = out.replace(/\.wav$/, ".raw.wav");
-  await exec("say", [
-    "-v", voice || "Samantha",
-    "-r", "172",
-    "-o", raw,
-    "--file-format=WAVE",
-    "--data-format=LEI16@22050",
-    text,
-  ]);
+  await exec(
+    "say",
+    ["-v", voice || "Samantha", "-r", "172", "-o", raw, "--file-format=WAVE", "--data-format=LEI16@22050", text],
+    abortOpts(),
+  );
   await ffmpeg(["-i", raw, "-ar", "44100", "-ac", "1", out]);
   await fs.rm(raw, { force: true });
 }
@@ -64,6 +62,7 @@ async function synthElevenLabs(text: string, out: string, apiKey: string, voiceI
         model_id: "eleven_multilingual_v2",
         voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.35, use_speaker_boost: true },
       }),
+      signal: currentSignal(),
     },
   );
   if (!res.ok) throw new Error(`ElevenLabs error ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -78,6 +77,7 @@ async function synthOpenAI(text: string, out: string, apiKey: string, voice: str
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: "gpt-4o-mini-tts", voice: voice || "onyx", input: text, response_format: "wav" }),
+    signal: currentSignal(),
   });
   if (!res.ok) throw new Error(`OpenAI TTS error ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const raw = out.replace(/\.wav$/, ".raw.wav");
@@ -120,6 +120,10 @@ export async function synthesizeVoiceover(
 
   const files: string[] = [];
   for (let i = 0; i < beatTexts.length; i++) {
+    // A long episode is many beats, each its own TTS call; checked here too
+    // so a cancellation between two calls is not left waiting for whichever
+    // one happens to be in flight when the operator clicked cancel.
+    throwIfCancelled();
     const n = String(i).padStart(2, "0");
     const spoken = path.join(workDir, `beat-${n}-raw.wav`);
     const ready = path.join(workDir, `beat-${n}.wav`);
