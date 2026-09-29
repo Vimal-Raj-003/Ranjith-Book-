@@ -10,3 +10,6 @@ renders/
 tools/bin/
 .superpowers/
 *.tsbuildinfo
+
+# Ad-hoc local screenshots (e.g. sign-in code captures) — never publishable.
+otp.png

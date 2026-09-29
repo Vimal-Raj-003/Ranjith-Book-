@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { strings } from "@/lib/strings";
 import { Panel, StatusBadge } from "./ui";
 import type { EpisodeState } from "./types";
@@ -15,6 +16,17 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
   const ready = Boolean(episode?.hasVideo);
   const failed = episode?.status === "FAILED";
 
+  // The native <video> element has its own well-defined `error` event — it
+  // fires (in well under a second, measured) the moment the source turns out
+  // to be unloadable for any reason: a 404, an expired session, a file
+  // genuinely missing from disk. Without listening for it, an element with
+  // `controls` and no working source just sits there — black box, a frozen
+  // spinner-like play glyph, 0:00 — forever, which is indistinguishable from
+  // "still loading." This is not a timeout and it hides nothing: it reports
+  // exactly the failure the browser itself already detected, the moment it
+  // detects it, and it resets whenever a different episode is shown.
+  const [loadFailed, setLoadFailed] = useState(false);
+
   return (
     <Panel
       title={strings.preview.heading}
@@ -28,20 +40,30 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
     >
       <div className="flex flex-col items-start gap-3 sm:flex-row">
         <div className="preview-stage">
-          {ready && episode ? (
-            /* The SRT is a separate deliverable, not attached as a <track> here. */
+          {ready && episode && !loadFailed ? (
+            /* The SRT is a separate deliverable, not attached as a <track> here.
+               `key={episode.id}` already remounts this element for a different
+               episode, which is what resets `loadFailed` back to false without
+               it needing to be in this component's own dependency tracking. */
             <video
               key={episode.id}
               controls
               playsInline
               preload="metadata"
               src={`/api/episodes/${episode.id}/video`}
+              onError={() => setLoadFailed(true)}
             >
               {strings.preview.unsupported}
             </video>
           ) : (
-            <p className="preview-note" aria-live="polite">
-              {!episode ? strings.preview.none : failed ? strings.preview.failed : strings.preview.building}
+            <p className="preview-note" role={loadFailed ? "alert" : undefined} aria-live="polite">
+              {!episode
+                ? strings.preview.none
+                : loadFailed
+                  ? strings.preview.loadError
+                  : failed
+                    ? strings.preview.failed
+                    : strings.preview.building}
             </p>
           )}
         </div>

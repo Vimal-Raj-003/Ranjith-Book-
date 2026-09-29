@@ -41,11 +41,22 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   if (!user) return NextResponse.json({ error: "Sign in to continue." }, { status: 401 });
 
   const { id } = await ctx.params;
-  const episode = await prisma.episode.findFirst({
-    where: { id, userId: user.id },
-    select: { id: true, title: true },
+  const episode = await prisma.episode.findUnique({
+    where: { id },
+    select: { id: true, title: true, userId: true },
   });
-  if (!episode) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // Same rule `GET /api/episodes/[id]` already applies: an episode with no
+  // owner (`userId: null`) is shared with every signed-in user, not hidden
+  // from all of them. `findFirst({ where: { userId: user.id } })` does NOT
+  // match a NULL column — SQL's `NULL = 'x'` is never true — so an ownerless
+  // episode used to 404 here while the same episode's `hasVideo`/`status`
+  // came back fine from the JSON route. The UI has no way to tell "404" apart
+  // from "still loading": `VideoPreview` mounts a bare `<video src=...>` with
+  // no error handling, so the player just sat frozen — black box, spinner
+  // icon, 0:00, forever — which is indistinguishable from "still loading."
+  if (!episode || (episode.userId && episode.userId !== user.id)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   // `id` came from the database, so it cannot traverse — but resolve and confine
   // it anyway rather than trusting that to stay true.

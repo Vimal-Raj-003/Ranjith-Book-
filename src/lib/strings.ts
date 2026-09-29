@@ -169,6 +169,7 @@ export const strings = {
     failed: "This run failed before a video was rendered.",
     unsupported: "Your browser cannot play this video. Download it instead.",
     download: "Download video",
+    loadError: "This video could not be loaded. Try reloading the page, or download it directly.",
   },
   publish: {
     /** Doubles as the `<summary>`: the whole panel is collapsed by default,
