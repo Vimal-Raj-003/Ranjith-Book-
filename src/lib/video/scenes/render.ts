@@ -19,6 +19,7 @@
 import { esc } from "../composition/escape";
 import type { BookTheme } from "../composition/theme-contract";
 import type { Scene, SceneIcon } from "./types";
+import { emphasizeWords } from "./emphasis";
 
 /** Where scene content may be drawn: the same rectangle the page card occupies. */
 export interface SceneRect {
@@ -33,11 +34,14 @@ export interface SceneAnim {
   s: number;
   /** Element index within the scene; -1 is the scene layer itself. */
   e: number;
-  k: "in" | "out" | "rise" | "pop" | "wipe" | "grow" | "draw";
+  k: "in" | "out" | "rise" | "pop" | "wipe" | "grow" | "draw" | "count";
   t: number;
   d: number;
-  /** The from-value: pixels for `rise`, scale for `pop`, dash length for `draw`. */
+  /** The from-value: pixels for `rise`, scale for `pop`, dash length for `draw`, the target number for `count`. */
   v?: number;
+  /** `count` only: text either side of the counted digits, e.g. "$" and "%". */
+  prefix?: string;
+  suffix?: string;
 }
 
 export interface RenderedScene {
@@ -80,13 +84,34 @@ function kineticText(scene: Scene, i: number): RenderedScene {
   const words = scene.words ?? [];
   const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
   const size = fitSize(chars, 96, 46, 0.26);
+  // "Important concepts" get visual weight, not every word — see emphasis.ts
+  // for the categories and the spacing rule that keeps this occasional.
+  const emphasis = emphasizeWords(words.map((w) => w.word));
   const markup = words
-    .map((w, k) => `<span class="sc-word" data-el="${k}">${esc(w.word)}</span>`)
+    .map((w, k) => {
+      const hit = emphasis[k];
+      const cls = hit ? ` sc-word-emph sc-cat-${hit.category}` : "";
+      return `<span class="sc-word${cls}" data-el="${k}">${esc(w.word)}</span>`;
+    })
     .join(" ");
   // Each word arrives on the exact measured start of that word in the audio.
-  const anims: SceneAnim[] = words.map((w, k) => ({ s: i, e: k, k: "rise", t: w.start, d: 0.26, v: 18 }));
+  // An emphasised word pops in bigger than it rests (matching its CSS scale,
+  // see sc-word-emph) rather than just rising, so the arrival itself reads as
+  // the moment of emphasis, not only the word's own styling.
+  const anims: SceneAnim[] = words.map((w, k) =>
+    emphasis[k]
+      ? { s: i, e: k, k: "pop", t: w.start, d: 0.3, v: 0.55 }
+      : { s: i, e: k, k: "rise", t: w.start, d: 0.26, v: 18 },
+  );
+  // The optional accent icon (validate.ts) — quiet, above the words, never in
+  // place of them: kinetic text is already a complete scene without it.
+  const iconEl = words.length;
+  const iconMarkup = scene.icon
+    ? `<div class="sc-kinetic-icon" data-el="${iconEl}">${iconSvg(scene.icon, 110)}</div>`
+    : "";
+  if (scene.icon) anims.push({ s: i, e: iconEl, k: "in", t: scene.start, d: 0.4 });
   return {
-    markup: `<div class="sc-kinetic" style="font-size:${size}px">${markup}</div>`,
+    markup: `<div class="sc-kinetic-wrap">${iconMarkup}<div class="sc-kinetic" style="font-size:${size}px">${markup}</div></div>`,
     anims,
   };
 }
@@ -161,11 +186,21 @@ function steps(scene: Scene, i: number): RenderedScene {
       </div>`,
     )
     .join("");
+  const headingEl = items.length;
+  const connectorEl = items.length + 1;
+  // The same "a line joins the points" idea `timeline`'s axis already draws,
+  // scaled to run behind the step numbers instead of down the whole card —
+  // a diagram connector, so a process reads as one thing with stages, not a
+  // stack of unrelated cards.
+  const connector = items.length > 1 ? `<div class="sc-step-connector" data-el="${connectorEl}"></div>` : "";
   return {
-    markup: `<div class="sc-steps">${scene.concept ? `<div class="sc-heading" data-el="${items.length}">${esc(scene.concept)}</div>` : ""}${rows}</div>`,
+    markup: `<div class="sc-steps">${connector}${scene.concept ? `<div class="sc-heading" data-el="${headingEl}">${esc(scene.concept)}</div>` : ""}${rows}</div>`,
     anims: [
       ...items.map((_, k) => ({ s: i, e: k, k: "rise" as const, t: times[k], d: ENTER, v: 30 })),
-      ...(scene.concept ? [{ s: i, e: items.length, k: "in" as const, t: scene.start, d: 0.36 }] : []),
+      ...(scene.concept ? [{ s: i, e: headingEl, k: "in" as const, t: scene.start, d: 0.36 }] : []),
+      ...(items.length > 1
+        ? [{ s: i, e: connectorEl, k: "grow" as const, t: scene.start + 0.1, d: Math.min(1.2, (scene.end - scene.start) * 0.5) }]
+        : []),
     ],
   };
 }
@@ -208,11 +243,29 @@ function growthCurve(scene: Scene, i: number): RenderedScene {
   // A generous over-estimate of the polyline's length: the dash offset only
   // has to be at least the path length for the draw to start fully hidden.
   const dash = Math.round(CURVE.w + CURVE.h * 2);
+  const drawEnd = scene.start + 0.15 + Math.min(1.8, (scene.end - scene.start) * 0.6);
+  // The same line, closed down to the baseline — a chart reads as a chart
+  // once the area under it has weight, not just a stroke. Revealed after the
+  // line finishes drawing, so it never appears ahead of the line itself.
+  const fillPoints = `0,${CURVE.h} ${coords.join(" ")} ${CURVE.w},${CURVE.h}`;
+  // Three quiet gridlines. Static — a chart's grid does not animate in real
+  // life either, and everything that draws attention here should be the data.
+  const grid = [0.25, 0.5, 0.75]
+    .map((f) => `<line class="sc-grid" x1="0" y1="${(CURVE.h * f).toFixed(1)}" x2="${CURVE.w}" y2="${(CURVE.h * f).toFixed(1)}" />`)
+    .join("");
   return {
     markup: `<div class="sc-curve">
       ${scene.curve?.label ? `<div class="sc-curve-label" data-el="2">${esc(scene.curve.label)}</div>` : ""}
       <svg viewBox="0 0 ${CURVE.w} ${CURVE.h}" width="${CURVE.w}" height="${CURVE.h}" fill="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="sc-curve-fill-${i}" x1="0" y1="0" x2="0" y2="1">
+            <stop class="sc-curve-fill-top" offset="0%" />
+            <stop class="sc-curve-fill-bottom" offset="100%" />
+          </linearGradient>
+        </defs>
+        ${grid}
         <line class="sc-axis" x1="0" y1="${CURVE.h}" x2="${CURVE.w}" y2="${CURVE.h}" />
+        <polygon class="sc-curve-fill" data-el="3" fill="url(#sc-curve-fill-${i})" points="${fillPoints}" />
         <polyline class="sc-curve-line" data-el="0" points="${coords.join(" ")}"
                   stroke-linecap="round" stroke-linejoin="round"
                   style="stroke-dasharray:${dash};stroke-dashoffset:${dash}" />
@@ -220,20 +273,48 @@ function growthCurve(scene: Scene, i: number): RenderedScene {
       </svg>
     </div>`,
     anims: [
-      { s: i, e: 0, k: "draw", t: scene.start + 0.15, d: Math.min(1.8, (scene.end - scene.start) * 0.6), v: dash },
-      { s: i, e: 1, k: "pop", t: scene.start + Math.min(1.95, (scene.end - scene.start) * 0.6), d: 0.4, v: 0.2 },
+      { s: i, e: 0, k: "draw", t: scene.start + 0.15, d: drawEnd - (scene.start + 0.15), v: dash },
+      { s: i, e: 1, k: "pop", t: drawEnd, d: 0.4, v: 0.2 },
+      { s: i, e: 3, k: "in", t: drawEnd, d: 0.6 },
       ...(scene.curve?.label ? [{ s: i, e: 2, k: "in" as const, t: scene.start, d: 0.4 }] : []),
     ],
   };
+}
+
+/**
+ * A stat's value, split for counting — "$4,000" → prefix "$", digits "4000",
+ * suffix "" — or null when it is not a clean whole number (a decimal, a
+ * range like "50-100", a bare word like "double"). Those still render, just
+ * without the count-up: a `stat` scene the number came from `numberIsSaid`,
+ * which already accepts things a counter cannot honestly animate through.
+ */
+export function counted(value: string): { prefix: string; digits: string; suffix: string; n: number } | null {
+  const m = /^([$]?)([\d,]{1,10})([%x+]?)$/.exec(value.trim());
+  if (!m) return null;
+  const digits = m[2].replace(/,/g, "");
+  const n = Number(digits);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return { prefix: m[1], digits: m[2], suffix: m[3], n };
 }
 
 function stat(scene: Scene, i: number): RenderedScene {
   const value = scene.stat?.value ?? "";
   const label = scene.stat?.label ?? "";
   const size = fitSize(value.length, 300, 120, 14);
+  const count = counted(value);
+  // The counted digits are a SEPARATE element (data-el 3) from the value
+  // wrapper (data-el 0) that pops in, not the same one: `overlappingAnims`
+  // refuses two tweens on one element in the same window, and `pop`'s scale
+  // and `count`'s digit-by-digit text both run across the value's own
+  // arrival. `.sc-stat-count` is exempted from the generic hidden rest state
+  // (see sceneCss) because its visibility is the PARENT's — `pop` — not its
+  // own; count never touches opacity, only textContent.
+  const valueMarkup = count
+    ? `<span class="sc-stat-count" data-el="3">${esc(count.prefix)}0${esc(count.suffix)}</span>`
+    : esc(value);
   return {
     markup: `<div class="sc-stat">
-      <div class="sc-stat-value" data-el="0" style="font-size:${size}px">${esc(value)}</div>
+      <div class="sc-stat-value" data-el="0" style="font-size:${size}px">${valueMarkup}</div>
       ${label ? `<div class="sc-stat-label" data-el="1">${esc(label)}</div>` : ""}
       <div class="sc-stat-rule" data-el="2"></div>
     </div>`,
@@ -241,8 +322,40 @@ function stat(scene: Scene, i: number): RenderedScene {
       { s: i, e: 0, k: "pop", t: scene.start, d: 0.52, v: 0.66 },
       { s: i, e: 2, k: "wipe", t: scene.start + 0.3, d: 0.5 },
       ...(label ? [{ s: i, e: 1, k: "rise" as const, t: scene.start + 0.42, d: ENTER, v: 22 }] : []),
+      ...(count
+        ? [
+            {
+              s: i,
+              e: 3,
+              k: "count" as const,
+              t: scene.start + 0.1,
+              d: Math.min(1.1, Math.max(0.5, count.digits.length * 0.2)),
+              v: count.n,
+              prefix: count.prefix,
+              suffix: count.suffix,
+            },
+          ]
+        : []),
     ],
   };
+}
+
+/**
+ * Which of "in" (a plain fade), "rise" (slide up) or "pop" (a gentle scale)
+ * a scene ARRIVES with — deterministic from its own index, so the same plan
+ * renders the same way on every run, and (since three options cycle) never
+ * the same as the scene right before it. The same "vary deliberately" rule
+ * the director itself is held to for which TEMPLATE it picks (director.ts),
+ * applied here to how the template's own layer shows up.
+ *
+ * The exit is always a plain fade, never varied: a layer only has to get out
+ * of the way, and reversing a slide or a scale on exit would double the
+ * moving parts for a direction a viewer's eye has already left.
+ */
+const ENTRANCES: { k: "in" | "rise" | "pop"; v?: number }[] = [{ k: "in" }, { k: "rise", v: 40 }, { k: "pop", v: 0.94 }];
+
+export function entranceFor(index: number): { k: "in" | "rise" | "pop"; v?: number } {
+  return ENTRANCES[index % ENTRANCES.length];
 }
 
 /**
@@ -269,10 +382,14 @@ export function renderScene(scene: Scene, rect: SceneRect): RenderedScene | null
   }
   if (!body) return null;
 
-  // The layer's own dissolve. It fades out at its end, except the last scene,
-  // which the CTA card covers anyway — handled by the caller clamping times.
+  // The layer's own transition. It fades out at its end, except the last
+  // scene, which the CTA card covers anyway — handled by the caller clamping
+  // times. Entrance duration matches SCENE_FADE exactly, the same window
+  // `cardVisibility` (build.ts) crossfades the page card over — the shape of
+  // the arrival varies, the timing it hands over on does not.
+  const entrance = entranceFor(i);
   const layerAnims: SceneAnim[] = [
-    { s: i, e: -1, k: "in", t: scene.start, d: SCENE_FADE },
+    { s: i, e: -1, k: entrance.k, t: scene.start, d: SCENE_FADE, v: entrance.v },
     { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end - SCENE_FADE), d: SCENE_FADE },
   ];
 
@@ -335,9 +452,21 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-icon { color:${p.accent}; display:block; }
 
   /* kinetic text — the narration itself, word by word on the real audio */
+  .sc-kinetic-wrap { display:flex; flex-direction:column; align-items:center; gap:28px; }
   .sc-kinetic { text-align:center; font-weight:800; line-height:1.18; letter-spacing:-0.5px;
                 padding:0 18px; }
   .sc-word { display:inline-block; margin:0 0.16em 0.1em 0; }
+  /* The optional accent icon (validate.ts). Quiet — its job is to let the eye
+     place the concept a beat before the words do, not to compete with them. */
+  .sc-kinetic-icon { opacity:0.85; }
+  .sc-kinetic-icon .sc-icon { color:${p.accent}; }
+  /* An emphasised word (emphasis.ts): bigger and in the accent colour, the
+     same "this is the loud one" treatment a stat's own number gets, so the
+     same eye that reads a stat as important reads this word the same way.
+     font-size, not transform:scale — its entrance is a "pop" (render.ts),
+     and GSAP writes the WHOLE transform property when it tweens one, which
+     would silently erase a scale set here the moment the tween starts. */
+  .sc-word-emph { color:${p.accent}; font-size:1.18em; }
 
   /* quote — the book's own words */
   .sc-quote { text-align:center; padding:0 26px; }
@@ -369,7 +498,7 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
            color:${p.accent}; flex:0 0 auto; }
 
   /* steps — an ordered short list */
-  .sc-steps { display:flex; flex-direction:column; gap:26px; padding:0 20px; }
+  .sc-steps { position:relative; display:flex; flex-direction:column; gap:26px; padding:0 20px; }
   .sc-heading { font-size:34px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
                 color:${p.accent}; text-align:center; margin-bottom:8px; }
   .sc-step { display:flex; align-items:center; gap:30px; padding:30px 34px; border-radius:28px;
@@ -378,6 +507,12 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
                color:${p.ctaFace}; font-size:40px; font-weight:800;
                display:flex; align-items:center; justify-content:center; }
   .sc-step-t { font-size:42px; font-weight:700; line-height:1.2; color:${p.ink}; }
+  /* A diagram connector joining the step numbers, the same idea as the
+     timeline's own axis (below) but scoped to this list. It only shows in the
+     gaps between the opaque step cards, which reads as a line running behind
+     the process rather than through it. */
+  .sc-step-connector { position:absolute; left:92px; top:76px; bottom:76px; width:5px; border-radius:3px;
+                        background:${p.accent}; opacity:0.5; transform:scaleY(0); transform-origin:top center; }
 
   /* timeline — points in order down the frame */
   .sc-timeline { position:relative; padding-left:86px; display:flex; flex-direction:column; gap:54px; }
@@ -395,10 +530,22 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-curve-line { stroke:${p.accent}; stroke-width:12; }
   .sc-curve-head { fill:${p.accent}; }
   .sc-axis { stroke:${p.bylineInk}; stroke-width:3; opacity:0.5; }
+  /* Quiet gridlines and the filled area under the line — a chart reads as a
+     chart once it has these, not just a stroke on a blank field. Both static
+     or revealed with a plain fade (see growthCurve), never their own draw:
+     the LINE is the thing being drawn, everything else is its context. */
+  .sc-grid { stroke:${p.bylineInk}; stroke-width:2; opacity:0.18; }
+  .sc-curve-fill-top { stop-color:${p.accent}; stop-opacity:0.32; }
+  .sc-curve-fill-bottom { stop-color:${p.accent}; stop-opacity:0; }
 
   /* stat — one number the page actually states */
   .sc-stat { text-align:center; }
   .sc-stat-value { font-weight:800; line-height:1; letter-spacing:-4px; color:${p.accent}; }
+  /* The counted digits (render.ts's counted()) are a CHILD of .sc-stat-value,
+     not the element the "pop" entrance itself scales — see the comment in
+     stat(). Its visibility is entirely its parent's: unlike every other
+     [data-el], count never touches opacity, so it must not rest hidden. */
+  .sc [data-el].sc-stat-count { opacity:1; visibility:visible; }
   .sc-stat-rule { width:${Math.round(rect.w * 0.42)}px; height:8px; border-radius:4px; margin:40px auto 0;
                   background:${p.accent}; transform:scaleX(0); transform-origin:left center; }
   .sc-stat-label { margin-top:36px; font-size:46px; font-weight:700; line-height:1.24; }

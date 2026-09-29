@@ -136,6 +136,14 @@ export interface Scene {
   words?: { word: string; start: number; end: number }[];
   /** `icon-concept`, `comparison`, `steps`, `timeline`: resolved icons. */
   icons?: SceneIcon[];
+  /**
+   * `kinetic-text` only: one small accent icon for the concept it turns out
+   * to be about, when the match is confident enough to add without
+   * competing with the words themselves (see `MIN_SCORE_ACCENT` in
+   * validate.ts). Absent far more often than present — kinetic text renders
+   * exactly as it always has when it is.
+   */
+  icon?: SceneIcon;
   items?: string[];
   left?: string;
   right?: string;

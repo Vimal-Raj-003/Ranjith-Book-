@@ -1014,6 +1014,31 @@ const TIMELINE_JS = `
       tl.fromTo(el, { autoAlpha: 1, scaleY: 0 }, { autoAlpha: 1, scaleY: 1, duration: d, ease: "power2.out", immediateRender: false }, a.t);
     } else if (a.k === "draw") {
       tl.fromTo(el, { autoAlpha: 1, strokeDashoffset: a.v || 0 }, { autoAlpha: 1, strokeDashoffset: 0, duration: d, ease: "power1.inOut", immediateRender: false }, a.t);
+    } else if (a.k === "count") {
+      // Digit-by-digit reveal of a stat's own number (render.ts's \`counted\`).
+      // A plain object as the tween target, not the element itself: GSAP has
+      // nothing built in it can animate text content with, so the number
+      // lives on \`counter.n\` and onUpdate writes it into the DOM every time
+      // the timeline renders THIS instant — including a seek, which is how
+      // the renderer visits every frame, so the digits are exactly right
+      // whichever frame is captured first.
+      var counter = { n: 0 };
+      var prefix = a.prefix || "";
+      var suffix = a.suffix || "";
+      tl.fromTo(
+        counter,
+        { n: 0 },
+        {
+          n: a.v || 0,
+          duration: d,
+          ease: "power1.out",
+          immediateRender: false,
+          onUpdate: function () {
+            el.textContent = prefix + Math.round(counter.n).toLocaleString() + suffix;
+          },
+        },
+        a.t,
+      );
     }
   });
 

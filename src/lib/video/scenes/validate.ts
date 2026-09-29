@@ -26,9 +26,19 @@
 import { normalizeToken } from "../../ingest/align";
 import type { Box } from "../../ingest/ocr";
 import type { Embedder } from "../../analysis/embed";
-import { resolveIcon } from "./icons";
+import { resolveIcon, MIN_SCORE } from "./icons";
 import { BOOK_KINDS } from "./types";
 import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, VisualKind } from "./types";
+
+/**
+ * The floor for a kinetic-text scene's optional accent icon — stricter than
+ * `MIN_SCORE` (icons.ts), which gates a scene whose ONLY content is the icon
+ * (icon-concept, comparison). This one is purely decorative, added beside
+ * text that already stands on its own, so only a confident match is worth
+ * the screen space; anything weaker is silently skipped, same as any other
+ * icon lookup that finds nothing.
+ */
+const MIN_SCORE_ACCENT = MIN_SCORE + 0.1;
 
 /** A video about a book shows the book at least this many times. */
 export const MIN_BOOK_SCENES = 3;
@@ -345,6 +355,23 @@ export async function validateScenes(
     if (scenes[i + 1] && isBook(scenes[i + 1])) continue;
     scenes[i] = { ...s, kind: "book-page", tone: TONE_BY_KIND["book-page"], fallbackFrom: s.kind, words: undefined };
     notes.push(`Scene ${i + 1}: changed to the book page so the book stays visible.`);
+  }
+
+  // A small accent icon for kinetic text, kind selection now settled (a scene
+  // the book-floor pass above just turned INTO kinetic-text would otherwise
+  // be eligible here too, which is backwards — that pass runs first for
+  // exactly this reason). Deliberately stricter than every other icon lookup
+  // in this file: those are load-bearing (the scene has nothing else to
+  // show), this is decorative, so a borderline match is worse than none —
+  // "use kinetic typography instead of forcing an unrelated icon" holds even
+  // when kinetic typography is what is already being shown.
+  for (const s of scenes) {
+    if (s.kind !== "kinetic-text" || !s.concept) continue;
+    const icon = await resolveIcon(s.concept, { embedder: ctx.embedder, exclude: usedIcons, minScore: MIN_SCORE_ACCENT });
+    if (icon) {
+      usedIcons.add(icon.name);
+      s.icon = icon;
+    }
   }
 
   const used: Record<string, number> = {};
