@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { alignTokens, timeBeat, speechSpan, soundBounds, fitToSound, snapToSound, type AsrWord } from "../src/lib/media/word-timing";
+import { alignTokens, timeBeat, speechSpan, soundBounds, fitToSound, snapToSound, beatSoundBounds, SPEECH_ONSET_DB, type AsrWord } from "../src/lib/media/word-timing";
+import { detectSilences } from "../src/lib/media/ffmpeg";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { buildCaptionsFromWords, toSrt, PAUSE_BREAK } from "../src/lib/media/captions";
 import { timedSweepForBeat, quotedAnchors, QUOTE_RUN } from "../src/lib/video/sweep";
 import { timeNarration } from "../src/lib/media/narration-timing";
@@ -122,6 +126,63 @@ test("a word edge inside a measured pause is pulled out of it, without reorderin
   assert.deepEqual(snapped.map((w) => [w.start, w.end]), [[2.8, 3.1], [3.6, 3.9]]);
   const inside = snapToSound([tw("uh", 3.2, 3.4, 0)], [{ start: 3.1, end: 3.6 }]);
   assert.deepEqual([inside[0].start, inside[0].end], [3.2, 3.4], "a word wholly inside a pause is left, not invented a place");
+});
+
+test("a beat's start is where its SPEECH begins, not where the TTS's inhale before it does", () => {
+  // Inhale heard as sound from 13.4; speech proper from 13.8. Silence before each.
+  const quiet = [{ start: 12.2, end: 13.4 }, { start: 15.9, end: 17 }];
+  const speechQuiet = [{ start: 12.2, end: 13.8 }, { start: 15.9, end: 17 }];
+  const win = { start: 12.8, end: 16.4 };
+  assert.deepEqual(soundBounds(win, quiet), { start: 13.4, end: 15.9 }, "the old measurement: the inhale counts");
+  assert.deepEqual(beatSoundBounds(win, quiet, speechQuiet), { start: 13.8, end: 15.9 }, "start at speech; end as before");
+});
+
+test("beatSoundBounds only ever moves the start later, and never past the point where sound runs out", () => {
+  const quiet = [{ start: 0, end: 0.5 }];
+  const win = { start: 0, end: 3 };
+  assert.deepEqual(beatSoundBounds(win, quiet, quiet), soundBounds(win, quiet), "identical silences change nothing");
+  assert.deepEqual(beatSoundBounds(win, quiet, [{ start: 0, end: 0.2 }]), soundBounds(win, quiet), "an onset EARLIER than the old start is ignored");
+  assert.equal(beatSoundBounds(win, quiet, [{ start: 0, end: 0.9 }])?.start, 0.9, "a later onset is taken");
+  assert.equal(beatSoundBounds(win, quiet, [{ start: 0, end: 2.95 }])?.start, 0.5, "an onset that leaves no sound is ignored");
+  assert.equal(beatSoundBounds({ start: 0, end: 1 }, [{ start: 0, end: 1 }], []), null, "a window of pure silence still has no sound");
+});
+
+test("on real audio the default detector hears the inhale as sound and the speech-level one does not", async () => {
+  // 44.1 kHz mono: 0.5 s silence, 0.4 s inhale-level noise (~-38 dBFS RMS, never
+  // above -26 dBFS), 0.6 s voiced tone (~-9 dBFS peak), 0.6 s silence.
+  const rate = 44100;
+  const n = (s: number) => Math.round(s * rate);
+  const pcm = Buffer.alloc(n(2.1) * 2);
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) + 1) / 4294967297;
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd());
+  for (let i = 0; i < n(2.1); i++) {
+    const t = i / rate;
+    let v = 0;
+    if (t >= 0.5 && t < 0.9) v = Math.max(-0.045, Math.min(0.045, 0.0125 * gauss()));
+    else if (t >= 0.9 && t < 1.5) v = 0.25 * Math.sin(2 * Math.PI * 150 * t) + 0.1 * Math.sin(2 * Math.PI * 300 * t) + 0.05 * Math.sin(2 * Math.PI * 450 * t);
+    pcm.writeInt16LE(Math.round(v * 32767), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-onset-"));
+  const file = path.join(dir, "voice.wav");
+  try {
+    await fs.writeFile(file, Buffer.concat([header, pcm]));
+    const quiet = await detectSilences(file);
+    const speechQuiet = await detectSilences(file, SPEECH_ONSET_DB);
+    const win = { start: 0, end: 2.1 };
+    const before = soundBounds(win, quiet)!;
+    assert.ok(Math.abs(before.start - 0.5) < 0.06, `the default detector starts the beat at the inhale (${before.start})`);
+    const after = beatSoundBounds(win, quiet, speechQuiet)!;
+    assert.ok(Math.abs(after.start - 0.9) < 0.06, `the beat starts where the voiced tone does (${after.start})`);
+    assert.ok(Math.abs(after.end - 1.5) < 0.06, `and still ends where it stops (${after.end})`);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 // --- subtitles ------------------------------------------------------------------

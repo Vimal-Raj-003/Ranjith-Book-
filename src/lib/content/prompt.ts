@@ -1,4 +1,5 @@
-import { LENGTHS, type GenerateInput, type IdeaBrief, type ScriptLength } from "./schema";
+import { LENGTHS, type GenerateInput, type IdeaBrief, type LengthSpec, type ScriptLength } from "./schema";
+import { maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
 
 /**
  * Stated once, up front, in its own unmissable block rather than folded into
@@ -152,20 +153,23 @@ export const CONCRETE_DETAIL_RULE = `The same goes for DETAIL. Every concrete sc
  * (photo-episode) prompt is byte-for-byte what it was before long scripts
  * existed.
  */
-function longRules(): string {
-  const spec = LENGTHS.long;
+function longRules(spec: LengthSpec = LENGTHS.long): string {
+  const aim = spec.aimWords ?? Math.round((spec.minWords! + spec.maxWords!) / 2);
+  // Seconds depend on beats as well as words, so the cap is stated both ways.
+  const hardWords = maxWordsFor(VIDEO_MAX_SECONDS - 5, spec.maxBeats);
   return `
 
-THIS IS A LONG EPISODE: ${spec.seconds.replace(/-/g, " ")} of finished video.
+THIS IS A ${spec.seconds.replace(/-/g, " ").toUpperCase()} VIDEO. The finished video must never run past ${VIDEO_MAX_SECONDS} seconds, and it is never padded: say what this idea needs in the room it has, and stop.
 - Write between ${spec.minBeats} and ${spec.maxBeats} beats.
-- The voiceover of all beats together must be between ${spec.minWords} and ${spec.maxWords} words — aim for about ${Math.round((spec.minWords! + spec.maxWords!) / 2)}. Count them. A script outside that range is sent back.
+- The voiceover of all beats together must be between ${spec.minWords} and ${spec.maxWords} words — aim for about ${aim}. Count them. A script outside that range is sent back, and no script may ever exceed ${Math.min(spec.maxWords!, hardWords)} words.
 - Shape: open on the hook, set up why it matters, develop the ONE idea you were given with the book's own example or argument, show what it looks like in practice, land a clear takeaway, then the call to action. Every beat moves the idea forward; no beat restates the one before it.
 - The idea you were given is the spine of the episode. Stay on it — do not drift into other ideas from the same pages.`;
 }
 
-export function buildSystemPrompt(opts: { hasAuthor: boolean; length?: ScriptLength }): string {
+export function buildSystemPrompt(opts: { hasAuthor: boolean; length?: ScriptLength; spec?: LengthSpec }): string {
   const length = opts.length ?? "short";
-  return `You write ${LENGTHS[length].seconds} vertical video scripts, each about a single passage of a book.
+  const spec = length === "long" ? (opts.spec ?? LENGTHS.long) : LENGTHS[length];
+  return `You write ${spec.seconds} vertical video scripts, each about a single passage of a book.
 
 ${TRANSFORMATIVE_RULE}
 
@@ -242,7 +246,7 @@ Rules that are not negotiable:
   in the opening card and on every thumbnail — so they must appear in hook
   EXACTLY as written there, same spelling, same word. Pick the words a reader
   would need if they only had time to read three of them; do not pick "the",
-  "and", or any other word that carries no meaning on its own.${length === "long" ? longRules() : ""}`;
+  "and", or any other word that carries no meaning on its own.${length === "long" ? longRules(spec) : ""}`;
 }
 
 /**

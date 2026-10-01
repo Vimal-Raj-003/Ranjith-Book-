@@ -209,6 +209,30 @@ export function soundBounds(window: Window, quiet: Silence[]): Window | null {
 }
 
 /**
+ * The silence-detector level (dB) at which a beat's SPEECH, as opposed to the
+ * TTS's inhale before it, counts as sound. The voice breathes in for 0.2-0.8 s
+ * before most beats at about -40 dBFS, ~28 dB under the speech; the default
+ * detector (-35) hears that as sound, so a beat's first caption led the voice
+ * by a median 285 ms (worst 792 ms) across 207 real beat starts in 22 episodes.
+ * At -25 the same measurement is a median 16 ms off, with no late starts.
+ */
+export const SPEECH_ONSET_DB = -25;
+
+/**
+ * A beat's sound bounds with the START taken where speech begins rather than
+ * where the first breath does. `speechQuiet` is the silences at SPEECH_ONSET_DB.
+ * The end stays as measured on `quiet`: a caption lingers past its last word
+ * anyway. The onset only ever moves LATER, and only while real sound remains.
+ */
+export function beatSoundBounds(window: Window, quiet: Silence[], speechQuiet: Silence[]): Window | null {
+  const bounds = soundBounds(window, quiet);
+  if (!bounds) return null;
+  const onset = soundBounds(window, speechQuiet);
+  if (!onset || onset.start <= bounds.start || onset.start >= bounds.end - 0.1) return bounds;
+  return { start: onset.start, end: bounds.end };
+}
+
+/**
  * Put a beat's first and last word edges on its measured sound.
  *
  * Measured on real Pocket TTS narration (scripts/e2e-word-timing.mjs):

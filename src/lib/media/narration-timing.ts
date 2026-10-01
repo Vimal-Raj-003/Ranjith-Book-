@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { CACHE_ROOT } from "../paths";
 import { buildCaptions, buildCaptionsFromWords, type CaptionLine } from "./captions";
-import { timeBeat, speechSpan, snapToSound, fitToSound, soundBounds, type AsrWord, type Silence, type TimedWord } from "./word-timing";
+import { timeBeat, speechSpan, snapToSound, fitToSound, beatSoundBounds, SPEECH_ONSET_DB, type AsrWord, type Silence, type TimedWord } from "./word-timing";
 import { detectSilences } from "./ffmpeg";
 import type { BeatAudio, VoiceoverResult } from "./tts";
 import { abortOpts, wasCancelled, CancelledError } from "../cancel";
@@ -176,6 +176,8 @@ export async function timeNarration(voice: VoiceoverResult, workDir: string): Pr
   // pauses where the recogniser's timestamps are loosest (see snapToSound).
   // Best-effort: without them the recogniser's own times stand.
   const quiet = await detectSilences(voice.audioPath).catch(() => [] as Silence[]);
+  // The same recording at speech level, for where each beat's speech starts.
+  const speechQuiet = await detectSilences(voice.audioPath, SPEECH_ONSET_DB).catch(() => [] as Silence[]);
   const beats: BeatAudio[] = voice.beats.map((b, i) => {
     const heard = out.windows[i]?.words ?? [];
     const timing = timeBeat(b.index, b.text, heard, { start: b.start, end: Math.min(b.end, voice.totalDuration) });
@@ -184,7 +186,7 @@ export async function timeNarration(voice: VoiceoverResult, workDir: string): Pr
     // measured pause. Both use the same recording's silences; the words'
     // own times are otherwise kept. See fitToSound for the measurements.
     if (timing.matched > 0) {
-      const bounds = soundBounds({ start: b.start, end: Math.min(b.end, voice.totalDuration) }, quiet);
+      const bounds = beatSoundBounds({ start: b.start, end: Math.min(b.end, voice.totalDuration) }, quiet, speechQuiet);
       timing.words = snapToSound(fitToSound(timing.words, bounds), quiet);
     }
     words.push(...timing.words);

@@ -1,3 +1,4 @@
+import { ENVELOPE } from "./duration";
 /**
  * Book archetypes. The beat template is chosen from this, so that a philosophy
  * book and a memoir are not narrated in the identical rhythm — every video
@@ -144,6 +145,8 @@ export interface GenerateInput {
   brief?: IdeaBrief;
   /** Absent means "short" — the photo pipeline's original 60–90 s shape. */
   length?: ScriptLength;
+  /** A "long" script's own length plan (duration.ts); absent means the envelope. */
+  spec?: LengthSpec;
 }
 
 /**
@@ -160,6 +163,14 @@ export interface LengthSpec {
   maxWords: number | null;
   /** What the writer is told the video runs, for its sense of pace. */
   seconds: string;
+  /** The word count the writer is told to aim for (default: the middle of the range). */
+  aimWords?: number;
+  /**
+   * A draft predicted (duration.ts) to finish longer than this is refused, even
+   * with a word count inside the range: seconds depend on beats too, and the
+   * video's hard limit is in seconds, not words.
+   */
+  maxExpectedSeconds?: number;
 }
 
 export const LENGTHS: Record<ScriptLength, LengthSpec> = {
@@ -167,7 +178,9 @@ export const LENGTHS: Record<ScriptLength, LengthSpec> = {
   // 170–280 words is 60–120 s of finished video at the narrator's pace:
   // Pocket TTS speaks ~150–165 words a minute, plus the pause between beats,
   // the 0.7 s lead-in and the 1.8 s outro.
-  long: { minBeats: 7, maxBeats: 12, minWords: 170, maxWords: 280, seconds: "60-to-120-second" },
+  // The envelope of the 45 / 60 / 90 s tiers (duration.ts): what a script may be
+  // when no plan was made. 90 s is the hard ceiling.
+  long: ENVELOPE,
 };
 
 /**
@@ -189,9 +202,9 @@ export function spokenWordCount(pkg: Pick<ContentPackage, "beats">): number {
   return pkg.beats.reduce((n, b) => n + b.voiceover.split(/\s+/).filter(Boolean).length, 0);
 }
 
-/** `CONTENT_JSON_SCHEMA` with the beat count of the given length. */
-export function contentJsonSchema(length: ScriptLength = "short") {
-  const spec = LENGTHS[length];
+/** `CONTENT_JSON_SCHEMA` with the beat count of the given length (or of an explicit spec). */
+export function contentJsonSchema(length: ScriptLength = "short", override?: LengthSpec) {
+  const spec = override ?? LENGTHS[length];
   return {
     ...CONTENT_JSON_SCHEMA,
     properties: {

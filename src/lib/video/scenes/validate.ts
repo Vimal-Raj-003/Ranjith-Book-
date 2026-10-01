@@ -27,6 +27,8 @@ import { normalizeToken } from "../../ingest/align";
 import type { Box } from "../../ingest/ocr";
 import type { Embedder } from "../../analysis/embed";
 import { resolveIcon, MIN_SCORE } from "./icons";
+import { emphasizeWords } from "./emphasis";
+import { heroForText, heroMatch, isHeroId, type HeroId } from "./heroes";
 import { BOOK_KINDS } from "./types";
 import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, VisualKind } from "./types";
 
@@ -64,7 +66,18 @@ const TONE_BY_KIND: Record<VisualKind, SceneTone> = {
   "growth-curve": "bright",
   timeline: "cool",
   stat: "deep",
+  cinematic: "deep",
 };
+
+/**
+ * Whole-video variety rules. A cinematic scene is the visual the product exists
+ * to make; the others are supporting. A video of quote cards and book pages is
+ * the slideshow this system replaced.
+ */
+export const CINEMATIC_SHARE = 0.4;
+export const MAX_QUOTES = 2;
+export const MAX_ICON_SCENES = 2;
+export const MAX_HERO_USES = 2;
 
 function contentWords(s: string): string[] {
   return s
@@ -128,6 +141,8 @@ export interface ValidateContext {
   /** Locate a quote in a page's words. Returns the book's own words and where. */
   locate(page: number, quote: string): { text: string; startWord: number; endWord: number } | null;
   embedder?: Embedder;
+  /** The script's hook line and its accent words: what the opening scene is about. */
+  hook?: { text: string; keywords: string[] };
 }
 
 /** The narration and the book words a scene may draw its labels from. */
@@ -147,6 +162,68 @@ function sentenceWords(from: number, to: number, ctx: ValidateContext) {
   const out: { word: string; start: number; end: number }[] = [];
   for (let i = from; i <= to; i++) out.push(...(ctx.sentences[i]?.words ?? []));
   return out;
+}
+
+/** Lowercased, punctuation-free tokens of a text. */
+function tokens(s: string): string[] {
+  return s.split(/\s+/).map(normalizeToken).filter(Boolean);
+}
+
+/** The index in `hay` where `needle` occurs as a contiguous run of tokens, or -1. */
+function runIndex(hay: string[], needle: string[]): number {
+  if (needle.length === 0) return -1;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    if (needle.every((t, k) => hay[i + k] === t)) return i;
+  }
+  return -1;
+}
+
+const KEYWORD_MAX_CHARS = 18;
+
+/**
+ * The words to set large. The director's own pick is used only if it really is a
+ * run of words the narrator says (so type on screen can never claim anything the
+ * voice did not); otherwise the first emphasised word, otherwise the longest
+ * ordinary word, so a cinematic scene always has something worth setting large.
+ */
+export function pickKeyword(asked: string | undefined, words: { word: string }[]): string {
+  const spoken = words.map((w) => normalizeToken(w.word));
+  const want = tokens(asked ?? "");
+  if (want.length > 0 && want.length <= 2 && runIndex(spoken, want) >= 0) {
+    const shown = want.join(" ");
+    if (shown.length <= KEYWORD_MAX_CHARS) return shown;
+  }
+  const emph = emphasizeWords(words.map((w) => w.word));
+  const hit = emph.findIndex((e) => e !== null);
+  if (hit >= 0 && spoken[hit]) return spoken[hit];
+  let best = "";
+  for (const w of spoken) if (w.length > best.length && !STOP.has(w) && w.length <= KEYWORD_MAX_CHARS) best = w;
+  return best || spoken[0] || "";
+}
+
+/**
+ * Up to six narrated words leading into the keyword. The director's own lead is
+ * kept only if it is a contiguous run of spoken words; otherwise the words just
+ * before the keyword in the sentence, or nothing when the keyword opens it.
+ */
+export function pickLead(asked: string | undefined, keyword: string, words: { word: string }[]): string {
+  const spoken = words.map((w) => normalizeToken(w.word));
+  const kw = tokens(keyword);
+  const want = tokens(asked ?? "");
+  if (want.length > 0 && want.length <= 6 && runIndex(spoken, want) >= 0 && runIndex(want, kw) < 0) {
+    return words
+      .slice(runIndex(spoken, want), runIndex(spoken, want) + want.length)
+      .map((w) => w.word)
+      .join(" ")
+      .replace(/[,;:]+$/, "");
+  }
+  const at = runIndex(spoken, kw);
+  if (at <= 0) return "";
+  return words
+    .slice(Math.max(0, at - 6), at)
+    .map((w) => w.word)
+    .join(" ")
+    .replace(/[,;:.]+$/, "");
 }
 
 /**
@@ -297,10 +374,45 @@ async function resolveScene(
       return { scene: withKind("icon-concept", { icons, items: items.slice(0, icons.length) }) };
     }
 
+    case "cinematic": {
+      const words = sentenceWords(spec.from, spec.to, ctx);
+      const text = words.map((w) => w.word).join(" ");
+      const hero: HeroId = isHeroId(spec.hero) ? spec.hero : heroForText(`${concept} ${text}`);
+      const keyword = pickKeyword(spec.keyword, words);
+      return { scene: withKind("cinematic", { words, cine: { hero, keyword, lead: pickLead(spec.lead, keyword, words) } }) };
+    }
+
     case "kinetic-text":
     default:
       return kinetic();
   }
+}
+
+/** A scene's narration, for matching a hero to it. */
+function narrationOf(s: Scene, ctx: ValidateContext): string {
+  return s.sentences.map((i) => ctx.sentences[i]?.text ?? "").join(" ");
+}
+
+/** Turn a scene into a cinematic one, keeping its timing and source. */
+function toCinematic(s: Scene, ctx: ValidateContext, hero: HeroId, hook?: boolean): Scene {
+  const words = s.words ?? sentenceWords(s.sentences[0], s.sentences[s.sentences.length - 1], ctx);
+  const keyword = pickKeyword(s.cine?.keyword, words);
+  return {
+    ...s,
+    kind: "cinematic",
+    tone: TONE_BY_KIND.cinematic,
+    words,
+    icon: undefined,
+    icons: undefined,
+    quote: undefined,
+    crop: undefined,
+    cine: {
+      hero,
+      keyword,
+      lead: hook ? "" : pickLead(s.cine?.lead, keyword, words),
+      ...(hook ? { hook: true, accentWords: ctx.hook?.keywords ?? [] } : {}),
+    },
+  };
 }
 
 /**
@@ -319,6 +431,81 @@ export async function validateScenes(
     const { scene, note } = await resolveScene(specs[i], i, ctx, usedIcons);
     if (note) notes.push(note);
     scenes.push(scene);
+  }
+
+  // --- the opening is always cinematic and about THIS topic ---------------------
+  // Whatever the director chose for scene 0, the video opens on a hero object for
+  // the hook's own idea with the spoken hook sentence set in cinematic type —
+  // never a plain book page, never a card of text.
+  if (scenes.length > 0) {
+    const first = scenes[0];
+    const want: HeroId =
+      first.kind === "cinematic" && first.cine ? first.cine.hero : heroForText(`${ctx.hook?.text ?? ""} ${narrationOf(first, ctx)}`);
+    scenes[0] = toCinematic(first, ctx, want, true);
+    if (first.kind !== "cinematic") notes.push(`Scene 1: opened with a cinematic hook instead of ${first.kind}.`);
+  }
+
+  // --- visual variety --------------------------------------------------------
+  const heroUses = (id: HeroId) => scenes.filter((s) => s.kind === "cinematic" && s.cine?.hero === id).length;
+  const heroOf = (s: Scene) => (s.kind === "cinematic" ? s.cine?.hero : undefined);
+
+  // A hero never twice in a row and never more than MAX_HERO_USES times: the
+  // later scene gets the next-best hero for ITS narration instead.
+  for (let i = 1; i < scenes.length; i++) {
+    const h = heroOf(scenes[i]);
+    if (!h) continue;
+    const prev = heroOf(scenes[i - 1]);
+    if (h !== prev && (h === "orb" ? heroUses(h) <= 1 : heroUses(h) <= MAX_HERO_USES)) continue;
+    const used = scenes.flatMap((s) => (heroOf(s) ? [heroOf(s)!] : []));
+    const next = heroForText(`${scenes[i].concept} ${narrationOf(scenes[i], ctx)}`, [...used, ...(prev ? [prev] : [])]);
+    if (next !== h && next !== "orb") scenes[i] = toCinematic(scenes[i], ctx, next, scenes[i].cine?.hook);
+  }
+
+  // Quote cards are the book's words on their own; two is a video about a book,
+  // five is a slideshow of quotations.
+  let quotes = 0;
+  for (let i = 0; i < scenes.length; i++) {
+    if (scenes[i].kind !== "quote") continue;
+    if (++quotes <= MAX_QUOTES) continue;
+    const box = ctx.cropFor(scenes[i].source.pageIndex, scenes[i].source.startWord, scenes[i].source.endWord);
+    const to: VisualKind = ctx.hasPage(scenes[i].source.pageIndex) && box ? "book-crop" : "kinetic-text";
+    scenes[i] = {
+      ...scenes[i],
+      kind: to,
+      tone: TONE_BY_KIND[to],
+      fallbackFrom: "quote",
+      quote: undefined,
+      ...(to === "book-crop" && box ? { crop: box } : { words: sentenceWords(scenes[i].sentences[0], scenes[i].sentences[scenes[i].sentences.length - 1], ctx) }),
+    };
+    notes.push(`Scene ${i + 1}: more than ${MAX_QUOTES} quote cards — changed to ${to}.`);
+  }
+
+  // The cinematic floor. Scenes that are only the narration in type (and icon
+  // scenes past their cap) become hero scenes, best-matching narration first,
+  // and not next to another cinematic scene unless the floor cannot be met
+  // any other way.
+  const floor = scenes.length >= 6 ? Math.max(3, Math.ceil(scenes.length * CINEMATIC_SHARE)) : Math.ceil(scenes.length * CINEMATIC_SHARE);
+  const cineCount = () => scenes.filter((s) => s.kind === "cinematic").length;
+  if (cineCount() < floor) {
+    let icons = 0;
+    const cands = scenes
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.kind === "kinetic-text" || (s.kind === "icon-concept" && ++icons > MAX_ICON_SCENES))
+      .map(({ s, i }) => ({ i, match: heroMatch(`${s.concept} ${narrationOf(s, ctx)}`) }))
+      .sort((a, b) => b.match - a.match || a.i - b.i);
+    for (const pass of [0, 1]) {
+      for (const c of cands) {
+        if (cineCount() >= floor) break;
+        if (scenes[c.i].kind === "cinematic") continue;
+        const adjacent = scenes[c.i - 1]?.kind === "cinematic" || scenes[c.i + 1]?.kind === "cinematic";
+        if (pass === 0 && adjacent) continue;
+        const used = scenes.flatMap((s) => (heroOf(s) ? [heroOf(s)!] : []));
+        const hero = heroForText(`${scenes[c.i].concept} ${narrationOf(scenes[c.i], ctx)}`, used);
+        if (hero === "orb" && used.includes("orb")) continue;
+        scenes[c.i] = toCinematic(scenes[c.i], ctx, hero);
+        notes.push(`Scene ${c.i + 1}: shown as a cinematic ${hero} scene for variety.`);
+      }
+    }
   }
 
   // No template three times in a row. The third becomes a book scene where the

@@ -10,9 +10,12 @@
 import { buildCaptions } from "../../src/lib/media/captions.ts";
 
 /**
- * @param {{ theme: unknown, withScenes?: boolean }} opts
+ * @param {{ theme: unknown, withScenes?: boolean, cinematic?: boolean }} opts
+ *   `cinematic` swaps three scenes for hero scenes (the opening hook, an
+ *   hourglass and a growth spiral) so the seek harness and the live checks cover
+ *   the cinematic engine; the default plan is unchanged.
  */
-export function fixtureInput({ theme, withScenes = false }) {
+export function fixtureInput({ theme, withScenes = false, cinematic = false }) {
   const pages = [
     { src: "assets/page-00.jpg", width: 1000, height: 1400 },
     { src: "assets/page-01.jpg", width: 1000, height: 1400 },
@@ -97,8 +100,16 @@ export function fixtureInput({ theme, withScenes = false }) {
     reason: "fixture", concept: "a clock", ...extra,
   });
   const scenes = [
+    // The third word is deliberately "compounding." rather than a generic
+    // one: emphasis.ts classifies it as "growth", and lottie.ts has an
+    // authored clip for that category (Phase 4's first advanced-visual
+    // module) — this scene has no icon set, so it exercises the Lottie
+    // accent path, and this fixture is what scripts/e2e-seek.mjs's
+    // seek-safety proof and scripts/verify-lottie.mjs's screenshots both
+    // run against. Scenes elsewhere in this same array (e.g. #2's
+    // icon-concept) still exercise the ordinary Tabler-icon path unchanged.
     sceneAt(0, "kinetic-text", 0, 2.0, "deep", { words: [
-      { word: "A", start: 0.1, end: 0.5 }, { word: "quiet", start: 0.6, end: 1.1 }, { word: "opening.", start: 1.2, end: 1.9 },
+      { word: "A", start: 0.1, end: 0.5 }, { word: "quiet", start: 0.6, end: 1.1 }, { word: "compounding.", start: 1.2, end: 1.9 },
     ] }),
     sceneAt(1, "book-page", 2.0, 4.3, "warm", {}),
     sceneAt(2, "icon-concept", 4.3, 6.6, "cool", { icons: [icon("clock"), icon("bulb")], items: ["time", "ideas"] }),
@@ -110,6 +121,21 @@ export function fixtureInput({ theme, withScenes = false }) {
     sceneAt(8, "stat", 12.7, 13.1, "deep", { stat: { value: "3", label: "degrees" } }),
     sceneAt(9, "quote", 13.1, 13.5, "warm", { quote: { text: "What stands in the way becomes the way", page: 2 } }),
   ];
+
+  if (cinematic) {
+    scenes[0] = sceneAt(0, "cinematic", 0, 2.0, "deep", {
+      words: [{ word: "A", start: 0.1, end: 0.5 }, { word: "quiet", start: 0.6, end: 1.1 }, { word: "compounding.", start: 1.2, end: 1.9 }],
+      cine: { hero: "clock", keyword: "compounding", lead: "", hook: true, accentWords: ["compounding"] },
+    });
+    scenes[2] = sceneAt(2, "cinematic", 4.3, 6.6, "deep", {
+      words: [{ word: "An", start: 4.7, end: 4.9 }, { word: "idea", start: 4.9, end: 5.4 }, { word: "emerges", start: 5.5, end: 6.0 }, { word: "here.", start: 6.0, end: 6.5 }],
+      cine: { hero: "hourglass", keyword: "idea", lead: "An" },
+    });
+    scenes[6] = sceneAt(6, "cinematic", 11.2, 12.0, "deep", {
+      words: [{ word: "Compounding", start: 11.3, end: 11.8 }],
+      cine: { hero: "growth", keyword: "compounding", lead: "" },
+    });
+  }
 
   return {
     ...(withScenes ? { scenes } : {}),

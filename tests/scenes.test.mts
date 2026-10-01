@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
+import { chromium } from "playwright-core";
 import { sentencesOf, slotSentences, normalizeRanges, enforceDurations, MIN_SCENE_SEC, MAX_SCENE_SEC } from "../src/lib/video/scenes/plan";
 import { validateScenes, groundedIn, numberIsSaid, MIN_BOOK_SCENES, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { renderScene, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
@@ -116,12 +117,16 @@ test("ranges that are too long are split and too short are merged", () => {
   assert.equal(out[out.length - 1].toSentence, sentences.length - 1);
 });
 
-test("the scene count follows the video's length and stays in the 8–15 band", () => {
-  assert.equal(targetSceneCount(60), 8);
-  assert.equal(targetSceneCount(96), 12);
-  assert.equal(targetSceneCount(120), 15);
-  assert.equal(targetSceneCount(300), 15);
+test("the scene count follows the video's length — one visual idea per ~5.6 s — and stays in the 6–16 band", () => {
+  assert.equal(targetSceneCount(20), 6);
+  assert.equal(targetSceneCount(45), 8);
+  assert.equal(targetSceneCount(60), 11);
+  assert.equal(targetSceneCount(90), 16);
+  assert.equal(targetSceneCount(300), 16);
 });
+
+/** The validator always turns scene 0 into the cinematic hook, so a scene under test follows an opening one. */
+const open = (to = 0) => spec(0, to, "kinetic-text");
 
 // --- grounding ----------------------------------------------------------------
 
@@ -135,61 +140,61 @@ test("a label is grounded only when its content words are actually said", () => 
 });
 
 test("a quote that is not in the book falls back to the narration, and a real one is kept", async () => {
-  const beats = [beat(0, "The page says something. It matters a lot.")];
+  const beats = [beat(0, "Open with this. The page says something. It matters a lot.")];
   const sentences = sentencesOf(beats, timed(beats));
   // No page to show, so a refused template can only fall back to the
   // narration — which is what this test is about. The book-scene floor is
   // covered separately.
   const c = ctx({ sentences, hasPage: () => false });
 
-  const bad = await validateScenes([spec(0, 1, "quote", { quote: "a line the book never contained at all" })], c);
-  assert.equal(bad.scenes[0].kind, "kinetic-text");
-  assert.equal(bad.scenes[0].fallbackFrom, "quote");
-  assert.match(bad.notes[0], /quote was not found/);
+  const bad = await validateScenes([open(), spec(1, 2, "quote", { quote: "a line the book never contained at all" })], c);
+  assert.equal(bad.scenes[1].kind, "kinetic-text");
+  assert.equal(bad.scenes[1].fallbackFrom, "quote");
+  assert.match(bad.notes.join(" | "), /quote was not found/);
 
-  const good = await validateScenes([spec(0, 1, "quote", { quote: "The impediment to action advances action" })], c);
-  assert.equal(good.scenes[0].kind, "quote");
-  assert.equal(good.scenes[0].quote?.page, 0);
+  const good = await validateScenes([open(), spec(1, 2, "quote", { quote: "The impediment to action advances action" })], c);
+  assert.equal(good.scenes[1].kind, "quote");
+  assert.equal(good.scenes[1].quote?.page, 0);
 });
 
 test("a stat whose number is not in the narration or the page is refused", async () => {
-  const beats = [beat(0, "Just three degrees changes everything. That is the whole point.")];
+  const beats = [beat(0, "Open with this. Just three degrees changes everything. That is the whole point.")];
   const sentences = sentencesOf(beats, timed(beats));
   const c = ctx({ sentences, hasPage: () => false });
-  const invented = await validateScenes([spec(0, 1, "stat", { value: "87%", label: "of people" })], c);
-  assert.equal(invented.scenes[0].kind, "kinetic-text");
-  assert.match(invented.notes[0], /number is not in/);
+  const invented = await validateScenes([open(), spec(1, 2, "stat", { value: "87%", label: "of people" })], c);
+  assert.equal(invented.scenes[1].kind, "kinetic-text");
+  assert.match(invented.notes.join(" | "), /number is not in/);
 
   // "three degrees" is said; a card reading "3" is the same fact.
-  const real = await validateScenes([spec(0, 1, "stat", { value: "3", label: "degrees changes everything" })], c);
-  assert.equal(real.scenes[0].kind, "stat");
-  assert.equal(real.scenes[0].stat?.value, "3");
+  const real = await validateScenes([open(), spec(1, 2, "stat", { value: "3", label: "degrees changes everything" })], c);
+  assert.equal(real.scenes[1].kind, "stat");
+  assert.equal(real.scenes[1].stat?.value, "3");
   assert.ok(numberIsSaid("3", ["Just three degrees changes everything."]));
   assert.ok(numberIsSaid("25", ["it took 25 minutes"]));
   assert.ok(!numberIsSaid("87", ["Just three degrees changes everything."]));
 });
 
 test("comparison and steps are refused when their labels are not in what is said", async () => {
-  const beats = [beat(0, "Motivation rises and falls. Systems keep working anyway.")];
+  const beats = [beat(0, "Open with this. Motivation rises and falls. Systems keep working anyway.")];
   const sentences = sentencesOf(beats, timed(beats));
   const c = ctx({ sentences, hasPage: () => false });
 
-  const ok = await validateScenes([spec(0, 1, "comparison", { left: "motivation", right: "systems" })], c);
-  assert.equal(ok.scenes[0].kind, "comparison");
+  const ok = await validateScenes([open(), spec(1, 2, "comparison", { left: "motivation", right: "systems" })], c);
+  assert.equal(ok.scenes[1].kind, "comparison");
 
-  const bad = await validateScenes([spec(0, 1, "comparison", { left: "quarterly profit", right: "market share" })], c);
-  assert.equal(bad.scenes[0].kind, "kinetic-text");
+  const bad = await validateScenes([open(), spec(1, 2, "comparison", { left: "quarterly profit", right: "market share" })], c);
+  assert.equal(bad.scenes[1].kind, "kinetic-text");
 
-  const oneStep = await validateScenes([spec(0, 1, "steps", { steps: ["motivation rises"] })], c);
-  assert.equal(oneStep.scenes[0].kind, "kinetic-text", "a list of one is not a list");
+  const oneStep = await validateScenes([open(), spec(1, 2, "steps", { steps: ["motivation rises"] })], c);
+  assert.equal(oneStep.scenes[1].kind, "kinetic-text", "a list of one is not a list");
 });
 
 test("a crop with no word geometry becomes the whole page, not a failure", async () => {
-  const beats = [beat(0, "One. Two.")];
+  const beats = [beat(0, "Open. One. Two.")];
   const sentences = sentencesOf(beats, timed(beats));
-  const r = await validateScenes([spec(0, 1, "book-crop")], ctx({ sentences, cropFor: () => null }));
-  assert.equal(r.scenes[0].kind, "book-page");
-  assert.match(r.notes[0], /no word geometry/);
+  const r = await validateScenes([open(), spec(1, 2, "book-crop")], ctx({ sentences, cropFor: () => null }));
+  assert.equal(r.scenes[1].kind, "book-page");
+  assert.match(r.notes.join(" | "), /no word geometry/);
 });
 
 // --- whole-video rules ---------------------------------------------------------
@@ -233,6 +238,7 @@ test("every scene records where in the book it came from", async () => {
 // --- rendering -----------------------------------------------------------------
 
 const RECT = { x: CARD_X, y: CARD_Y, w: CARD_W, h: CARD_H };
+const ACCENT = bookThemeById("marginalia").palette.accent;
 
 function sceneOf(kind: VisualKind, extra: Partial<Scene> = {}): Scene {
   return {
@@ -259,7 +265,7 @@ function sceneOf(kind: VisualKind, extra: Partial<Scene> = {}): Scene {
 
 test("every template renders, and no element is ever tweened twice at once", () => {
   for (const kind of ["kinetic-text", "quote", "icon-concept", "comparison", "steps", "timeline", "growth-curve", "stat"] as VisualKind[]) {
-    const r = renderScene(sceneOf(kind), RECT);
+    const r = renderScene(sceneOf(kind), RECT, ACCENT);
     assert.ok(r, `${kind} renders`);
     assert.match(r!.markup, /data-scene="0"/);
     assert.ok(r!.anims.length > 0, `${kind} animates`);
@@ -273,21 +279,25 @@ test("every template renders, and no element is ever tweened twice at once", () 
 });
 
 test("book scenes have no layer of their own — the real page card is shown instead", () => {
-  assert.equal(renderScene(sceneOf("book-page"), RECT), null);
-  assert.equal(renderScene(sceneOf("book-crop"), RECT), null);
+  assert.equal(renderScene(sceneOf("book-page"), RECT, ACCENT), null);
+  assert.equal(renderScene(sceneOf("book-crop"), RECT, ACCENT), null);
 });
 
 test("kinetic text puts each word on its own measured spoken time", () => {
-  const r = renderScene(sceneOf("kinetic-text"), RECT)!;
+  const r = renderScene(sceneOf("kinetic-text"), RECT, ACCENT)!;
   const words = sceneOf("kinetic-text").words!;
-  const wordAnims = r.anims.filter((a) => a.e >= 0);
+  // Bounded to the word indices specifically: an optional accent (a Tabler
+  // icon, or now a Lottie clip — see visual-enhancement.test.mts) lives at
+  // its own element index right after the words and must not be counted as
+  // one of them, whether or not this fixture happens to trigger one.
+  const wordAnims = r.anims.filter((a) => a.e >= 0 && a.e < words.length);
   assert.equal(wordAnims.length, words.length);
   wordAnims.forEach((a, i) => assert.equal(a.t, words[i].start));
 });
 
 test("scene text is escaped, so a closing script tag in book text cannot break the page", () => {
   const nasty = '</script><img src=x onerror=alert(1)>';
-  const r = renderScene(sceneOf("quote", { quote: { text: nasty, page: 0 } }), RECT)!;
+  const r = renderScene(sceneOf("quote", { quote: { text: nasty, page: 0 } }), RECT, ACCENT)!;
   assert.ok(!r.markup.includes("</script>"));
   assert.ok(!r.markup.includes("<img"));
   assert.match(r.markup, /&lt;\/script&gt;/);
@@ -364,7 +374,7 @@ test("a quote scene hides the page card: its own layer carries the book's words"
   assert.equal(vis.start, 1);
   assert.deepEqual(vis.at.map((c) => c.v), [0], "the card goes when the quote arrives");
   // It still counts as showing the book, for the floor.
-  assert.ok(renderScene(s(1, "quote"), RECT), "and it does have a layer of its own");
+  assert.ok(renderScene(s(1, "quote"), RECT, ACCENT), "and it does have a layer of its own");
 });
 
 test("a crop zoom is bounded, and a page scene returns the card to life size", () => {
@@ -467,6 +477,84 @@ test("with no director at all, the plan still covers the narration and is still 
   for (let i = 1; i < plan.scenes.length; i++) {
     assert.equal(plan.scenes[i].start, plan.scenes[i - 1].end, "scenes are contiguous");
   }
-  assert.ok(plan.scenes.every((s) => s.kind === "kinetic-text" || s.kind === "book-page"));
+  assert.ok(plan.scenes.every((s) => ["kinetic-text", "book-page", "cinematic"].includes(s.kind)));
+  assert.equal(plan.scenes[0].kind, "cinematic", "even with no director the video opens on a cinematic hook");
+  assert.equal(plan.scenes[0].cine?.hook, true);
   assert.ok(plan.scenes.every((s) => s.source.pageIndex === 0));
+});
+
+// --- stat count-up cold-seek regression (live browser) -------------------------------
+
+/**
+ * A stat's digit-reveal ("count", render.ts's `counted()`) used to tween a
+ * plain `{n:...}` proxy object and have `onUpdate` read ITS interpolated
+ * value back into the DOM — the exact cold-seek staleness bug the Lottie
+ * accent already had to be fixed for (Phase 4, Error 4): on a COLD seek
+ * straight into the middle of the tween's window, with no earlier frame
+ * ever rendered first, `onUpdate` fires exactly once but the proxy's own
+ * interpolated value is still its pre-tween default at that first call —
+ * provably correct a moment later if read from OUTSIDE onUpdate, via GSAP's
+ * own tween introspection, but never re-delivered to the DOM. The digits
+ * stayed "0" for any frame captured at or after the tween's start on a
+ * render that never happened to pass through an earlier instant first.
+ *
+ * This is a real-browser test, not a Node-side assertion on `SceneAnim`
+ * records, because the bug is entirely in the runtime script's own GSAP
+ * lifecycle (`build.ts`'s TIMELINE_JS) — nothing about the declared anim
+ * data is wrong, so a unit test that only inspects `renderScene`'s output
+ * would report a clean pass while the actual rendered video showed "0".
+ */
+test("a stat's count-up shows the correct digits on a COLD direct seek, not just on a warmed-up one (live browser)", async () => {
+  const theme = bookThemeById("marginalia");
+  const base = fixtureInput({ theme }) as unknown as CompositionInput;
+  const scenes: Scene[] = [
+    { ...sceneOf("stat"), index: 0, start: 2, end: 6, stat: { value: "8000", label: "readers" } },
+  ];
+  const html = buildComposition({ ...base, bookTitle: "Fixture", scenes });
+
+  // The count anim's own window: scene.start (2) + AUDIO_OFFSET (0.7) + 0.1
+  // lead-in = 2.8; "8000" is 4 digits, so d = min(1.1, max(0.5, 4*0.2)) = 0.8.
+  // Seeking to 3.2 lands at exactly 50% progress through [2.8, 3.6].
+  const t = 3.2;
+  // power1.out (GSAP's quadratic ease-out, 2p - p^2) at p=0.5 is 0.75 — the
+  // one correct value, independent of how this file arrives at it.
+  const expected = Math.round((2 * 0.5 - 0.5 * 0.5) * 8000);
+
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+    await page.setContent(html, { waitUntil: "load" });
+    await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+
+    // The FIRST thing this fresh page ever does with the timeline: one
+    // direct jump straight to t, never rendering an earlier instant first —
+    // a genuinely cold seek, not a scrub that happens to warm the tween up.
+    const cold = await page.evaluate((time) => {
+      (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+      const el = document.querySelector(".sc-stat-count");
+      return el ? el.textContent : null;
+    }, t);
+    assert.equal(
+      cold,
+      expected.toLocaleString(),
+      `a cold direct seek to t=${t} must show "${expected.toLocaleString()}", not a stale "0" — got ${JSON.stringify(cold)}`,
+    );
+
+    // Seek-safety: away in both directions, then back to the same instant —
+    // must render identically to the cold read above, not merely to itself.
+    const again = await page.evaluate(
+      ({ time, hi, lo }) => {
+        const tl = (window as unknown as { __tl: { pause(t: number): void } }).__tl;
+        tl.pause(hi);
+        tl.pause(lo);
+        tl.pause(time);
+        const el = document.querySelector(".sc-stat-count");
+        return el ? el.textContent : null;
+      },
+      { time: t, hi: t + 1, lo: Math.max(0, t - 1) },
+    );
+    assert.equal(again, expected.toLocaleString(), "seeking away in both directions and back must render the same digits");
+  } finally {
+    await browser.close();
+  }
 });

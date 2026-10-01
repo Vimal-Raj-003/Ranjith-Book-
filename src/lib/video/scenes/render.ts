@@ -16,10 +16,17 @@
  * would otherwise form a cycle, and a cycle among modules holding exported
  * `const`s is how `paths.ts` once ended up undefined at evaluation time.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { esc } from "../composition/escape";
 import type { BookTheme } from "../composition/theme-contract";
 import type { Scene, SceneIcon } from "./types";
 import { emphasizeWords } from "./emphasis";
+import { normalizeToken } from "../../ingest/align";
+import { alpha } from "../composition/themes/color";
+import type { HeroId } from "./heroes";
+import { lottieFor, LOTTIE_DURATION_S, type LottieAnimationData } from "./lottie";
+import { shapeForIcon, type ThreeShapeKind } from "./three-shapes";
 
 /** Where scene content may be drawn: the same rectangle the page card occupies. */
 export interface SceneRect {
@@ -29,12 +36,16 @@ export interface SceneRect {
   h: number;
 }
 
+/** The element index of a scene's `[data-drift]` wrapper (a slow push-in), and how far it pushes. */
+export const DRIFT_EL = -2;
+export const DRIFT_SCALE = 1.06;
+
 /** One tween: kind `k`, on element `e` of scene `s`, at time `t` for `d` seconds. */
 export interface SceneAnim {
   s: number;
-  /** Element index within the scene; -1 is the scene layer itself. */
+  /** Element index within the scene; -1 is the scene layer itself, -2 the scene's `[data-drift]` wrapper. */
   e: number;
-  k: "in" | "out" | "rise" | "pop" | "wipe" | "grow" | "draw" | "count";
+  k: "in" | "out" | "rise" | "pop" | "wipe" | "grow" | "draw" | "count" | "lottie" | "three" | "focus" | "cine" | "drift";
   t: number;
   d: number;
   /** The from-value: pixels for `rise`, scale for `pop`, dash length for `draw`, the target number for `count`. */
@@ -42,11 +53,57 @@ export interface SceneAnim {
   /** `count` only: text either side of the counted digits, e.g. "$" and "%". */
   prefix?: string;
   suffix?: string;
+  /** `lottie` only: the animation to play, embedded whole so the runtime
+   *  never has to fetch a second asset mid-render. */
+  data?: LottieAnimationData;
+  /** `three` only: which low-poly primitive to build (three-shapes.ts). The
+   *  runtime constructs the geometry itself — unlike `lottie`'s `data`, there
+   *  is no asset to embed, just a name from a small fixed vocabulary. */
+  shape?: ThreeShapeKind;
+  /** `cine` only: which procedural hero to draw (cine-runtime.js), and the element index of its bloom canvas. */
+  hero?: HeroId;
+  bloom?: number;
+  /** `cine` only: the opening hook, whose headline runs several lines, so the hero is framed lower and smaller under it. */
+  hook?: boolean;
 }
 
 export interface RenderedScene {
   markup: string;
   anims: SceneAnim[];
+}
+
+/**
+ * Cinematic scenes are full-frame: unlike every other template they are not
+ * confined to the page card's rectangle. (The frame size is repeated here
+ * rather than imported from build.ts, which imports this module.)
+ */
+export const FULL_FRAME: SceneRect = { x: 0, y: 0, w: 1080, h: 1920 };
+
+/** Internal render-buffer sizes of a hero canvas and its bloom (CSS stretches both to the frame). */
+export const CINE_BUFFER = { w: 720, h: 1280 };
+export const CINE_BLOOM = { w: 90, h: 160 };
+
+let cineSource: string | null = null;
+/**
+ * The cinematic engine's source, inlined into any composition that has a
+ * cinematic scene. A plain .js file read from disk (like align.py) so it can be
+ * written, syntax-checked and tested as real JavaScript instead of as a string.
+ */
+export function cineRuntimeSource(): string {
+  if (cineSource === null) cineSource = fs.readFileSync(path.join(process.cwd(), "src", "lib", "video", "scenes", "cine-runtime.js"), "utf8");
+  return cineSource;
+}
+
+/** Heroes whose title is set BEHIND them, so the object overlaps its own headline. */
+const TEXT_BEHIND: ReadonlySet<HeroId> = new Set<HeroId>(["hourglass", "clock", "orbit", "bookletters", "chain", "mountain", "spark", "path"]);
+
+/** Whether a palette's backdrop is light (paper) rather than dark (film). */
+export function isLightPalette(backdropDeep: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(backdropDeep.trim());
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const lum = (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+  return lum > 0.55;
 }
 
 /** The scene layer's own cross-fade. Long enough to read as a dissolve. */
@@ -80,7 +137,7 @@ function fitSize(chars: number, max: number, min: number, per: number): number {
 
 // --- the templates -----------------------------------------------------------
 
-function kineticText(scene: Scene, i: number): RenderedScene {
+function kineticText(scene: Scene, i: number, accent: string): RenderedScene {
   const words = scene.words ?? [];
   const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
   const size = fitSize(chars, 96, 46, 0.26);
@@ -106,12 +163,113 @@ function kineticText(scene: Scene, i: number): RenderedScene {
   // The optional accent icon (validate.ts) — quiet, above the words, never in
   // place of them: kinetic text is already a complete scene without it.
   const iconEl = words.length;
-  const iconMarkup = scene.icon
-    ? `<div class="sc-kinetic-icon" data-el="${iconEl}">${iconSvg(scene.icon, 110)}</div>`
-    : "";
-  if (scene.icon) anims.push({ s: i, e: iconEl, k: "in", t: scene.start, d: 0.4 });
+  let iconMarkup = "";
+  if (scene.icon) {
+    iconMarkup = `<div class="sc-kinetic-icon" data-el="${iconEl}">${iconSvg(scene.icon, 110)}</div>`;
+    anims.push({ s: i, e: iconEl, k: "in", t: scene.start, d: 0.4 });
+  } else {
+    // No confident Tabler match for this scene's concept (icons.ts already
+    // tried, in validate.ts) — Phase 4's first advanced-visual accent: a
+    // small, hand-authored Lottie animation for the first emphasised word's
+    // CATEGORY, when one has been authored (lottie.ts). Most categories have
+    // none yet, so this is the ordinary path for most scenes, not a fallback
+    // being exercised — the actual fallback is the `null` case right below
+    // doing nothing at all, identical to today's behaviour.
+    const firstHit = emphasis.find((h) => h);
+    const clip = firstHit ? lottieFor(firstHit.category, accent) : null;
+    if (clip) {
+      // The lone element carries its own permanent-visibility exemption
+      // (sceneCss) rather than a separate fade-in tween: two tweens on one
+      // element in one window is exactly what `overlappingAnims` refuses,
+      // and the clip's own first keyframe already starts fully invisible
+      // (opacity 0, scale 0) — the seek-safety rest state lives inside the
+      // Lottie data itself, not in this element's CSS.
+      iconMarkup = `<div class="sc-kinetic-icon sc-lottie" data-el="${iconEl}"></div>`;
+      anims.push({ s: i, e: iconEl, k: "lottie", t: scene.start, d: LOTTIE_DURATION_S, data: clip });
+    }
+  }
+  // A slow push-in over the whole scene: type on a plain page is never a still.
+  anims.push({ s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: DRIFT_SCALE });
   return {
-    markup: `<div class="sc-kinetic-wrap">${iconMarkup}<div class="sc-kinetic" style="font-size:${size}px">${markup}</div></div>`,
+    markup: `<div class="sc-kinetic-wrap" data-drift>${iconMarkup}<div class="sc-kinetic" style="font-size:${size}px">${markup}</div></div>`,
+    anims,
+  };
+}
+
+/**
+ * A full-frame cinematic scene: one procedural 3D hero (cine-runtime.js) with
+ * cinematic type. Everything animated is declared here as one tween of one
+ * property on one element, so the whole scene is seek-safe by construction.
+ *
+ *   element 0  the hero canvas (the runtime redraws it from the timeline clock)
+ *   element 1  its bloom canvas (no tween of its own; revealed with the hero)
+ *   2 …        the lead, then one element per keyword letter — or, for the hook,
+ *              one per spoken word
+ *
+ * A browser with no WebGL never reveals the canvases and shows `.cine-fallback`
+ * (a plain glow) under the type instead: the scene degrades to type on a glow,
+ * never to a blank.
+ */
+function cinematic(scene: Scene, i: number): RenderedScene {
+  const cine = scene.cine!;
+  const words = scene.words ?? [];
+  const anims: SceneAnim[] = [];
+  let text = "";
+
+  if (cine.hook) {
+    const accent = new Set((cine.accentWords ?? []).map((w) => normalizeToken(w)).filter(Boolean));
+    const emphasis = emphasizeWords(words.map((w) => w.word));
+    const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
+    const size = fitSize(chars, 92, 56, 0.24);
+    const spans = words
+      .map((w, k) => {
+        const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
+        return `<span class="sc-word${emph ? " sc-word-emph" : ""}" data-el="${2 + k}">${esc(w.word)}</span>`;
+      })
+      .join(" ");
+    words.forEach((w, k) => {
+      const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
+      anims.push(emph ? { s: i, e: 2 + k, k: "pop", t: w.start, d: 0.34, v: 0.5 } : { s: i, e: 2 + k, k: "rise", t: w.start, d: 0.28, v: 22 });
+    });
+    text = `<div class="cine-hook" style="font-size:${size}px">${spans}</div>`;
+  } else {
+    const key = cine.keyword.trim();
+    const letters = Array.from(key);
+    const keyTokens = key.split(/\s+/).map(normalizeToken);
+    const at = words.findIndex((w) => normalizeToken(w.word) === keyTokens[0]);
+    const earliest = scene.start + 0.2;
+    const latest = Math.max(earliest, scene.end - 1.3);
+    const keyStart = Math.min(latest, Math.max(earliest, at >= 0 ? words[at].start : scene.start + 0.7));
+    const lead = cine.lead.trim();
+    let leadMarkup = "";
+    let n = 2;
+    if (lead) {
+      const first = normalizeToken(lead.split(/\s+/)[0] ?? "");
+      const li = words.findIndex((w) => normalizeToken(w.word) === first);
+      const leadStart = Math.min(keyStart, Math.max(earliest, li >= 0 ? words[li].start : scene.start + 0.25));
+      leadMarkup = `<div class="cine-lead" data-el="${n}">${esc(lead)}</div>`;
+      anims.push({ s: i, e: n, k: "focus", t: leadStart, d: 0.5, v: 18 });
+      n += 1;
+    }
+    const size = Math.max(92, Math.min(236, Math.round(900 / (Math.max(4, letters.length) * 0.66))));
+    let step = 0;
+    const spans = letters
+      .map((ch) => {
+        if (ch === " ") return `<span class="cine-space"> </span>`;
+        const el = n++;
+        anims.push({ s: i, e: el, k: "focus", t: keyStart + step * 0.05, d: 0.55, v: 34 });
+        step += 1;
+        return `<span class="cine-letter" data-el="${el}">${esc(ch)}</span>`;
+      })
+      .join("");
+    text = `<div class="cine-text">${leadMarkup}<div class="cine-key" style="font-size:${size}px">${spans}</div></div>`;
+  }
+
+  anims.push({ s: i, e: 0, k: "cine", t: scene.start, d: Math.max(0.5, scene.end - scene.start), hero: cine.hero, bloom: 1, ...(cine.hook ? { hook: true } : {}) });
+  const behind = TEXT_BEHIND.has(cine.hero) && !cine.hook;
+  const canvases = `<canvas class="cine-canvas" data-el="0" width="${CINE_BUFFER.w}" height="${CINE_BUFFER.h}"></canvas><canvas class="cine-bloom" data-el="1" width="${CINE_BLOOM.w}" height="${CINE_BLOOM.h}"></canvas>`;
+  return {
+    markup: `<div class="cine-fallback"></div>${behind ? text : ""}${canvases}${behind ? "" : text}`,
     anims,
   };
 }
@@ -121,7 +279,7 @@ function quote(scene: Scene, i: number): RenderedScene {
   const size = fitSize(text.length, 74, 38, 0.13);
   const times = stagger(2, scene.start, scene.end - scene.start);
   return {
-    markup: `<div class="sc-quote">
+    markup: `<div class="sc-quote" data-drift>
       <div class="sc-quote-mark" data-el="0">&ldquo;</div>
       <blockquote class="sc-quote-text" data-el="1" style="font-size:${size}px">${esc(text)}</blockquote>
       <div class="sc-quote-ref" data-el="2">page ${(scene.quote?.page ?? 0) + 1}</div>
@@ -130,26 +288,58 @@ function quote(scene: Scene, i: number): RenderedScene {
       { s: i, e: 0, k: "pop", t: times[0], d: ENTER, v: 0.7 },
       { s: i, e: 1, k: "rise", t: times[0] + 0.12, d: ENTER, v: 26 },
       { s: i, e: 2, k: "in", t: times[1] + 0.2, d: ENTER },
+      // A quote card can be on screen for ten seconds while the line is read: it drifts closer the whole time.
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: DRIFT_SCALE },
     ],
   };
 }
+
+/** The Three.js accent's own internal render-buffer size — see three-shapes.ts's
+ *  runtime and the SIZE convention lottie.ts already set for the same reason:
+ *  one fixed number every accent shares, rather than one guessed per call site. */
+const THREE_SIZE = 200;
 
 function iconConcept(scene: Scene, i: number): RenderedScene {
   const icons = scene.icons ?? [];
   const labels = scene.items ?? [];
   const size = icons.length === 1 ? 300 : icons.length === 2 ? 220 : 170;
   const times = stagger(icons.length, scene.start, scene.end - scene.start);
+  // Element indices past the cells' own (0..icons.length-1) so the canvas's
+  // "three" tween never shares a key with its cell's "pop" tween —
+  // `overlappingAnims` keys purely on element index, and the two run for
+  // different, overlapping windows (the cell pops in once; the shape keeps
+  // turning for as long as the scene holds).
+  const threeEl = (k: number) => icons.length + k;
   const cells = icons
     .map(
       (icon, k) => `<div class="sc-cell" data-el="${k}">
-        <div class="sc-icon-well" style="--sz:${size}px">${iconSvg(icon, Math.round(size * 0.56))}</div>
+        <div class="sc-icon-well" style="--sz:${size}px">
+          ${iconSvg(icon, Math.round(size * 0.56))}
+          <canvas class="sc-three" data-el="${threeEl(k)}" width="${THREE_SIZE}" height="${THREE_SIZE}"></canvas>
+        </div>
         ${labels[k] ? `<div class="sc-cell-label">${esc(labels[k])}</div>` : ""}
       </div>`,
     )
     .join("");
+  const anims: SceneAnim[] = icons.map((_, k) => ({ s: i, e: k, k: "pop" as const, t: times[k], d: ENTER, v: 0.62 }));
+  // The optional Three.js treatment (three-shapes.ts), Phase 4's second
+  // advanced-visual module — a low-poly shape standing over the SAME flat
+  // icon rather than a separate slot, so a browser that cannot show it
+  // (no WebGL, the CDN failed, `window.THREE` never loaded) leaves exactly
+  // what renders today: the plain Tabler icon, already in the markup above,
+  // never conditional on this tween existing at all.
+  //
+  // This tween's OWN window is not the icon's brief pop-in: it runs from the
+  // icon's own arrival to the scene's end, so the shape keeps a slow, subtle
+  // turn for as long as it holds the frame, not just for its entrance.
+  icons.forEach((icon, k) => {
+    const start = times[k];
+    const dur = Math.max(0.5, scene.end - start);
+    anims.push({ s: i, e: threeEl(k), k: "three", t: start, d: dur, shape: shapeForIcon(icon) });
+  });
   return {
     markup: `<div class="sc-icons sc-cols-${icons.length}">${cells}</div>`,
-    anims: icons.map((_, k) => ({ s: i, e: k, k: "pop" as const, t: times[k], d: ENTER, v: 0.62 })),
+    anims,
   };
 }
 
@@ -366,11 +556,12 @@ export function entranceFor(index: number): { k: "in" | "rise" | "pop"; v?: numb
  * column and its camera are continuous across the whole video. `build.ts`
  * drives the card's visibility and zoom from the scene list instead.
  */
-export function renderScene(scene: Scene, rect: SceneRect): RenderedScene | null {
+export function renderScene(scene: Scene, rect: SceneRect, accent: string): RenderedScene | null {
   const i = scene.index;
   let body: RenderedScene | null;
   switch (scene.kind) {
-    case "kinetic-text": body = kineticText(scene, i); break;
+    case "cinematic": body = scene.cine ? cinematic(scene, i) : null; break;
+    case "kinetic-text": body = kineticText(scene, i, accent); break;
     case "quote": body = quote(scene, i); break;
     case "icon-concept": body = iconConcept(scene, i); break;
     case "comparison": body = comparison(scene, i); break;
@@ -387,14 +578,19 @@ export function renderScene(scene: Scene, rect: SceneRect): RenderedScene | null
   // times. Entrance duration matches SCENE_FADE exactly, the same window
   // `cardVisibility` (build.ts) crossfades the page card over — the shape of
   // the arrival varies, the timing it hands over on does not.
-  const entrance = entranceFor(i);
+  const cine = scene.kind === "cinematic";
+  // The opening hook owns frame zero: its layer RESTS visible (CSS, `sc-first`)
+  // and has only the exit — the same shape the old hook card had.
+  const first = cine && scene.cine?.hook === true;
+  const entrance = cine ? { k: "in" as const, v: undefined } : entranceFor(i);
   const layerAnims: SceneAnim[] = [
-    { s: i, e: -1, k: entrance.k, t: scene.start, d: SCENE_FADE, v: entrance.v },
+    ...(first ? [] : [{ s: i, e: -1, k: entrance.k, t: scene.start, d: SCENE_FADE, v: entrance.v } as SceneAnim]),
     { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end - SCENE_FADE), d: SCENE_FADE },
   ];
+  const r = cine ? FULL_FRAME : rect;
 
   return {
-    markup: `<div class="sc" data-scene="${i}" style="left:${rect.x}px;top:${rect.y}px;width:${rect.w}px;height:${rect.h}px">${body.markup}</div>`,
+    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${body.markup}</div>`,
     anims: [...layerAnims, ...body.anims],
   };
 }
@@ -431,6 +627,9 @@ export function overlappingAnims(anims: SceneAnim[]): string[] {
  */
 export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   const p = theme.palette;
+  const light = isLightPalette(p.backdropDeep);
+  const ink = light ? p.ink : p.hookInk;
+  const key = light ? p.accent : p.hookKey;
   return `
   /* --- scene stack (Phase 3C) ---------------------------------------------
      One layer per non-book scene, in the card's own rectangle. Layers rest
@@ -460,6 +659,20 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
      place the concept a beat before the words do, not to compete with them. */
   .sc-kinetic-icon { opacity:0.85; }
   .sc-kinetic-icon .sc-icon { color:${p.accent}; }
+  /* The optional Lottie accent (lottie.ts), Phase 4's first advanced-visual
+     module — the SAME slot the Tabler icon above uses, never both at once.
+     Exempted from the generic hidden rest state below: nothing here ever
+     tweens this element's own opacity — the "lottie" anim kind only drives
+     playback (goToAndStop), never autoAlpha — so its rest state IS its
+     final state, and the reveal comes from the clip's own first keyframe
+     (opacity 0, scale 0) instead.
+     width/height are load-bearing, not decoration: unlike the Tabler <svg>
+     above (which carries its own width/height attributes), lottie-web sizes
+     the <svg> it injects from its CONTAINER's box — an unsized container
+     renders it at 0×0, present in the DOM (a real element count) and
+     completely invisible on screen. 110px matches the Tabler icon variant's
+     own iconSvg(icon, 110) so the two accents read as the same size. */
+  .sc [data-el].sc-lottie { opacity:0.85; visibility:visible; width:110px; height:110px; }
   /* An emphasised word (emphasis.ts): bigger and in the accent colour, the
      same "this is the loud one" treatment a stat's own number gets, so the
      same eye that reads a stat as important reads this word the same way.
@@ -479,10 +692,25 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   /* icon concept — one to three pictures with their labels */
   .sc-icons { display:flex; align-items:center; justify-content:center; gap:58px; }
   .sc-cell { display:flex; flex-direction:column; align-items:center; gap:26px; flex:1 1 0; }
-  .sc-icon-well { width:var(--sz); height:var(--sz); border-radius:40px;
+  /* position:relative so the optional Three.js canvas (below) can sit exactly
+     over the flat icon it may replace, rather than in normal flow beside it. */
+  .sc-icon-well { position:relative; width:var(--sz); height:var(--sz); border-radius:40px;
                   display:flex; align-items:center; justify-content:center;
                   background:${p.cardFace}; box-shadow:0 30px 70px -28px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
   .sc-cell-label { font-size:40px; font-weight:800; text-align:center; line-height:1.18; max-width:300px; }
+  /* The optional Three.js accent (three-shapes.ts), Phase 4's second
+     advanced-visual module. It sits OVER the flat Tabler icon already in the
+     well, not beside it — CSS alone decides nothing here: the canvas starts
+     at the generic hidden rest state every [data-el] gets (opacity:0), and
+     ONLY the runtime script's own successful WebGL init ever makes it
+     visible, once, at composition load — never a GSAP tween, and never
+     conditional on the scene's own timing. A browser that cannot run it
+     (no WebGL, the CDN failed) simply never flips that switch, and the icon
+     underneath — already fully rendered, already positioned — is the whole
+     of what shows. object-fit is irrelevant here (a canvas has no
+     intrinsic-vs-box mismatch the way an img does): the internal buffer
+     (THREE_SIZE, render.ts) and the CSS box both read as one square. */
+  .sc [data-el].sc-three { position:absolute; inset:22%; width:56%; height:56%; }
 
   /* comparison — two sides */
   .sc-compare { display:flex; align-items:center; justify-content:center; gap:30px; }
@@ -549,5 +777,29 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-stat-rule { width:${Math.round(rect.w * 0.42)}px; height:8px; border-radius:4px; margin:40px auto 0;
                   background:${p.accent}; transform:scaleX(0); transform-origin:left center; }
   .sc-stat-label { margin-top:36px; font-size:46px; font-weight:700; line-height:1.24; }
+
+  /* cinematic — one 3D hero with cinematic type, full frame (cine-runtime.js) */
+  .sc.sc-cine { display:block; }
+  .sc-cine > * { width:auto; }
+  /* The opening hook rests visible: it owns frame zero, like the hook card did. */
+  .sc.sc-first { opacity:1; visibility:visible; }
+  .cine-canvas, .cine-bloom { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; }
+  .cine-bloom { mix-blend-mode:${light ? "multiply" : "screen"}; }
+  /* What shows when WebGL does not: a plain glow under the type, never a blank.
+     The runtime hides it once the hero is drawing. */
+  .cine-fallback { position:absolute; left:140px; top:640px; width:800px; height:800px; border-radius:50%;
+                   background: radial-gradient(circle, ${alpha(p.accent, 0.4)} 0%, ${alpha(p.accent, 0.14)} 46%, transparent 70%);
+                   box-shadow: inset 0 0 0 3px ${alpha(p.accent, 0.35)}, 0 0 0 80px ${alpha(p.accent, 0.06)}; }
+  .cine-text { position:absolute; left:0; right:0; top:300px; text-align:center; padding:0 40px; font-family: Inter, system-ui, sans-serif; }
+  .cine-lead { display:block; font-size:46px; font-weight:600; line-height:1.2; letter-spacing:1px;
+               color:${ink}; margin-bottom:10px; ${light ? "" : `text-shadow:0 4px 26px ${alpha(p.backdropDeep, 0.8)};`} }
+  .cine-key { font-weight:900; text-transform:uppercase; line-height:0.98; letter-spacing:-2px; color:${key};
+              white-space:nowrap; ${light ? `text-shadow:0 10px 30px ${alpha(p.accent, 0.18)};` : `text-shadow:0 0 44px ${alpha(p.accent, 0.55)}, 0 6px 30px ${alpha(p.backdropDeep, 0.7)};`} }
+  .cine-letter { display:inline-block; }
+  .cine-space { display:inline-block; width:0.3em; }
+  .cine-hook { position:absolute; left:64px; right:64px; top:292px; text-align:center; font-weight:800; line-height:1.14;
+               letter-spacing:-0.5px; font-family: Inter, system-ui, sans-serif; color:${ink};
+               ${light ? "" : `text-shadow:0 4px 32px ${alpha(p.backdropDeep, 0.85)};`} }
+  .cine-hook .sc-word-emph { color:${key}; ${light ? "" : `text-shadow:0 0 36px ${alpha(p.accent, 0.5)};`} }
 `;
 }

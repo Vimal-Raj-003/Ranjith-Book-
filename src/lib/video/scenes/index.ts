@@ -19,7 +19,7 @@ import { locateQuote, tokenStream } from "../../analysis/quotes";
 import type { StructuredPage } from "../../analysis/types";
 import { DIRECTOR_SCHEMA, DIRECTOR_SYSTEM, buildDirectorPrompt } from "./director";
 import { takeIconTrouble } from "./icons";
-import { enforceDurations, normalizeRanges, sentencesOf, slotSentences, MAX_SCENES, MIN_SCENES } from "./plan";
+import { capOpening, enforceDurations, normalizeRanges, sentencesOf, slotSentences, MAX_SCENES, MIN_SCENES, SCENE_SECONDS } from "./plan";
 import { validateScenes, type ValidateContext } from "./validate";
 import type { Scene, SceneSpec, ScenePlanReport } from "./types";
 
@@ -40,11 +40,13 @@ export interface PlanScenesOptions {
   model?: string;
   /** Skips the model call; used by tests and by the fallback path. */
   skipDirector?: boolean;
+  /** The script's hook line and accent words: what the opening scene is about. */
+  hook?: { text: string; keywords: string[] };
 }
 
 /** How many scenes to aim for, from the video's length. */
 export function targetSceneCount(seconds: number): number {
-  return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(seconds / 8)));
+  return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(seconds / SCENE_SECONDS)));
 }
 
 /**
@@ -89,7 +91,7 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
       const reply = await runCliJson<{ scenes?: SceneSpec[] }>(
         opts.provider,
         DIRECTOR_SYSTEM,
-        buildDirectorPrompt(opts.bookTitle, sentences, opts.pageWords, target),
+        buildDirectorPrompt(opts.bookTitle, sentences, opts.pageWords, target, opts.hook?.text),
         DIRECTOR_SCHEMA,
         opts.model,
       );
@@ -105,15 +107,18 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
   // The director's ranges are corrected into a legal cover rather than
   // trusted: a dropped or repeated sentence costs the grouping, never the
   // video. With no director at all, the slots are the fallback grouping.
-  const ranges = specs
-    ? enforceDurations(
-        normalizeRanges(
-          specs.map((s) => ({ fromSentence: Number(s.fromSentence) || 0, toSentence: Number(s.toSentence) || 0 })),
-          sentences.length,
-        ),
-        sentences,
-      )
-    : slotSentences(sentences, target).map((s) => ({ fromSentence: s.fromSentence, toSentence: s.toSentence }));
+  const ranges = capOpening(
+    specs
+      ? enforceDurations(
+          normalizeRanges(
+            specs.map((s) => ({ fromSentence: Number(s.fromSentence) || 0, toSentence: Number(s.toSentence) || 0 })),
+            sentences.length,
+          ),
+          sentences,
+        )
+      : slotSentences(sentences, target).map((s) => ({ fromSentence: s.fromSentence, toSentence: s.toSentence })),
+    sentences,
+  );
 
   // Re-attach each surviving range to the spec that started at its first
   // sentence; a range the corrections moved keeps whatever the director said
@@ -136,6 +141,7 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
     cropFor: opts.cropFor,
     hasPage: opts.hasPage,
     locate: quoteLocator(opts.pageWords),
+    hook: opts.hook,
   };
   const report = await validateScenes(resolved, ctx);
 

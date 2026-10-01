@@ -9,6 +9,8 @@ import { StepTimer } from "./step-timer";
 import { mapLimit } from "./concurrency";
 import { callContext } from "./content/cli-metrics";
 import { ideaEpisodeSource, ideaVideoDuration, IDEA_VIDEO_HARD, type IdeaSource } from "./episodes/idea-episode";
+import { planDuration, ideaSignals, writerSpecFor, gateSpecFor, tierOfScript, expectedSeconds, overrunFix, type DurationPlan } from "./content/duration";
+import { spokenWordCount } from "./content/schema";
 import { readPage, wordsOf, type PageText } from "./ingest/vision";
 import { measurePage, disposeOcr, type OcrWord } from "./ingest/ocr";
 import { alignWords, ALIGNMENT_FLOOR, type AlignedWord } from "./ingest/align";
@@ -27,7 +29,7 @@ import { generateMusicBed } from "./media/ffmpeg";
 import { toSrt } from "./media/captions";
 import { timeNarration, serializeTiming } from "./media/narration-timing";
 import { sweepForBeat, timedSweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
-import { planScenes, describePlan } from "./video/scenes";
+import { planScenes, describePlan, type ScenePlan } from "./video/scenes";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { bookThemeById, isBookThemeId, DEFAULT_BOOK_THEME_ID } from "./video/composition/themes";
@@ -578,6 +580,11 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     }
   }
 
+  // How long this video should be, from what the idea contains (content/duration.ts):
+  // the writer gets that tier's word budget, a draft is checked against a band
+  // around it, and 90 s is a ceiling nothing exceeds.
+  const durationPlan: DurationPlan | null = episode.contentIdea ? planDuration(ideaSignals(episode.contentIdea)) : null;
+
   // `visualPlan` is set at creation time in `runIngest` to exactly this shape
   // (see there); the fallback below only guards against a row created by some
   // other path, so this episode still covers *something* rather than nothing.
@@ -610,21 +617,78 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
   // the draft it was made from; otherwise discarded and the approved script
   // is voiced as usual — nothing unapproved is ever used in a video.
   const workDir = path.join(WORK_ROOT, "audio", episodeId);
-  type Prepared = { voice: Awaited<ReturnType<typeof synthesizeVoiceover>>; timing: Awaited<ReturnType<typeof timeNarration>> };
-  let speculative: { texts: string[]; job: Promise<Prepared> } | null = null;
+
+  // What the scene planner needs besides the script and its timing. Neither
+  // depends on the script, so both are built once, here, rather than after it
+  // is approved: the planner is also started while the draft is checked.
+  const pageWords = new Map<number, string[]>();
+  for (const p of pages) {
+    if (p.visionText) pageWords.set(p.pageIndex, wordsOf(JSON.parse(p.visionText) as PageText));
+  }
+  // Line geometry per page, built once: the sweeps below need it, and so does
+  // the scene planner, which zooms a book-crop to the lines a beat cites.
+  // Pages whose alignment fell below the floor have none, and both consumers
+  // degrade the same way: block highlight, whole-page scene.
+  const linesByPage = new Map<number, ReturnType<typeof clusterLineRuns>>();
+  for (const page of pages) {
+    if (!page.alignment || (page.alignmentConfidence ?? 0) < ALIGNMENT_FLOOR) continue;
+    linesByPage.set(page.pageIndex, clusterLineRuns(JSON.parse(page.alignment) as AlignedWord[]));
+  }
+  type Beats = Awaited<ReturnType<typeof generateContent>>["pkg"]["beats"];
+  type Scripted = { beats: Beats; hook: string; hookKeywords?: string[] };
+  const planScenesFor = (script: Scripted, words: Awaited<ReturnType<typeof timeNarration>>["words"]): Promise<ScenePlan> =>
+    planScenes({
+      bookTitle: episode.book.title,
+      beats: script.beats,
+      hook: { text: script.hook, keywords: script.hookKeywords ?? [] },
+      words,
+      pageWords,
+      hasPage: (page) => pages.some((p) => p.pageIndex === page),
+      cropFor: (page, startWord, endWord) => {
+        const lines = linesByPage.get(page);
+        if (!lines) return null;
+        const runs = runsForRange(lines, startWord, endWord);
+        if (runs.length === 0) return null;
+        return {
+          x0: Math.min(...runs.map((r) => r.box.x0)),
+          y0: Math.min(...runs.map((r) => r.box.y0)),
+          x1: Math.max(...runs.map((r) => r.box.x1)),
+          y1: Math.max(...runs.map((r) => r.box.y1)),
+        };
+      },
+      provider,
+      model,
+    });
+  /** Everything the scene planner reads from the script; a draft and the approved script must agree on it. */
+  const sceneInputKey = (script: Scripted) =>
+    JSON.stringify([script.hook, script.hookKeywords ?? [], script.beats.map((b) => [b.voiceover, b.sourcePage, b.startWord, b.endWord])]);
+
+  // The scenes are planned from the draft too, once its voice has been timed:
+  // a model call that needs only the script and its timing, so it runs
+  // alongside the rest of the grounding check instead of after it. Settled to
+  // null on any failure, which just means planning them afterwards.
+  type Prepared = {
+    voice: Awaited<ReturnType<typeof synthesizeVoiceover>>;
+    timing: Awaited<ReturnType<typeof timeNarration>>;
+    scenes: Promise<ScenePlan | null>;
+  };
+  let speculative: { texts: string[]; sceneKey: string; job: Promise<Prepared> } | null = null;
   const draftJobs: { dir: string; job: Promise<Prepared> }[] = [];
   let draftNo = 0;
-  const prepareAudio = (texts: string[], dir: string): Promise<Prepared> =>
+  const prepareAudio = (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"], dir: string): Promise<Prepared> =>
     (async () => {
-      const voice = await synthesizeVoiceover(texts, dir);
-      return { voice, timing: await timeNarration(voice, dir) };
+      const voice = await synthesizeVoiceover(beatTexts(candidate), dir);
+      const timing = await timeNarration(voice, dir);
+      const scenes = callContext
+        .run({ ...callCtx, step: EPISODE_STEPS[6] }, () => planScenesFor(candidate, timing.words))
+        .catch(() => null);
+      return { voice, timing, scenes };
     })();
   const onCheckStart = (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"]) => {
-    const texts = beatTexts(candidate);
     const dir = path.join(workDir, `draft-${++draftNo}`);
-    const job = prepareAudio(texts, dir);
+    const job = prepareAudio(candidate, dir);
     job.catch(() => {}); // a failed speculation just means voicing afterwards
-    speculative = { texts, job };
+    speculative = { texts: beatTexts(candidate), sceneKey: sceneInputKey(candidate), job };
     draftJobs.push({ dir, job });
   };
 
@@ -654,7 +718,25 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         provider,
         model,
         ...(ideaSource ? { brief: ideaSource.brief, length: "long" as const } : {}),
+        ...(durationPlan ? { lengthPlan: { writer: writerSpecFor(durationPlan), gate: gateSpecFor(durationPlan) } } : {}),
         onCheckStart,
+        // The 90 s ceiling is met by cutting the script, not by failing the episode: the
+        // draft's voice is already being recorded alongside its grounding check, so
+        // its real length is known the moment the check approves it.
+        ...(ideaSource
+          ? {
+              measureDraft: async (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"]) => {
+                const spec = speculative as { texts: string[]; sceneKey: string; job: Promise<Prepared> } | null;
+                const texts = beatTexts(candidate);
+                if (!spec || spec.texts.length !== texts.length || !spec.texts.every((t, i) => t === texts[i])) return null;
+                const done = await spec.job.catch(() => null);
+                if (!done) return null;
+                const video = AUDIO_OFFSET + done.voice.totalDuration + OUTRO_TAIL;
+                const fix = overrunFix(spokenWordCount(candidate), done.voice.totalDuration, video);
+                return fix ? { brief: fix.brief, finalMessage: fix.problem, data: { video, ...fix } } : null;
+              },
+            }
+          : {}),
         onStep: async (step) => {
           callCtx.step = /checking/i.test(step) ? EPISODE_STEPS[2] : EPISODE_STEPS[1];
           // `writing` matches the first draft, `rewriting` matches every retry;
@@ -721,9 +803,11 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     await startStep(EPISODE_STEPS[4]); // Recording the voiceover
     const approvedTexts = beatTexts(pkg);
     let prepared: Prepared | null = null;
-    const spec = speculative as { texts: string[]; job: Promise<Prepared> } | null;
+    let scenesPlannedEarly = false;
+    const spec = speculative as { texts: string[]; sceneKey: string; job: Promise<Prepared> } | null;
     if (spec && spec.texts.length === approvedTexts.length && spec.texts.every((t, i) => t === approvedTexts[i])) {
       prepared = await spec.job.catch(() => null);
+      scenesPlannedEarly = spec.sceneKey === sceneInputKey(pkg);
       if (prepared) await appendNotes(episodeId, ["The voice was recorded and timed while the grounding check ran, from the exact script it approved."]);
     }
     const voice = prepared?.voice ?? (await synthesizeVoiceover(approvedTexts, workDir));
@@ -748,7 +832,15 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       }
       if (verdict === "note") {
         await appendNotes(episodeId, [
-          `The finished video runs ${video.toFixed(1)} s, a little outside the 60–120 s target.`,
+          `The finished video runs ${video.toFixed(1)} s, a little short of the 45 s target: the content did not need more room, so it was not padded.`,
+        ]);
+      }
+      // What was planned, and what the script turned out to need.
+      if (durationPlan) {
+        const words = spokenWordCount(pkg);
+        const actual = tierOfScript(words, pkg.beats.length);
+        await appendNotes(episodeId, [
+          `Duration: planned ${durationPlan.tier} s (${durationPlan.reasons.join(", ") || "a simple idea"}); the script is ${words} words in ${pkg.beats.length} beats, predicted ${Math.round(expectedSeconds(words, pkg.beats.length))} s, so it is a ${actual} s video; it finished at ${video.toFixed(1)} s.`,
         ]);
       }
     }
@@ -774,16 +866,6 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
 
     const sweeps: SweepStep[][] = [];
     const columnSteps: SweepStep[] = [];
-
-    // Line geometry per page, built once: the sweeps below need it, and so
-    // does the scene planner, which zooms a `book-crop` to the lines a beat
-    // cites. Pages whose alignment fell below the floor have none, and both
-    // consumers degrade the same way — block highlight, whole-page scene.
-    const linesByPage = new Map<number, ReturnType<typeof clusterLineRuns>>();
-    for (const page of pages) {
-      if (!page.alignment || (page.alignmentConfidence ?? 0) < ALIGNMENT_FLOOR) continue;
-      linesByPage.set(page.pageIndex, clusterLineRuns(JSON.parse(page.alignment) as AlignedWord[]));
-    }
 
     pkg.beats.forEach((beat, i) => {
       const audio = timedBeats[i];
@@ -889,31 +971,10 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     // the music bed is: a failed director call costs variety, never the video
     // (`planScenes` falls back to the narration itself, grouped into scenes).
     await startStep(EPISODE_STEPS[6]); // Planning the scenes
-    const pageWords = new Map<number, string[]>();
-    for (const p of pages) {
-      if (p.visionText) pageWords.set(p.pageIndex, wordsOf(JSON.parse(p.visionText) as PageText));
-    }
-    const scenePlan = await planScenes({
-      bookTitle: episode.book.title,
-      beats: pkg.beats,
-      words: timing.words,
-      pageWords,
-      hasPage: (page) => compPages.some((p) => p.pageIndex === page),
-      cropFor: (page, startWord, endWord) => {
-        const lines = linesByPage.get(page);
-        if (!lines) return null;
-        const runs = runsForRange(lines, startWord, endWord);
-        if (runs.length === 0) return null;
-        return {
-          x0: Math.min(...runs.map((r) => r.box.x0)),
-          y0: Math.min(...runs.map((r) => r.box.y0)),
-          x1: Math.max(...runs.map((r) => r.box.x1)),
-          y1: Math.max(...runs.map((r) => r.box.y1)),
-        };
-      },
-      provider,
-      model,
-    });
+    // Already planned (or being planned) from the draft this script was
+    // approved as, when the two agree on everything the planner reads.
+    const earlyPlan = scenesPlannedEarly && prepared ? await prepared.scenes : null;
+    const scenePlan = earlyPlan ?? (await planScenesFor(pkg, timing.words));
     if (scenePlan.notes.length) await appendNotes(episodeId, scenePlan.notes);
     await appendNotes(episodeId, [describePlan(scenePlan)]);
 
@@ -924,7 +985,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       pkg,
       beats: timedBeats,
       captions,
-      pages: compPages.map((p) => ({ src: p.src, width: p.width, height: p.height })),
+      // `pageIndex`: the book's own page numbers, which is what a beat's `sourcePage` is.
+      pages: compPages.map((p) => ({ src: p.src, width: p.width, height: p.height, pageIndex: p.pageIndex })),
       sweeps,
       camera,
       theme,
@@ -1024,18 +1086,32 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     await prisma.episode.update({ where: { id: episodeId }, data: { projectPath: projectDir } });
 
     // Checking the composition is non-fatal: any finding is recorded as a
-    // note, but the render still runs — only the render itself is fatal.
+    // note, but the render still runs — only the render itself is fatal. It
+    // only reads the project (the folder is identical before and after), so it
+    // runs alongside the render rather than ahead of it; its notes are
+    // recorded once the render is done.
     await startStep(EPISODE_STEPS[8]); // Checking the composition
-    const check = await checkProject(projectDir);
-    if (!check.ok || check.notes.length) {
-      await appendNotes(episodeId, check.notes.map((n) => `Composition check: ${n}`));
-    }
+    const checking = checkProject(projectDir);
+    checking.catch(() => {}); // a render that fails first must not leave this unhandled
 
     await startStep(EPISODE_STEPS[9]); // Rendering the video
     const quality = ((await getSetting("renderQuality")) as "draft" | "high" | null) ?? "draft";
     const mode = ((await getSetting("renderMode")) as "local" | "cloud" | null) ?? "local";
     const outputAbs = path.join(RENDER_DIR, `${episodeId}.mp4`);
-    await renderProject(projectDir, outputAbs, quality, mode, await renderWorkers());
+    const recordCheck = async () => {
+      const check = await checking;
+      if (!check.ok || check.notes.length) {
+        await appendNotes(episodeId, check.notes.map((n) => `Composition check: ${n}`));
+      }
+    };
+    try {
+      await renderProject(projectDir, outputAbs, quality, mode, await renderWorkers());
+    } catch (err) {
+      // What the check found is the likeliest explanation for a render that failed.
+      await recordCheck().catch(() => {});
+      throw err;
+    }
+    await recordCheck();
 
     await timer.finish();
     // `StepTimer.finish()` deliberately only stamps `finishedAt`/`totalMs` —

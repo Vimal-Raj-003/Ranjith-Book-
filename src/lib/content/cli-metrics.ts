@@ -58,6 +58,7 @@ export function callKind(system: string): string {
   if (s.startsWith("You are a senior editor")) return "idea-finder";
   if (s.startsWith("You are the commissioning editor")) return "idea-ranker";
   if (s.startsWith("You split")) return "episode-planner";
+  if (s.startsWith("You are the visual director")) return "scene-director";
   return "other";
 }
 

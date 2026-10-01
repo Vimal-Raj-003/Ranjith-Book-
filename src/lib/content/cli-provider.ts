@@ -26,8 +26,8 @@ export async function generateWithCli(
   revisionBrief?: string,
 ): Promise<ContentPackage> {
   const system =
-    buildSystemPrompt({ hasAuthor: input.author !== null, length: input.length }) +
-    jsonContract(input.length === "long" ? contentJsonSchema("long") : CONTENT_JSON_SCHEMA);
+    buildSystemPrompt({ hasAuthor: input.author !== null, length: input.length, spec: input.spec }) +
+    jsonContract(input.length === "long" ? contentJsonSchema("long", input.spec) : CONTENT_JSON_SCHEMA);
   const user = buildUserPrompt(input, revisionBrief);
   const reply = await runCli(provider, system, user, model);
   return extractJson<ContentPackage>(reply);

@@ -10,6 +10,7 @@ import {
 import { queueState } from "../src/lib/episodes/live";
 import { reapStaleRuns } from "../src/lib/reap";
 import { checkLength } from "../src/lib/content/index";
+import { reserveIdea, IdeaTakenError } from "../src/lib/content/idea";
 import { LENGTHS, CONTENT_JSON_SCHEMA, contentJsonSchema, spokenWordCount } from "../src/lib/content/schema";
 import { buildSystemPrompt, buildUserPrompt } from "../src/lib/content/prompt";
 
@@ -62,25 +63,26 @@ const beats = (n: number, wordsEach: number) =>
     id: `b${i}`, voiceover: words(wordsEach).join(" "), onScreen: "", sourcePage: 0, startWord: 0, endWord: 0,
   }));
 
-test("the length gate: long scripts need 7–12 beats and 170–280 words; short scripts are never gated", () => {
+test("the length gate: a long script fits the 45–90 s envelope (4–12 beats, 104–228 words); short scripts are never gated", () => {
   assert.equal(checkLength({ beats: beats(3, 10) }, LENGTHS.short), null, "short has no length gate");
-  assert.equal(checkLength({ beats: beats(9, 25) }, LENGTHS.long), null, "225 words in 9 beats fits");
+  assert.equal(checkLength({ beats: beats(9, 20) }, LENGTHS.long), null, "180 words in 9 beats fits");
   assert.equal(checkLength({ beats: beats(7, 25) }, LENGTHS.long), null, "175 words in 7 beats fits");
+  assert.equal(checkLength({ beats: beats(8, 13) }, LENGTHS.long), null, "104 words is the shortest a script may be");
 
-  const tooShort = checkLength({ beats: beats(8, 15) }, LENGTHS.long)!;
-  assert.equal(tooShort.words, 120);
-  assert.match(tooShort.brief, /Develop it to about 225 words/);
+  const tooShort = checkLength({ beats: beats(8, 10) }, LENGTHS.long)!;
+  assert.equal(tooShort.words, 80);
+  assert.match(tooShort.brief, /Develop it to about 160 words/);
 
-  const tooLong = checkLength({ beats: beats(10, 32) }, LENGTHS.long)!;
-  assert.match(tooLong.brief, /Cut it to about 225 words/);
+  const tooLong = checkLength({ beats: beats(10, 26) }, LENGTHS.long)!;
+  assert.match(tooLong.brief, /Cut it to about 160 words/);
 
-  const tooFewBeats = checkLength({ beats: beats(5, 40) }, LENGTHS.long)!;
-  assert.match(tooFewBeats.problem, /5 beats, outside the 7–12/);
+  const tooManyBeats = checkLength({ beats: beats(14, 12) }, LENGTHS.long)!;
+  assert.match(tooManyBeats.problem, /14 beats, outside the 4–12/);
   assert.equal(spokenWordCount({ beats: beats(4, 10) }), 40);
 });
 
-test("the long schema asks for 7–12 beats; the short schema is unchanged", () => {
-  assert.equal(contentJsonSchema("long").properties.beats.minItems, 7);
+test("the long schema asks for 4–12 beats; the short schema is unchanged", () => {
+  assert.equal(contentJsonSchema("long").properties.beats.minItems, 4);
   assert.equal(contentJsonSchema("long").properties.beats.maxItems, 12);
   assert.equal(contentJsonSchema("short").properties.beats.minItems, CONTENT_JSON_SCHEMA.properties.beats.minItems);
   assert.equal(CONTENT_JSON_SCHEMA.properties.beats.maxItems, 8, "the photo schema still allows 4–8 beats");
@@ -93,9 +95,10 @@ test("a short prompt is unchanged; a long prompt states the length and the idea"
   assert.ok(!/LONG EPISODE/.test(short));
 
   const long = buildSystemPrompt({ hasAuthor: false, length: "long" });
-  assert.match(long, /^You write 60-to-120-second vertical video scripts/);
-  assert.match(long, /between 7 and 12 beats/);
-  assert.match(long, /between 170 and 280 words/);
+  assert.match(long, /^You write 45-to-90-second vertical video scripts/);
+  assert.match(long, /between 4 and 12 beats/);
+  assert.match(long, /between 104 and 218 words/);
+  assert.match(long, /never run past 90 seconds/);
 
   const input = {
     bookTitle: "Meditations", author: null, archetype: "philosophy" as const, rightsStatus: "public-domain" as const,
@@ -110,14 +113,15 @@ test("a short prompt is unchanged; a long prompt states the length and the idea"
   assert.match(withBrief, /PAGE 5, words 0–1: "a b"/);
 });
 
-test("finished-video duration: 60–120 s is fine, just outside is a note, far outside fails", () => {
-  assert.equal(ideaVideoDuration(90), "ok");
+test("finished-video duration: 45–90 s is fine, a short one is a note, past 90 s or a broken one fails", () => {
+  assert.equal(ideaVideoDuration(90), "ok", "90 s is allowed; it is the ceiling");
   assert.equal(ideaVideoDuration(60), "ok");
-  assert.equal(ideaVideoDuration(120), "ok");
-  assert.equal(ideaVideoDuration(55), "note");
-  assert.equal(ideaVideoDuration(125), "note");
-  assert.equal(ideaVideoDuration(45), "fail");
-  assert.equal(ideaVideoDuration(140), "fail");
+  assert.equal(ideaVideoDuration(45), "ok");
+  assert.equal(ideaVideoDuration(38), "note");
+  assert.equal(ideaVideoDuration(90.5), "fail", "one half-second over the ceiling is refused");
+  assert.equal(ideaVideoDuration(120), "fail");
+  assert.equal(ideaVideoDuration(20), "fail");
+  assert.equal(ideaVideoDuration(Number.NaN), "fail");
 });
 
 // --- episodes (isolated test database) ------------------------------------------
@@ -172,6 +176,51 @@ test("the reaper leaves an episode this process is still holding, and reaps it o
     await reapStaleRuns();
     const reaped = await prisma.episode.findUniqueOrThrow({ where: { id: episodeId } });
     assert.deepEqual([reaped.status, reaped.step], ["FAILED", "Interrupted"]);
+  } finally {
+    await prisma.book.delete({ where: { id: book.id } });
+  }
+});
+
+test("reaping an interrupted run gives its idea back, so the 'Start it again' the reaper tells the operator to do actually works", async () => {
+  // A server restart mid-run used to leave the episode FAILED/"Interrupted"
+  // but the idea's reservation in place forever — generating that idea again
+  // then failed instantly with "This book already has an episode about …".
+  const { book, upload, a } = await fixtureBook();
+  try {
+    const [{ episodeId }] = await createIdeaEpisodes(upload.id, [a.id], null);
+    // What runEpisode does before writing the script: claim the angle.
+    await reserveIdea(book.id, "idea-a");
+    await prisma.$executeRaw`UPDATE Episode SET status = 'RUNNING', createdAt = ${new Date(Date.now() - 60 * 60_000)} WHERE id = ${episodeId}`;
+    await assert.rejects(reserveIdea(book.id, "idea-a"), IdeaTakenError, "the claim is really held before the reap");
+
+    // Nothing in this process is running it: exactly what a restart leaves.
+    await reapStaleRuns();
+    const reaped = await prisma.episode.findUniqueOrThrow({ where: { id: episodeId } });
+    assert.deepEqual([reaped.status, reaped.step], ["FAILED", "Interrupted"]);
+
+    assert.equal(await prisma.usedIdea.count({ where: { bookId: book.id, ideaKey: "idea-a" } }), 0, "the reservation was released");
+    const retry = await createIdeaEpisodes(upload.id, [a.id], null);
+    assert.equal(retry[0].created, true, "and the idea can be generated again");
+    await reserveIdea(book.id, "idea-a"); // would throw IdeaTakenError if the claim had been left behind
+  } finally {
+    await prisma.book.delete({ where: { id: book.id } });
+  }
+});
+
+test("reaping leaves a live run's reservation alone", async () => {
+  const { book, upload, a } = await fixtureBook();
+  try {
+    const [{ episodeId }] = await createIdeaEpisodes(upload.id, [a.id], null);
+    await reserveIdea(book.id, "idea-a");
+    await prisma.$executeRaw`UPDATE Episode SET status = 'RUNNING', createdAt = ${new Date(Date.now() - 60 * 60_000)} WHERE id = ${episodeId}`;
+    queueState.current = episodeId; // this process is still running it
+    try {
+      await reapStaleRuns();
+    } finally {
+      queueState.current = null;
+    }
+    assert.equal((await prisma.episode.findUniqueOrThrow({ where: { id: episodeId } })).status, "RUNNING");
+    assert.equal(await prisma.usedIdea.count({ where: { bookId: book.id, ideaKey: "idea-a" } }), 1, "a live run keeps its claim");
   } finally {
     await prisma.book.delete({ where: { id: book.id } });
   }

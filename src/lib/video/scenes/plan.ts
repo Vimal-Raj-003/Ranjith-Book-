@@ -17,9 +17,18 @@ import type { Sentence } from "./types";
 export const MIN_SCENE_SEC = 2.6;
 /** A scene longer than this is where "static and repetitive" comes from. */
 export const MAX_SCENE_SEC = 11;
-/** The band the finished video should land in. */
-export const MIN_SCENES = 8;
-export const MAX_SCENES = 15;
+/** The band the finished video should land in (a 45 s video carries ~8, a 90 s one ~16). */
+export const MIN_SCENES = 6;
+export const MAX_SCENES = 16;
+/** About how long one visual idea holds: the references cut every 3-6 s. */
+export const SCENE_SECONDS = 5.6;
+/**
+ * The opening scene is the hook, and a hook that outstays its welcome is the
+ * retention failure it exists to prevent. It is cut at the first sentence
+ * boundary after HOOK_MIN_SEC when it would run past HOOK_MAX_SEC.
+ */
+export const HOOK_MIN_SEC = 3.0;
+export const HOOK_MAX_SEC = 5.8;
 
 /** A word ending a sentence: terminal punctuation, allowing closing quotes. */
 const SENTENCE_END = /[.!?]["'”’)\]]*$/;
@@ -135,6 +144,30 @@ export function normalizeRanges(
   if (out.length === 0) return [{ fromSentence: 0, toSentence: count - 1 }];
   if (cursor < count) out[out.length - 1].toSentence = count - 1;
   return out;
+}
+
+/**
+ * Cut the first range short when it is more than HOOK_MAX_SEC, at the first
+ * sentence boundary at or after HOOK_MIN_SEC. A single long sentence stays one
+ * scene: there is no boundary to cut on.
+ */
+export function capOpening(
+  ranges: { fromSentence: number; toSentence: number }[],
+  sentences: Sentence[],
+): { fromSentence: number; toSentence: number }[] {
+  const first = ranges[0];
+  if (!first || first.toSentence <= first.fromSentence) return ranges;
+  const t0 = sentences[first.fromSentence].start;
+  if (sentences[first.toSentence].end - t0 <= HOOK_MAX_SEC) return ranges;
+  let cut = first.toSentence;
+  for (let i = first.fromSentence; i < first.toSentence; i++) {
+    if (sentences[i].end - t0 >= HOOK_MIN_SEC) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut >= first.toSentence) return ranges;
+  return [{ fromSentence: first.fromSentence, toSentence: cut }, { fromSentence: cut + 1, toSentence: first.toSentence }, ...ranges.slice(1)];
 }
 
 /**

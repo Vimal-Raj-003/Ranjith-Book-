@@ -12,6 +12,7 @@
  * to. Types only; nothing here is emitted.
  */
 import type { SourceRef } from "../../analysis/types";
+import type { HeroId } from "./heroes";
 
 /** One spoken sentence, cut from the 3B word timings. */
 export interface Sentence {
@@ -45,6 +46,7 @@ export const VISUAL_KINDS = [
   "growth-curve",
   "timeline",
   "stat",
+  "cinematic",
 ] as const;
 
 export type VisualKind = (typeof VISUAL_KINDS)[number];
@@ -89,6 +91,12 @@ export interface SceneSpec {
   right?: string;
   /** `steps`, `timeline`: 2–4 ordered entries. */
   steps?: string[];
+  /** `cinematic`: which procedural 3D object stands for the idea (heroes.ts). */
+  hero?: string;
+  /** `cinematic`: the one or two words to set in large type, copied from the narration. */
+  keyword?: string;
+  /** `cinematic`: up to six narrated words that lead into the keyword. */
+  lead?: string;
 }
 
 /** A scene's background mood, which drives the backdrop glow. */
@@ -150,6 +158,13 @@ export interface Scene {
   steps?: string[];
   stat?: { value: string; label: string };
   curve?: { points: number[]; label: string };
+  /**
+   * `cinematic`: a full-frame scene built around one procedural 3D hero. The
+   * keyword and lead are always words the narrator actually says. `hook` marks
+   * the opening scene: it shows the spoken hook sentence word by word instead
+   * of a lead and keyword, and replaces the old scrim-over-the-page hook card.
+   */
+  cine?: { hero: HeroId; keyword: string; lead: string; hook?: boolean; accentWords?: string[] };
 }
 
 /** What the validator did, for the episode's notes and for tests. */

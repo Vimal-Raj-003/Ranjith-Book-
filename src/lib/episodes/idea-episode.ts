@@ -8,11 +8,12 @@
  *     related pages book analysis retrieved, capped — never the whole book;
  *   - a brief of the idea, with its located quotes, so the script is about
  *     THAT idea;
- *   - the long (1–2 minute) script length.
+ *   - a script length chosen from the idea's content: 45, 60 or up to 90 seconds.
  */
 import { prisma, getSetting } from "../db";
 import { isBookThemeId, DEFAULT_BOOK_THEME_ID } from "../video/composition/themes";
 import type { IdeaBrief } from "../content/schema";
+import { VIDEO_MAX_SECONDS, VIDEO_MIN_HARD_SECONDS, VIDEO_MIN_TARGET_SECONDS, videoSecondsVerdict } from "../content/duration";
 import type { SourceRef } from "../analysis/types";
 
 /** Pages a writer is shown for one idea. Eight pages is ~2,500 words. */
@@ -84,15 +85,17 @@ export function ideaEpisodeSource(
   };
 }
 
-/** The finished video's target, and the hard limits outside which nothing is rendered. */
-export const IDEA_VIDEO_TARGET = { min: 60, max: 120 };
-export const IDEA_VIDEO_HARD = { min: 50, max: 130 };
+/**
+ * The finished video's target (45–90 s) and the hard limits outside which nothing
+ * is rendered. 90 s is a ceiling that is never exceeded; how long a given video is
+ * within it is chosen from its content (content/duration.ts).
+ */
+export const IDEA_VIDEO_TARGET = { min: VIDEO_MIN_TARGET_SECONDS, max: VIDEO_MAX_SECONDS };
+export const IDEA_VIDEO_HARD = { min: VIDEO_MIN_HARD_SECONDS, max: VIDEO_MAX_SECONDS };
 
-/** "ok" inside the target, "note" just outside it, "fail" past the hard limits. */
+/** "ok" inside the target, "note" just short of it, "fail" past the hard limits. */
 export function ideaVideoDuration(seconds: number): "ok" | "note" | "fail" {
-  if (seconds < IDEA_VIDEO_HARD.min || seconds > IDEA_VIDEO_HARD.max) return "fail";
-  if (seconds < IDEA_VIDEO_TARGET.min || seconds > IDEA_VIDEO_TARGET.max) return "note";
-  return "ok";
+  return videoSecondsVerdict(seconds);
 }
 
 export interface CreatedEpisode {

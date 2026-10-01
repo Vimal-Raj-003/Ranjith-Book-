@@ -16,25 +16,22 @@
 // nobody runs.
 //
 // IMPORTANT for anyone writing a new effect: `stateAt()` below drives the
-// timeline with `window.__tl.pause(t)`, and the real frame-by-frame renderer
-// (Task 18+) does the same thing with `.seek(t)` — both are GSAP APIs that
-// move the playhead WITHOUT dispatching the timeline's own `onUpdate`,
-// `onStart` or `onComplete` callbacks. An effect wired to fire on one of those
-// callbacks (rather than driven by the tween's own progress/property values,
-// which this harness and the renderer both evaluate correctly) never runs
-// under either one — it looks fine scrubbing in a live browser tab, where
-// `play()`/`seek()` from user interaction can still touch those callbacks
-// depending on how the effect is wired, and then renders as silently dead
-// here and in the actual output. If an effect depends on `onUpdate` /
-// `onStart` / `onComplete`, that dependency itself is the bug to fix, not
-// something this harness or the renderer should be made to accommodate.
+// timeline the way the real frame-by-frame renderer does — `tl.seek(t, false)`,
+// i.e. with events NOT suppressed (HyperFrames' GSAP adapter seeks with
+// suppressEvents=false, so `onUpdate` re-fires on every seek, rewinds included).
+// `window.__tl.pause(t)` would NOT do: it seeks with events suppressed, which
+// silently skips every onUpdate-driven effect (the Lottie clips, the Three.js
+// accents, the cinematic heroes, the stat counters) and would "prove" them
+// seek-safe by never running them. An effect that depends on a callback must
+// compute everything from `tl.time()` inside it, never from state the callback
+// accumulated: the renderer's workers seek in a non-linear order.
 import { chromium } from "playwright-core";
 import { buildComposition } from "../src/lib/video/composition/build.ts";
 // The whole registry, not one theme: see checkTheme's doc comment.
 import { BOOK_THEMES } from "../src/lib/video/composition/themes/index.ts";
 import { fixtureInput } from "./fixtures/composition-fixture.mjs";
 
-const TRACKED = ["transform", "opacity", "visibility", "width", "height", "left", "top"];
+const TRACKED = ["transform", "opacity", "visibility", "width", "height", "left", "top", "filter"];
 const SAMPLE_COUNT = 24;
 
 /**
@@ -71,7 +68,7 @@ function canonicalizeTransform(value) {
 async function stateAt(page, t) {
   return page.evaluate(
     ({ t, props }) => {
-      window.__tl.pause(t);
+      window.__tl.seek(t, false);
       const out = {};
       // Every element the timeline writes to. The framed layout (spec
       // 2026-08-23) added four tweened elements — #card-pop, #progress, #hook
@@ -95,7 +92,7 @@ async function stateAt(page, t) {
         // zoom and the backdrop glow — because an untracked tweened element
         // is an untested one, and this is where a whole template could be
         // silently wrong.
-        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el]",
+        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, .hook-text, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el], .sc [data-drift]",
       )) {
         const cs = getComputedStyle(el);
         const key =
@@ -109,7 +106,11 @@ async function stateAt(page, t) {
                   ? `scene:${el.dataset.scene}`
                   : el.dataset.el !== undefined
                     ? `el:${el.closest("[data-scene]")?.dataset.scene}:${el.dataset.el}`
-                    : el.id;
+                    : el.hasAttribute("data-drift")
+                      ? `drift:${el.closest("[data-scene]")?.dataset.scene}`
+                      : el.classList.contains("hook-text")
+                        ? "hook-text"
+                        : el.id;
         out[key] = Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
       }
       return out;
@@ -131,7 +132,7 @@ async function stateAt(page, t) {
  * caught by running this harness against Marginalia alone, and all of them
  * render as a video that is subtly wrong in a way no test would explain.
  */
-async function checkTheme(browser, id, theme, withScenes = false) {
+async function checkTheme(browser, id, theme, withScenes = false, cinematic = false) {
   // The byline and the purchase card (spec 2026-08-23 §9/§11) are the
   // present-only branches of the composition: with no `bookLink` there is no
   // #buy-card element in the document at all, so widening the selector above
@@ -140,7 +141,7 @@ async function checkTheme(browser, id, theme, withScenes = false) {
   // fixture keeps describing the geometry case it was written for, and so the
   // "absent" shape it already covers stays covered by every other consumer.
   const html = buildComposition({
-    ...fixtureInput({ theme, withScenes }),
+    ...fixtureInput({ theme, withScenes, cinematic }),
     bookTitle: "The Fixture Book of Very Long Titles Indeed",
     author: "A Verified Author",
     bookLink: "https://example.com/fixture-book",
@@ -238,7 +239,8 @@ async function main() {
 
   let browser;
   try {
-    browser = await chromium.launch();
+    // SwiftShader on, so the cinematic heroes really draw here instead of falling back to type on a glow.
+    browser = await chromium.launch({ args: ["--use-gl=angle", "--enable-unsafe-swiftshader"] });
   } catch (err) {
     console.error(`Could not launch Chromium: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -251,6 +253,9 @@ async function main() {
       // still renders, and the scene stack an idea episode renders.
       failures += await checkTheme(browser, id, theme, false);
       failures += await checkTheme(browser, `${id}+scenes`, theme, true);
+      // And the cinematic engine: hero scenes (WebGL), the opening hook, rack-focus type,
+      // the perspective card moves — driven the way the renderer drives them.
+      failures += await checkTheme(browser, `${id}+cinematic`, theme, true, true);
     }
 
     if (failures) {

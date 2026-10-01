@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyEmphasis, emphasizeWords } from "../src/lib/video/scenes/emphasis";
 import { renderScene, entranceFor, counted, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
+import { shapeForIcon } from "../src/lib/video/scenes/three-shapes";
 import { validateScenes, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { sentencesOf } from "../src/lib/video/scenes/plan";
 import { lexicalEmbedder } from "../src/lib/analysis/embed";
@@ -31,6 +32,7 @@ function timed(beats: Beat[], perWord = 0.4): TimedWord[] {
 }
 
 const RECT = { x: CARD_X, y: CARD_Y, w: CARD_W, h: CARD_H };
+const ACCENT = bookThemeById("marginalia").palette.accent;
 
 function sceneOf(kind: VisualKind, extra: Partial<Scene> = {}): Scene {
   return {
@@ -120,7 +122,7 @@ test("an emphasised word gets a bigger, coloured treatment and a snappier arriva
     ],
     concept: "",
   });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.match(r.markup, /sc-word-emph sc-cat-growth/, "compound is a growth word");
   assert.match(r.markup, /sc-word-emph sc-cat-money/, "money is a money word");
   const growthAnim = r.anims.find((a) => a.e === 2);
@@ -129,10 +131,40 @@ test("an emphasised word gets a bigger, coloured treatment and a snappier arriva
   assert.equal(plainAnim?.k, "rise", "an ordinary word still just rises, unchanged");
 });
 
-test("kinetic text with no accent icon renders exactly as before — the feature is additive, never required", () => {
-  const scene = sceneOf("kinetic-text", { icon: undefined, concept: "" });
-  const r = renderScene(scene, RECT)!;
+test("kinetic text with neither an icon nor a matching Lottie category renders exactly as before", () => {
+  const scene = sceneOf("kinetic-text", {
+    icon: undefined,
+    concept: "",
+    // None of these classify under emphasis.ts (no time/money/growth/
+    // problem/solution/people/tech/number word) — the point of this fixture
+    // is that NEITHER optional accent has anything to attach to.
+    words: [
+      { word: "The", start: 2.0, end: 2.2 },
+      { word: "weather", start: 2.3, end: 2.6 },
+      { word: "was", start: 2.7, end: 2.85 },
+      { word: "pleasant.", start: 2.9, end: 3.2 },
+    ],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.ok(!r.markup.includes("sc-kinetic-icon"));
+  assert.deepEqual(overlappingAnims(r.anims), []);
+});
+
+test("kinetic text with no icon but an emphasised word in an authored Lottie category gets the Lottie accent instead", () => {
+  const scene = sceneOf("kinetic-text", {
+    icon: undefined,
+    concept: "",
+    words: [
+      { word: "Small", start: 2.0, end: 2.3 },
+      { word: "habits", start: 2.6, end: 2.9 },
+      { word: "compound", start: 3.2, end: 3.6 }, // "growth" — one of lottie.ts's authored categories
+    ],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  assert.match(r.markup, /sc-kinetic-icon sc-lottie/);
+  const lottieAnim = r.anims.find((a) => a.k === "lottie");
+  assert.ok(lottieAnim, "a lottie anim record is emitted");
+  assert.equal(lottieAnim!.data?.nm, "accent-growth");
   assert.deepEqual(overlappingAnims(r.anims), []);
 });
 
@@ -141,9 +173,93 @@ test("kinetic text WITH an accent icon adds one extra, non-overlapping element",
     concept: "a clock",
     icon: { name: "clock", paths: "<path/>", query: "a clock", score: 0.6 },
   });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.match(r.markup, /sc-kinetic-icon/);
   assert.deepEqual(overlappingAnims(r.anims), []);
+});
+
+// --- the optional icon-concept 3D accent (three-shapes.ts) --------------------
+
+test("icon-concept scenes get one Three.js canvas per icon, over the flat SVG, never replacing it in the markup", () => {
+  const scene = sceneOf("icon-concept", {
+    icons: [
+      { name: "coin", paths: "<path/>", query: "money", score: 0.5 },
+      { name: "clock", paths: "<path/>", query: "time", score: 0.5 },
+    ],
+    items: ["money", "time"],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  // Both the original Tabler icon AND a canvas are present — the fallback is
+  // built into the markup itself, not decided by which branch ran.
+  assert.match(r.markup, /class="sc-icon" /, "the flat icon is still rendered unconditionally");
+  const canvasCount = (r.markup.match(/class="sc-three"/g) ?? []).length;
+  assert.equal(canvasCount, 2, "one canvas per icon");
+});
+
+test("each icon-concept canvas gets its own 'three' anim, at an element index distinct from its cell's own pop", () => {
+  const scene = sceneOf("icon-concept", {
+    icons: [
+      { name: "coin", paths: "<path/>", query: "money", score: 0.5 },
+      { name: "clock", paths: "<path/>", query: "time", score: 0.5 },
+    ],
+    items: ["money", "time"],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  const threeAnims = r.anims.filter((a) => a.k === "three");
+  assert.equal(threeAnims.length, 2);
+  const popEls = new Set(r.anims.filter((a) => a.k === "pop").map((a) => a.e));
+  for (const a of threeAnims) {
+    assert.ok(!popEls.has(a.e), "a 'three' anim must not share its element index with a cell's own pop");
+    assert.match(r.markup, new RegExp(`data-el="${a.e}"`), "the canvas element it targets exists in the markup");
+  }
+  assert.deepEqual(overlappingAnims(r.anims), []);
+});
+
+test("each icon-concept canvas's shape matches shapeForIcon for that specific icon, in order", () => {
+  const scene = sceneOf("icon-concept", {
+    icons: [
+      { name: "coin", paths: "<path/>", query: "money", score: 0.5 },
+      { name: "bulb", paths: "<path/>", query: "an idea", score: 0.5 },
+    ],
+    items: ["money", "idea"],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  const threeAnims = r.anims.filter((a) => a.k === "three").sort((a, b) => a.e - b.e);
+  assert.equal(threeAnims[0].shape, shapeForIcon(scene.icons![0]));
+  assert.equal(threeAnims[1].shape, shapeForIcon(scene.icons![1]));
+});
+
+test("an icon-concept scene's 'three' tween runs from the icon's own arrival to the scene's end, not just a brief entrance", () => {
+  const scene = sceneOf("icon-concept", {
+    start: 2,
+    end: 9,
+    icons: [{ name: "coin", paths: "<path/>", query: "money", score: 0.5 }],
+    items: ["money"],
+  });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  const threeAnim = r.anims.find((a) => a.k === "three")!;
+  assert.ok(threeAnim.t >= scene.start && threeAnim.t < scene.end, "starts within the scene");
+  assert.ok(threeAnim.t + threeAnim.d <= scene.end + 1e-6, "never runs past the scene's own end");
+  assert.ok(threeAnim.d > 1, "the shape keeps turning for a real span, not a one-shot entrance");
+});
+
+test("an icon-concept scene with no icons at all still renders cleanly, with no 'three' anims", () => {
+  const scene = sceneOf("icon-concept", { icons: [], items: [] });
+  const r = renderScene(scene, RECT, ACCENT)!;
+  assert.equal(r.anims.filter((a) => a.k === "three").length, 0);
+  assert.ok(!r.markup.includes("sc-three"));
+});
+
+test("the Three.js accent's CSS is present and, like every scene rule, uses only palette colours", () => {
+  const theme = bookThemeById("marginalia");
+  const css = sceneCss(theme, RECT);
+  assert.ok(css.includes(".sc-three"), ".sc-three rule is present");
+  assert.ok(css.includes("position:relative"), "the icon well is positioned so the canvas can overlay it");
+  const hex = css.match(/#[0-9a-f]{3,8}\b/gi) ?? [];
+  const palette = new Set(Object.values(theme.palette).map((v) => String(v).toLowerCase()));
+  for (const h of hex) {
+    assert.ok([...palette].some((p) => p.includes(h.toLowerCase())), `${h} is not a palette colour`);
+  }
 });
 
 // --- scene entrance variety (transitions) --------------------------------------
@@ -164,7 +280,7 @@ test("every entrance kind actually appears across a normal-length plan", () => {
 
 test("a scene layer's own entrance uses whatever entranceFor(index) says, at the SCENE_FADE duration", () => {
   const scene = sceneOf("stat", { index: 4 });
-  const r = renderScene({ ...scene, index: 4 }, RECT)!;
+  const r = renderScene({ ...scene, index: 4 }, RECT, ACCENT)!;
   const layer = r.anims.find((a) => a.e === -1 && a.t === scene.start);
   const expected = entranceFor(4);
   assert.equal(layer?.k, expected.k);
@@ -190,7 +306,7 @@ test("a decimal, a range or a bare word are not countable — the pop treatment 
 
 test("a stat scene with a countable value renders a separate count element that never overlaps the pop", () => {
   const scene = sceneOf("stat", { stat: { value: "87%", label: "of readers" } });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.match(r.markup, /sc-stat-count/);
   assert.match(r.markup, />0%</, "rest state shows the from-value, matching the count tween's own from");
   const count = r.anims.find((a) => a.k === "count");
@@ -201,7 +317,7 @@ test("a stat scene with a countable value renders a separate count element that 
 
 test("a stat scene with an uncountable value falls back to the plain pop, no count element at all", () => {
   const scene = sceneOf("stat", { stat: { value: "double", label: "the results" } });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.ok(!r.markup.includes("sc-stat-count"));
   assert.equal(r.anims.some((a) => a.k === "count"), false);
   assert.match(r.markup, />double</);
@@ -211,7 +327,7 @@ test("a stat scene with an uncountable value falls back to the plain pop, no cou
 
 test("the growth curve renders a filled area and gridlines behind the line, revealed only after the line finishes drawing", () => {
   const scene = sceneOf("growth-curve");
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.match(r.markup, /sc-curve-fill/);
   assert.match(r.markup, /sc-grid/);
   const draw = r.anims.find((a) => a.k === "draw")!;
@@ -224,7 +340,7 @@ test("the growth curve renders a filled area and gridlines behind the line, reve
 
 test("a steps scene with two or more items gets a connector line; the anim never overlaps a step's own rise", () => {
   const scene = sceneOf("steps", { steps: ["first", "second", "third"] });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.match(r.markup, /sc-step-connector/);
   assert.ok(r.anims.some((a) => a.k === "grow"));
   assert.deepEqual(overlappingAnims(r.anims), []);
@@ -232,7 +348,7 @@ test("a steps scene with two or more items gets a connector line; the anim never
 
 test("a steps scene with a single item (malformed input) skips the connector rather than drawing a line to nowhere", () => {
   const scene = sceneOf("steps", { steps: ["only one"] });
-  const r = renderScene(scene, RECT)!;
+  const r = renderScene(scene, RECT, ACCENT)!;
   assert.ok(!r.markup.includes("sc-step-connector"));
 });
 
@@ -249,25 +365,33 @@ test("a kinetic-text scene with an empty concept never gets an accent icon", asy
 });
 
 test("a kinetic-text scene whose concept confidently names a real, drawable icon gets it attached", async () => {
-  const beats = [beatOf(0, "Small habits compound over time.")];
+  // Scene 0 is always the cinematic hook, so the scene under test follows it.
+  const beats = [beatOf(0, "Open here. Small habits compound over time.")];
   const sentences = sentencesOf(beats, timed(beats));
   const r = await validateScenes(
-    [{ fromSentence: 0, toSentence: sentences.length - 1, from: 0, to: sentences.length - 1, kind: "kinetic-text", concept: "clock", reason: "r" }],
+    [
+      { fromSentence: 0, toSentence: 0, from: 0, to: 0, kind: "kinetic-text", concept: "", reason: "r" },
+      { fromSentence: 1, toSentence: sentences.length - 1, from: 1, to: sentences.length - 1, kind: "kinetic-text", concept: "clock", reason: "r" },
+    ],
     ctx({ sentences }),
   );
-  assert.ok(r.scenes[0].icon, "a literal, exact-match icon name should confidently resolve");
-  assert.ok(r.scenes[0].icon!.paths.length > 0);
+  assert.equal(r.scenes[1].kind, "kinetic-text");
+  assert.ok(r.scenes[1].icon, "a literal, exact-match icon name should confidently resolve");
+  assert.ok(r.scenes[1].icon!.paths.length > 0);
 });
 
 test("a non-kinetic-text scene never receives the accent icon field, whatever its concept", async () => {
-  const beats = [beatOf(0, "Small habits compound over time. They add up fast.")];
+  const beats = [beatOf(0, "Open here. Small habits compound over time. They add up fast.")];
   const sentences = sentencesOf(beats, timed(beats));
   const r = await validateScenes(
-    [{ fromSentence: 0, toSentence: sentences.length - 1, from: 0, to: sentences.length - 1, kind: "stat", value: "3", label: "over time", concept: "clock", reason: "r" }],
+    [
+      { fromSentence: 0, toSentence: 0, from: 0, to: 0, kind: "kinetic-text", concept: "", reason: "r" },
+      { fromSentence: 1, toSentence: sentences.length - 1, from: 1, to: sentences.length - 1, kind: "stat", value: "3", label: "over time", concept: "clock", reason: "r" },
+    ],
     ctx({ sentences, pageWords: new Map([[0, "Small habits compound over three time".split(" ")]]) }),
   );
-  assert.equal(r.scenes[0].kind, "stat");
-  assert.equal(r.scenes[0].icon, undefined);
+  assert.equal(r.scenes[1].kind, "stat");
+  assert.equal(r.scenes[1].icon, undefined);
 });
 
 // --- CSS stays within the palette contract --------------------------------------

@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { isEpisodeLive } from "./episodes/live";
+import { releaseIdea } from "./content/idea";
 
 /**
  * A run only makes progress while the server process that started it is alive.
@@ -22,7 +23,7 @@ export async function reapStaleRuns(): Promise<number> {
         { steps: { none: {} }, createdAt: { lt: cutoff } },
       ],
     },
-    select: { id: true, step: true },
+    select: { id: true, step: true, bookId: true, ideaKey: true },
   });
 
   // Episodes this process is still running or holding in its queue are alive
@@ -32,6 +33,14 @@ export async function reapStaleRuns(): Promise<number> {
   // process behind it — what a restart leaves — is reaped.
   const reapable = stale.filter((r) => !isEpisodeLive(r.id));
   for (const run of reapable) {
+    // The run that died still holds its idea's reservation (`reserveIdea`,
+    // taken before the script is written), and nothing else will ever give it
+    // back: `runEpisode`'s own failure path never got to run. Left in place,
+    // the "Start it again" this row is about to tell the operator to do fails
+    // instantly with "This book already has an episode about …" — a dead end
+    // that real runs hit. Same key expression the pipeline reserves and
+    // releases with; `releaseIdea` is idempotent and never throws.
+    await releaseIdea(run.bookId, run.ideaKey ?? run.id);
     await prisma.stepRun.updateMany({
       where: { episodeId: run.id, status: "RUNNING" },
       data: { status: "FAILED", endedAt: new Date() },

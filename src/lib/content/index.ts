@@ -4,6 +4,7 @@ import { ContentRejectedError } from "../errors";
 import { reserveIdea, releaseIdea } from "./idea";
 import type { Archetype, ContentPackage, GenerateInput, IdeaBrief, LengthSpec, ScriptLength } from "./schema";
 import { LENGTHS, spokenWordCount, voScriptFromPackage } from "./schema";
+import { expectedSeconds, maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
 import { checkRanges } from "./ranges";
 import { generateWithCli, runCliJson } from "./cli-provider";
 import type { CliProvider } from "./cli";
@@ -80,12 +81,24 @@ export interface GenerateContentOpts {
   /** Absent means "short", the photo-episode shape, which has no length gate. */
   length?: ScriptLength;
   /**
+   * A "long" script's length plan (duration.ts): the writer is told `writer`, a
+   * draft is checked against the (wider) `gate`. Absent means the envelope.
+   */
+  lengthPlan?: { writer: LengthSpec; gate: LengthSpec };
+  /**
    * Called with each draft the moment it is handed to the grounding checker,
    * so the caller can prepare that draft's audio while the check runs. The
    * caller must use such work ONLY for the package this function finally
    * returns — a draft passed here may still be rejected.
    */
   onCheckStart?: (candidate: ContentPackage) => void;
+  /**
+   * Called with a draft the grounding check has approved, to find out whether the
+   * RECORDED voice makes the finished video break the length ceiling. A problem comes
+   * back as a rewrite brief, exactly like a gate failure: the hard limit is met by
+   * cutting the script, not by failing the episode.
+   */
+  measureDraft?: (draft: ContentPackage) => Promise<{ brief: string; finalMessage: string; data: unknown } | null>;
 }
 
 export interface GenerateResult {
@@ -116,20 +129,28 @@ export function checkLength(pkg: Pick<ContentPackage, "beats">, spec: LengthSpec
   const words = spokenWordCount(pkg);
   const problems: string[] = [];
   if (beats < spec.minBeats || beats > spec.maxBeats) {
-    problems.push(`${beats} beats, outside the ${spec.minBeats}–${spec.maxBeats} a 1–2 minute episode needs`);
+    problems.push(`${beats} beats, outside the ${spec.minBeats}–${spec.maxBeats} a ${spec.seconds.replace(/-/g, " ")} video needs`);
   }
   if (words < spec.minWords || words > spec.maxWords) {
-    problems.push(`${words} spoken words, outside the ${spec.minWords}–${spec.maxWords} that make 60–120 seconds`);
+    problems.push(`${words} spoken words, outside the ${spec.minWords}–${spec.maxWords} that make a ${spec.seconds.replace(/-/g, " ")} video`);
+  }
+  // Seconds depend on beats as well as words, and the limit is in seconds: a script
+  // inside the word range can still predict past it.
+  const predicted = expectedSeconds(words, beats);
+  const overSeconds = spec.maxExpectedSeconds !== undefined && predicted > spec.maxExpectedSeconds;
+  if (overSeconds) {
+    problems.push(`${words} words in ${beats} beats, which would run about ${Math.round(predicted)} seconds against the ${VIDEO_MAX_SECONDS}-second limit`);
   }
   if (!problems.length) return null;
-  const target = Math.round((spec.minWords + spec.maxWords) / 2);
+  const aim = spec.aimWords ?? Math.round((spec.minWords + spec.maxWords) / 2);
+  const target = overSeconds && spec.maxExpectedSeconds !== undefined ? Math.min(aim, maxWordsFor(spec.maxExpectedSeconds - 3, beats)) : aim;
   return {
     beats,
     words,
     problem: `The script ran to ${problems.join(" and ")}`,
     brief:
       `A length check found this draft has ${problems.join(" and ")}. ` +
-      (words > spec.maxWords
+      (words > spec.maxWords || overSeconds
         ? `Cut it to about ${target} words: tighten every beat and drop anything that restates an earlier point. `
         : words < spec.minWords
           ? `Develop it to about ${target} words: go further into the book's own example or argument for this one idea — never pad, and never add a claim the page does not support. `
@@ -180,7 +201,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     length = "short",
     onCheckStart,
   } = opts;
-  const lengthSpec = LENGTHS[length];
+  const lengthSpec = length === "long" && opts.lengthPlan ? opts.lengthPlan.gate : LENGTHS[length];
   const pageLengths = new Map(pages.map((p) => [p.pageIndex, p.words.length]));
   /** Range repairs made on the draft that was finally approved (reset per draft). */
   let rangeRepairs: string[] = [];
@@ -217,6 +238,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       // exactly the object it always was.
       ...(ideaBrief ? { brief: ideaBrief } : {}),
       ...(length !== "short" ? { length } : {}),
+      ...(length === "long" && opts.lengthPlan ? { spec: opts.lengthPlan.writer } : {}),
     };
     return generateWithCli(input, provider, model, brief);
   };
@@ -456,7 +478,15 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       await onStep?.("Checking the script against the page");
       onCheckStart?.(pkg);
       report = await check(pkg);
-      if (!needsRevision(report)) break;
+      if (!needsRevision(report)) {
+        const over = await opts.measureDraft?.(pkg);
+        if (!over) break;
+        if (round >= MAX_REVISIONS) throw new ContentRejectedError(`${over.finalMessage}${rewriteNote}`, over.data);
+        await onStep?.("Rewriting after the length check");
+        pkg = await write([], over.brief);
+        revised = true;
+        continue;
+      }
 
       if (round >= MAX_REVISIONS) {
         const blockers = report.issues.filter((i) => i.severity === "blocker");

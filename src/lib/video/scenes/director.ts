@@ -17,6 +17,7 @@
  */
 import { VISUAL_KINDS } from "./types";
 import type { Sentence } from "./types";
+import { HERO_IDS, heroCatalogue } from "./heroes";
 
 export const DIRECTOR_SCHEMA = {
   type: "object",
@@ -25,7 +26,7 @@ export const DIRECTOR_SCHEMA = {
   properties: {
     scenes: {
       type: "array",
-      minItems: 6,
+      minItems: 5,
       maxItems: 18,
       items: {
         type: "object",
@@ -44,37 +45,46 @@ export const DIRECTOR_SCHEMA = {
           left: { type: "string", maxLength: 40 },
           right: { type: "string", maxLength: 40 },
           steps: { type: "array", minItems: 2, maxItems: 4, items: { type: "string", maxLength: 48 } },
+          hero: { type: "string", enum: [...HERO_IDS] },
+          keyword: { type: "string", maxLength: 40 },
+          lead: { type: "string", maxLength: 90 },
         },
       },
     },
   },
 } as const;
 
-export const DIRECTOR_SYSTEM = `You are the visual director for a 1-2 minute vertical video (1080x1920) built from one passage of a book. The script is already written, approved and recorded. Your only job is to decide WHAT IS ON SCREEN while each sentence is spoken.
+export const DIRECTOR_SYSTEM = `You are the visual director for a 45-90 second vertical video (1080x1920) built from one passage of a book. The script is already written, approved and recorded. Your only job is to decide WHAT IS ON SCREEN while each sentence is spoken.
 
 You are given the narration cut into numbered sentences, and the book's own words that each sentence's beat is about. Group consecutive sentences into scenes and give each scene one visual.
 
 THE CATALOGUE — every scene must use one of these:
 
-- book-page — the real photographed/scanned page, scrolling, with a marker sweeping the words being discussed. Use when the narration points at what the page SAYS.
+- cinematic — a full-frame cinematic scene: ONE 3D object that stands for the idea being spoken, moving and lit like a film shot, with one keyword set in large type. This is the visual the video is built on. Fields: "hero" (one id from THE HEROES below), "keyword" (the one or two words of the narration that carry the idea, COPIED EXACTLY from it), "lead" (optional: up to six narrated words that lead into the keyword, copied exactly), "concept" (a few words on what the picture means).
+- book-page — the real photographed/scanned page, with a marker sweeping the words being discussed. Use when the narration points at what the page SAYS.
 - book-crop — the same page, zoomed into the exact lines under discussion. Use for a close reading of one sentence of the book.
 - quote — the book's own words, large, on their own. Use ONLY when the narration quotes or closely paraphrases a specific line. Put that line in "quote", copied EXACTLY from the page words you were given. It is checked against the book; a quote that is not found is discarded.
-- kinetic-text — the narrated sentence itself, appearing word by word in time with the voice. Use for a sharp claim, a turn, a punchline. Always safe.
-- icon-concept — one to three simple picture-icons with short labels. Use for a concrete idea that can be pictured. "items" are the labels (1-3 words each).
+- kinetic-text — the narrated sentence itself, appearing word by word in time with the voice. Use only for a sharp claim or punchline that has no picturable idea.
+- icon-concept — one to three simple picture-icons with short labels. "items" are the labels (1-3 words each).
 - comparison — two sides, left and right. Use ONLY when the narration actually contrasts two things. "left" and "right" are short labels.
-- steps — 2 to 4 ordered items. Use for a process, a sequence, or a short list the narration actually gives.
-- growth-curve — a rising line. Use for compounding, accumulation, improvement over time.
-- timeline — 2 to 4 points in order across time. Use for before/after or a progression through time.
+- steps — 2 to 4 ordered items, for a process or short list the narration actually gives.
+- growth-curve — a rising line, for compounding or improvement over time.
+- timeline — 2 to 4 points in order across time.
 - stat — one number, large. Use ONLY when the narration says a specific number that is printed on the page. Put it in "value" exactly as said, and what it measures in "label".
 
-RULES:
-1. Return between 8 and 15 scenes. Every sentence must be covered exactly once, in order: the first scene starts at sentence 0, each next scene starts at the sentence after the previous one ends, the last ends at the final sentence.
-2. Use AT LEAST 3 scenes that show the book (book-page, book-crop or quote), spread through the video — this is a video about a book and it must stay recognisable.
-3. Never use the same kind more than twice in a row. Vary deliberately.
-4. Only use comparison, steps, timeline, growth-curve or stat when the narration REALLY does that. A "steps" scene over narration that lists nothing is worse than kinetic-text. If in doubt, choose kinetic-text or a book scene.
-5. Invent nothing. Every label, item, side, step and number must come from what the narration or the page actually says.
+THE HEROES (the "hero" of a cinematic scene — choose by what the sentence MEANS, not by a stray word in it):
+${heroCatalogue()}
 
-"concept" is WHAT TO SHOW, not what it means — a phrase that describes a picture, because it is used to find an icon. Write "a barrier blocking a path", "a clock and calendar", "a growing line chart", "stairs going up" — not "the obstacle is the way" or "compounding returns". Two to six words, concrete, no abstractions.
+RULES:
+1. Return roughly as many scenes as the user message asks for (never fewer than 5). Every sentence must be covered exactly once, in order: the first scene starts at sentence 0, each next scene starts at the sentence after the previous one ends, the last ends at the final sentence.
+2. Scene 0 MUST be cinematic: it is the hook, and the first thing a viewer sees. Choose the hero for the idea of the hook, never a book page. Keep scene 0 to the first one or two sentences.
+3. At least 40% of the scenes must be cinematic. Every important concept in the narration gets its own cinematic scene with the hero that matches its meaning. Prefer cinematic over kinetic-text, icon-concept and quote.
+4. Show the book too: use AT LEAST 3 scenes that show it (book-page, book-crop or quote), spread through the video, but at most two quote scenes and never two book scenes in a row.
+5. Never use the same kind more than twice in a row. Never use the same hero twice in a row, and no hero more than twice in the whole video. Use "orb" only when nothing else fits.
+6. Use icon-concept at most twice. Use comparison, steps, timeline, growth-curve or stat only when the narration REALLY does that; otherwise choose cinematic.
+7. Invent nothing. Every keyword, lead, label, item, side, step and number must come from what the narration or the page actually says.
+
+"concept" is WHAT TO SHOW, not what it means — a phrase that describes a picture. Two to six words, concrete, no abstractions.
 
 "reason" is one short sentence saying why this visual fits this narration.`;
 
@@ -83,6 +93,7 @@ export function buildDirectorPrompt(
   sentences: Sentence[],
   pageWords: Map<number, string[]>,
   suggestedScenes: number,
+  hook?: string,
 ): string {
   const lines = sentences.map((s) => {
     const secs = `${s.start.toFixed(1)}-${s.end.toFixed(1)}s`;
@@ -105,6 +116,7 @@ export function buildDirectorPrompt(
   return [
     `Book: ${bookTitle}`,
     `Aim for about ${suggestedScenes} scenes.`,
+    ...(hook ? [`The hook (what scene 0 is about): ${hook}`] : []),
     ``,
     `THE NARRATION, sentence by sentence:`,
     ...lines,

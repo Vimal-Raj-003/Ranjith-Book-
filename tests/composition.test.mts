@@ -15,6 +15,8 @@ import {
   CAPTION_BASELINE,
   BYLINE_Y,
   HOOK_MAX_VISIBLE,
+  HOOK_FADE,
+  HOOK_TEXT_LEAD,
   bylineText,
 } from "../src/lib/video/composition/build";
 import { cameraTrack } from "../src/lib/video/sweep";
@@ -486,6 +488,52 @@ test("the hook card's window ends at the end of beat 0, and it fades out before 
   // Beat 0's measured clip end is 2, plus the AUDIO_OFFSET lead-in.
   assert.ok(Math.abs(data.hook!.end - (AUDIO_OFFSET + 2)) < 1e-9, `expected ${AUDIO_OFFSET + 2}, got ${data.hook!.end}`);
   assert.ok(data.hook!.fadeAt > 0 && data.hook!.fadeAt < data.hook!.end, "the fade must finish by beat 0's end, not start there");
+});
+
+test("the hook's text leaves BEFORE its scrim starts to thin, so the scene beneath is never legible together with it (live browser)", async () => {
+  // Found on a real production video: with kinetic text as scene 0 (it repeats
+  // the hook's own words) the whole card fading as one element let that scene
+  // show through while the hook line was still ~90% opaque — the same sentence
+  // twice, at different wraps and heights, for ~10 frames at the dissolve.
+  const html = buildComposition(input());
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as { hook: { fadeAt: number } };
+  const fadeAt = data.hook.fadeAt;
+  assert.ok(fadeAt > HOOK_TEXT_LEAD, "this fixture's hook is long enough for the full lead");
+
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+    await page.setContent(html, { waitUntil: "load" });
+    await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+    const at = (t: number) =>
+      page.evaluate((time) => {
+        (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
+        const card = document.getElementById("hook")!;
+        const text = card.querySelector(".hook-text")!;
+        return { card: Number(getComputedStyle(card).opacity), text: Number(getComputedStyle(text).opacity) };
+      }, t);
+    const near = (a: number, b: number, tol = 0.02) => Math.abs(a - b) <= tol;
+
+    // The FIRST thing this page does is a cold jump straight into the handoff.
+    const start = await at(fadeAt);
+    assert.ok(near(start.card, 1), `the scrim has not started thinning at fadeAt (card ${start.card})`);
+    assert.ok(near(start.text, 0), `but the hook's text is already gone by then (text ${start.text}) — a scene beneath can no longer double it`);
+
+    const early = await at(fadeAt - HOOK_TEXT_LEAD - 0.05);
+    assert.ok(near(early.text, 1) && near(early.card, 1), `before the lead the hook is fully there (${JSON.stringify(early)})`);
+    const midLead = await at(fadeAt - HOOK_TEXT_LEAD / 2);
+    assert.ok(midLead.text > 0.3 && midLead.text < 0.7 && near(midLead.card, 1), `the text is mid-fade inside the lead, scrim intact (${JSON.stringify(midLead)})`);
+    const midFade = await at(fadeAt + HOOK_FADE / 2);
+    assert.ok(near(midFade.card, 0.5) && near(midFade.text, 0), `the scrim thins after the text has gone (${JSON.stringify(midFade)})`);
+    const after = await at(fadeAt + HOOK_FADE + 0.02);
+    assert.ok(near(after.card, 0) && near(after.text, 0), "and the whole card is gone by the end of the fade");
+
+    // Seek-safety: away in both directions and back must give the same state.
+    const again = await at(fadeAt);
+    assert.deepEqual(again, start, "the same instant renders identically however it was reached");
+  } finally {
+    await browser.close();
+  }
 });
 
 test("no beats at all produces no hook card rather than one that never leaves", () => {
