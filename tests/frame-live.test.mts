@@ -6,8 +6,14 @@ import { bookThemeById } from "../src/lib/video/composition/themes";
 import { gridViolations, BANDS, type Box } from "../src/lib/video/composition/frame";
 import { fixtureInput } from "../scripts/fixtures/composition-fixture.mjs";
 
-const within = <T,>(p: Promise<T>, ms: number, what: string): Promise<T> =>
-  Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), ms))]);
+const within = <T,>(p: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`timed out: ${what}`)), ms);
+  });
+  // Clear the timer on either outcome, or every call leaves a live handle behind.
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+};
 
 /** Every element on the frame that carries words, and where it actually is. */
 const TEXT_SELECTORS = ".byline, .caption-line, .cta-card, #buy-card, .hook-text, .sc-cine .cine-key, .sc-cine .cine-lead, .sc-cine .cine-hook";
@@ -46,6 +52,41 @@ async function withComposition(html: string, run: (p: import("playwright-core").
     await within(page.setContent(html, { waitUntil: "load" }), 30_000, "load");
     await within(page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl), null, { timeout: 30_000 }), 35_000, "timeline");
     await new Promise((r) => setTimeout(r, 1500));
+    // Every face on screen is a HOST font. The composition embeds no @font-face and HyperFrames ships
+    // no fonts, so the real render resolves the same system fonts these measurements do: the themes'
+    // own stacks (editorial: Palatino Linotype / Bodoni MT; marginalia: Segoe Script) and, for
+    // everything that asks for "Inter, system-ui", the fallback (Segoe UI here). If a font is ever
+    // embedded this fails, and every width below (caption rows, the 34-character font-size
+    // threshold) must be re-measured.
+    //
+    // Two probes, because document.fonts.check() is useless (it answers true for any family with no
+    // @font-face). First: nothing is registered at all. Second: a known string is exactly as wide in
+    // "Inter" as in a deliberately bogus family on the same fallback stack, so Inter is not resolving.
+    const registeredFaces = await within(page.evaluate(() => document.fonts.size), 10_000, "font face count");
+    assert.equal(registeredFaces, 0, "the composition now embeds a font: re-measure the caption geometry before changing this");
+    const fontProbe = await within(
+      page.evaluate(() => {
+        // No named helpers in here: tsx wraps them in __name(), which does not exist in the page.
+        const text = "The quick brown fox jumps over the lazy dog 0123456789";
+        const widths: number[] = [];
+        for (const family of ["Inter, system-ui, sans-serif", "NoSuchFamilyZzQq, system-ui, sans-serif"]) {
+          const s = document.createElement("span");
+          s.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:800 60px ${family}`;
+          s.textContent = text;
+          document.body.appendChild(s);
+          widths.push(s.getBoundingClientRect().width);
+          s.remove();
+        }
+        return { inter: widths[0], bogus: widths[1] };
+      }),
+      10_000,
+      "font probe",
+    );
+    assert.equal(
+      fontProbe.inter,
+      fontProbe.bogus,
+      `Inter is unexpectedly available (${JSON.stringify(fontProbe)}): re-measure the caption geometry before changing this`,
+    );
     await run(page);
     assert.deepEqual(errors, [], "no page errors");
   } finally {
