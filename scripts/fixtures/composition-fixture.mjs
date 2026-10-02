@@ -122,6 +122,11 @@ export function fixtureInput({ theme, withScenes = false, cinematic = false }) {
     sceneAt(7, "timeline", 12.0, 12.7, "cool", { steps: ["then", "now"] }),
     sceneAt(8, "stat", 12.7, 13.1, "deep", { stat: { value: "3", label: "degrees" } }),
     sceneAt(9, "quote", 13.1, 13.5, "warm", { quote: { text: "What stands in the way becomes the way", page: 2 } }),
+    // Two trailing page scenes in the outro tail: a wide shot after the dimmed
+    // ones (so dimKeys emits its o:0 clear), then a close shot (so the dim
+    // restarts from nothing through the fromTo-after-a-clear branch).
+    sceneAt(10, "book-page", 13.5, 14.4, "neutral", { shot: "wide", crop: { x0: 40, y0: 120, x1: 900, y1: 190 } }),
+    sceneAt(11, "book-page", 14.4, 15.3, "warm", { shot: "close", crop: { x0: 40, y0: 380, x1: 900, y1: 440 } }),
   ];
 
   if (cinematic) {

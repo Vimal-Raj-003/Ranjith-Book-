@@ -399,6 +399,27 @@ test("the dim frames a cited span, never overlaps itself, and is cleared by the 
   assert.deepEqual(dimKeys([s(0, "book-page", "close")], 0), [], "a close shot with no cited span has nothing to frame");
 });
 
+test("scenes closer together than the tweens are long still never overlap their zoom or dim tweens", () => {
+  // 0.3 s per scene against tweens that want 0.4-1.4 s, so every adjacent pair
+  // must be clipped. The old fixtures spaced scenes 2-4 s apart and never
+  // entered the clip branch, so deleting it would have passed every test.
+  const crop = { x0: 0, y0: 300, x1: 900, y1: 360 };
+  const shots: Scene["shot"][] = ["close", "wide", "medium", "close", "wide"];
+  const scenes = shots.map((shot, i): Scene => ({ ...sceneOf(i % 2 ? "book-page" : "book-crop"), index: i, start: i * 0.3, end: i * 0.3 + 0.3, shot, crop }));
+
+  const zooms = cardZooms(scenes, 0, 1280);
+  const dim = dimKeys(scenes, 0);
+  assert.ok(zooms.length >= 3, "zooms are forced to be adjacent (" + zooms.length + ")");
+  assert.ok(dim.length >= 3, "dim keys are forced to be adjacent (" + dim.length + ")");
+  for (const [name, keys] of [["zoom", zooms], ["dim", dim]] as const) {
+    for (let i = 1; i < keys.length; i++) {
+      assert.ok(keys[i - 1].t + keys[i - 1].d <= keys[i].t + 1e-9, name + " " + (i - 1) + " ends before " + name + " " + i + " starts");
+      assert.ok(keys[i - 1].d > 0, name + " " + (i - 1) + " keeps a positive duration");
+    }
+  }
+  assert.ok(zooms.some((z, i) => i < zooms.length - 1 && z.d < 0.5), "at least one zoom was actually clipped below its natural minimum");
+});
+
 // --- icons -------------------------------------------------------------------------
 
 test("an icon's search text carries its name, category and tags", () => {

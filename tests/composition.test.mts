@@ -1138,6 +1138,7 @@ test("every page scene drives the card to its own shot scale, and the scales do 
 
   // The dim window never fully hides the page, and never covers the cited lines.
   assert.ok(data.dim.length >= 1, "the close crop dims its surround");
+  assert.ok(data.dim.some((d) => d.o > 0), "at least one dim key actually dims");
   for (const d of data.dim) {
     assert.ok(d.o >= 0 && d.o <= 0.75, `dim opacity ${d.o} leaves the page readable`);
     assert.ok(d.h > 0, "the transparent window has height");
