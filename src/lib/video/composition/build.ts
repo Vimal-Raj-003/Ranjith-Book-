@@ -280,7 +280,7 @@ export interface CompositionInput {
    */
 
   /**
-   * The book's title, rendered in the persistent byline under the card.
+   * The book's title, rendered in the persistent byline at the top of the frame.
    * Absent or blank renders no byline at all rather than an empty strip.
    */
   bookTitle: string;
@@ -423,8 +423,15 @@ function pageMarkup(page: { src: string; width: number; height: number }, offset
  * Byline — spec 2026-08-23 §9
  * ======================================================================== */
 
-/** Roughly what fits on one 28px line inside the card's own width. */
-const BYLINE_MAX_CHARS = 58;
+/**
+ * Roughly what fits on one 28px line inside `.byline`'s max-width, which is
+ * `CONTENT_WIDTH` (820px) — NOT the card's 960px. Inter 600 at 28px runs about
+ * 14px a character, and 58 was the estimate for 960px; scaled to 820 it is
+ * 58 * 820 / 960 = 49.5, so 49. Exported so a test can pin it to the width.
+ * Promise more than the box can show and CSS ellipsis eats the end of the
+ * line, which is the verified author's name.
+ */
+export const BYLINE_MAX_CHARS = 49;
 /** A title is never truncated below this, even to make room for a long name. */
 const BYLINE_MIN_TITLE_CHARS = 18;
 /** A name longer than this is itself a data problem; it is clipped, not obeyed. */

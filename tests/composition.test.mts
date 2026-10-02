@@ -18,6 +18,7 @@ import {
   HOOK_FADE,
   HOOK_TEXT_LEAD,
   bylineText,
+  BYLINE_MAX_CHARS,
 } from "../src/lib/video/composition/build";
 import { BANDS, CONTENT_WIDTH } from "../src/lib/video/composition/frame";
 import { cameraTrack } from "../src/lib/video/sweep";
@@ -735,6 +736,9 @@ test("the byline is rendered into the markup, positioned with top, and carries n
   assert.equal(BYLINE_Y, BANDS.title.top, "the byline sits in the title band");
   assert.ok(BYLINE_Y < BANDS.stage.top, "the byline is above the page card, not under it");
   assert.match(html, new RegExp(`\\.byline \\{[^}]*max-width:${CONTENT_WIDTH}px`));
+  // The box fits inside the title band, not merely above the stage:
+  // 34 is one 28px line at line-height 1.2.
+  assert.ok(BYLINE_Y + 34 <= BANDS.title.bottom, "the byline's line box fits inside the title band");
   // `bottom:` on an absolutely positioned element has burned this composition
   // before — see the CAPTION_BASELINE doc comment.
   assert.doesNotMatch(html, /\.byline \{[^}]*bottom:/);
@@ -745,6 +749,16 @@ test("the byline is rendered into the markup, positioned with top, and carries n
 
   const js = html.split("<script>")[1] ?? "";
   assert.ok(!js.includes("byline"), "the byline is persistent — the runtime script must never touch it");
+});
+
+test("the byline's character budget is sized to the width it actually has", () => {
+  // Inter 600 at 28px with 0.3px tracking runs ~14px per character; the budget must
+  // not promise more characters than CONTENT_WIDTH can show, or the author's name
+  // gets ellipsised away — the exact clip bylineText truncates early to avoid.
+  assert.ok(BYLINE_MAX_CHARS * 14 <= CONTENT_WIDTH, `${BYLINE_MAX_CHARS} chars overflows ${CONTENT_WIDTH}px`);
+  const long = bylineText("A Deliberately Overlong Book Title That Runs And Runs", "A Verified Author Name")!;
+  assert.ok(Array.from(long).length <= BYLINE_MAX_CHARS, `"${long}" is ${Array.from(long).length} chars`);
+  assert.ok(long.includes("A Verified Author Name"), "the author's name survives truncation; the title gives way first");
 });
 
 test("no verified author and no title produce no placeholder markup anywhere", () => {
