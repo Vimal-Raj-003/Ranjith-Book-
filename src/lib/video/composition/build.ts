@@ -6,6 +6,7 @@ import type { SweepStep, CameraKey } from "../sweep";
 import type { CaptionLine } from "../../media/captions";
 import type { ContentPackage } from "../../content/schema";
 import type { BeatAudio } from "../../media/tts";
+import { BANDS, CONTENT_WIDTH, FRAME } from "./frame";
 
 /**
  * The page before the marker: a moment for the photograph to settle on screen
@@ -14,7 +15,9 @@ import type { BeatAudio } from "../../media/tts";
 export const AUDIO_OFFSET = 0.7;
 /** How long the CTA card holds after the last word, so it can be read. */
 export const OUTRO_TAIL = 1.8;
-export const FRAME = { width: 1080, height: 1920 };
+// The grid module owns the frame's dimensions; re-exported so every existing
+// `import { FRAME } from ".../build"` keeps working.
+export { FRAME };
 export const FPS = 30;
 
 /* ===========================================================================
@@ -26,12 +29,12 @@ export const FPS = 30;
  * frames.
  *
  *   y=0     progress bar, full width, PROGRESS_H tall
- *   y=250   card top          ┐
- *   ...     the photographed  │ CARD_H = 1120, CARD_X = 60, CARD_W = 960
- *   y=1370  card bottom       ┘
- *   y=1450  cue / annotation band
- *   y=1720  caption baseline
- *   y=1920  bottom 200px deliberately left clear of Instagram's own chrome
+ *   y=60    byline                                   ┐ frame.ts BANDS.title
+ *   y=250   card top          ┐                      │
+ *   ...     the photographed  │ CARD_H = 1120        │ frame.ts BANDS.stage
+ *   y=1370  card bottom       ┘                      ┘
+ *   y=1560  caption baseline                           frame.ts BANDS.caption
+ *   y=1670  Instagram's own chrome begins — nothing with words goes below here
  * ======================================================================== */
 
 /** Height of the top progress bar. */
@@ -78,18 +81,18 @@ export const CARD_RADIUS = 28;
 export const CAPTION_BASELINE = 1720;
 
 /**
- * The persistent byline under the card (spec 2026-08-23 §9): book title, and
- * the author ONLY when the four-link verification chain passed upstream.
+ * The persistent byline (spec 2026-08-23 §9): book title, and the author ONLY
+ * when the four-link verification chain passed upstream.
  *
- * 1388 is 18px below the card's bottom edge (1370) and well clear of the cue
- * band at 1450 — the byline is a caption for the object above it, not a third
- * competing text layer.
+ * It lives in the title band at the TOP of the frame. It used to sit at 1388,
+ * between the card and the captions, where the full-frame cinematic heroes draw
+ * straight through it.
  *
  * It carries NO tween at all. That is the cheapest thing there is to seek
- * correctly, and it is also what "persistent" means: the title is on screen
- * for every frame of the video, including the ones a viewer screenshots.
+ * correctly, and it is also what "persistent" means: the title is on screen for
+ * every frame of the video, including the ones a viewer screenshots.
  */
-export const BYLINE_Y = 1388;
+export const BYLINE_Y = BANDS.title.top;
 
 /**
  * Where the cue / annotation band sits — between the card's bottom edge
@@ -811,7 +814,7 @@ function sharedCss(theme: BookTheme): string {
      author's name, and this is the guard for a title whose characters happen
      to be wider than the estimate. */
   .byline { position:absolute; left:50%; top:${BYLINE_Y}px; transform:translateX(-50%);
-            max-width:${CARD_W}px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+            max-width:${CONTENT_WIDTH}px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
             font-size:28px; font-weight:600; letter-spacing:0.3px; line-height:1.2;
             font-family: Inter, system-ui, sans-serif; color:${p.bylineInk}; }
 

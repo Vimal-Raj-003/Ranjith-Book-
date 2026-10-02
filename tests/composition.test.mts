@@ -19,6 +19,7 @@ import {
   HOOK_TEXT_LEAD,
   bylineText,
 } from "../src/lib/video/composition/build";
+import { BANDS, CONTENT_WIDTH } from "../src/lib/video/composition/frame";
 import { cameraTrack } from "../src/lib/video/sweep";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
@@ -731,12 +732,14 @@ test("the byline is rendered into the markup, positioned with top, and carries n
 
   assert.equal(bylineOf(html), "Meditations · Marcus Aurelius");
   assert.match(html, new RegExp(`\\.byline \\{[^}]*top:${BYLINE_Y}px`));
-  assert.equal(BYLINE_Y, 1388);
+  assert.equal(BYLINE_Y, BANDS.title.top, "the byline sits in the title band");
+  assert.ok(BYLINE_Y < BANDS.stage.top, "the byline is above the page card, not under it");
+  assert.match(html, new RegExp(`\\.byline \\{[^}]*max-width:${CONTENT_WIDTH}px`));
   // `bottom:` on an absolutely positioned element has burned this composition
   // before — see the CAPTION_BASELINE doc comment.
   assert.doesNotMatch(html, /\.byline \{[^}]*bottom:/);
   // One line, always: nowrap plus an ellipsis, never a second row of type
-  // pushing down into the cue band at 1450.
+  // pushing down into the stage.
   assert.match(html, /\.byline \{[^}]*white-space:nowrap/);
   assert.match(html, /\.byline \{[^}]*text-overflow:ellipsis/);
 
