@@ -13,6 +13,7 @@ import {
   CARD_W,
   CARD_H,
   CAPTION_BASELINE,
+  captionFontSize,
   BYLINE_Y,
   HOOK_MAX_VISIBLE,
   HOOK_FADE,
@@ -20,7 +21,7 @@ import {
   bylineText,
   BYLINE_MAX_CHARS,
 } from "../src/lib/video/composition/build";
-import { BANDS, CONTENT_WIDTH } from "../src/lib/video/composition/frame";
+import { BANDS, CONTENT_WIDTH, RESERVED } from "../src/lib/video/composition/frame";
 import { cameraTrack } from "../src/lib/video/sweep";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
@@ -419,7 +420,7 @@ test("the page scrolls inside a card, and the scale sits on .scaler where GSAP c
 
 test("captions clear Instagram's chrome and are still positioned with top, never bottom", () => {
   const html = buildComposition(input());
-  assert.equal(CAPTION_BASELINE, 1720);
+  assert.equal(CAPTION_BASELINE, BANDS.caption.bottom);
   assert.match(html, new RegExp(`\\.caption-line \\{[^}]*top:${CAPTION_BASELINE}px`));
   // `bottom:` on an autoAlpha-driven absolutely positioned element never
   // painted at all in the real renderer — see the CAPTION_BASELINE doc comment.
@@ -1069,4 +1070,31 @@ test("the hook card is gone within four seconds however long beat 0 talks", () =
     shortData.hook.end < HOOK_MAX_VISIBLE,
     "a short beat 0 hands over early rather than being padded to the ceiling",
   );
+});
+
+test("captions sit in the caption band, clear of both platforms' chrome, at most two lines", () => {
+  const html = buildComposition(input());
+  assert.equal(CAPTION_BASELINE, BANDS.caption.bottom);
+  assert.match(html, new RegExp(`\\.caption-line \\{[^}]*top:${CAPTION_BASELINE}px`));
+  assert.match(html, new RegExp(`\\.caption-line \\{[^}]*max-width:${CONTENT_WIDTH}px`));
+  // Anchored by its BOTTOM edge, so a second line grows upward into the band.
+  assert.match(html, /\.caption-line \{[^}]*transform:translate\(-50%, ?-100%\)/);
+  assert.doesNotMatch(html, /\.caption-line \{[^}]*bottom:/);
+
+  // The whole point: a two-line caption clears the card above and Instagram below.
+  const twoLines = 60 * 1.2 * 2 + 32;
+  assert.ok(CAPTION_BASELINE - twoLines > BANDS.stage.bottom, "two lines clear the page card");
+  const reels = RESERVED.find((r) => r.name === "reels-bottom")!;
+  assert.ok(CAPTION_BASELINE <= reels.box.y, "no caption pixel is under Instagram's caption row");
+});
+
+test("a caption too long for two lines steps its type down rather than growing a third", () => {
+  const short = "Follow for more.";
+  const long = "An extraordinarily long caption line that no reasonable splitter would ever produce but which must still not grow upward over the page card";
+  assert.equal(captionFontSize(short), 60);
+  assert.equal(captionFontSize(long), 52);
+  // Even at the smaller size it is clamped, not allowed to run on.
+  const html = buildComposition(input());
+  assert.match(html, /\.caption-line \{[^}]*-webkit-line-clamp:2/);
+  assert.match(html, /\.caption-line \{[^}]*overflow:hidden/);
 });

@@ -74,11 +74,26 @@ export const CARD_RADIUS = 28;
  * z-index issue: the since-removed cue layer sat in an identically full-inset
  * ancestor, used `top`, and never showed this failure.
  *
- * 1720 rather than the old 1790: the bottom ~200px of a Reel is covered by
- * Instagram's own like/comment/caption chrome, so a caption sitting there is
- * a caption nobody can read.
+ * 1560, from `BANDS.caption.bottom`: the bottom 250px of a Reel is covered by
+ * Instagram's username, caption and audio ticker, and the bottom 160px of a
+ * Short by its title row. The baseline was 1720, which put the lower ~50px of
+ * every caption under Instagram's own text.
  */
-export const CAPTION_BASELINE = 1720;
+export const CAPTION_BASELINE = BANDS.caption.bottom;
+
+/** A caption is two lines at most; a longer one shrinks rather than growing. */
+export const CAPTION_MAX_LINES = 2;
+
+/**
+ * 60px normally, 52px for a line long enough to wrap past two rows at 60.
+ *
+ * ~17 characters fit a 820px row at 60px in this weight; two rows is ~34. The
+ * threshold is deliberately generous — stepping down a caption that would have
+ * fitted costs nothing, while a third row would push type over the page card.
+ */
+export function captionFontSize(text: string): number {
+  return text.length > 34 ? 52 : 60;
+}
 
 /**
  * The persistent byline (spec 2026-08-23 §9): book title, and the author ONLY
@@ -533,7 +548,7 @@ function purchaseLink(bookLink: string | null | undefined): string | null {
  */
 function captionMarkup(captions: CaptionLine[]): string {
   return captions
-    .map((c, i) => `<div class="caption-line" data-caption="${i}">${esc(c.text)}</div>`)
+    .map((c, i) => `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${esc(c.text)}</div>`)
     .join("\n");
 }
 
@@ -766,8 +781,10 @@ function sharedCss(theme: BookTheme): string {
   .captions { position:absolute; inset:0; pointer-events:none; }
   .caption-line { position:absolute; left:50%; top:${CAPTION_BASELINE}px;
                   transform:translate(-50%, -100%);
-                  max-width:920px; width:max-content; text-align:center; font-size:60px;
+                  max-width:${CONTENT_WIDTH}px; width:max-content; text-align:center; font-size:60px;
                   font-weight:800; line-height:1.2; padding:16px 30px; border-radius:20px;
+                  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:${CAPTION_MAX_LINES};
+                  overflow:hidden;
                   opacity:0; visibility:hidden; font-family: Inter, system-ui, sans-serif;
                   background:${p.captionBg}; color:${p.captionInk}; }
 
