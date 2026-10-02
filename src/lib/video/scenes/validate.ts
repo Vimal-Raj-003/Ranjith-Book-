@@ -29,8 +29,8 @@ import type { Embedder } from "../../analysis/embed";
 import { resolveIcon, MIN_SCORE } from "./icons";
 import { emphasizeWords } from "./emphasis";
 import { heroForText, heroMatch, isHeroId, type HeroId } from "./heroes";
-import { BOOK_KINDS } from "./types";
-import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, VisualKind } from "./types";
+import { BOOK_KINDS, PAGE_KINDS, SHOT_SCALE } from "./types";
+import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, ShotSize, VisualKind } from "./types";
 
 /**
  * The floor for a kinetic-text scene's optional accent icon — stricter than
@@ -130,6 +130,17 @@ export function numberIsSaid(digits: string, haystacks: string[]): boolean {
   return false;
 }
 
+/**
+ * The card's visible height in column pixels for a typical 1131px-wide page:
+ * CARD_H 1120 / (CARD_W 960 / 1131). Stated here as arithmetic rather than
+ * imported, because the scenes layer deliberately does not depend on the
+ * composition's geometry (build.ts imports from here, never the reverse).
+ */
+const TYPICAL_COLUMN_WIDTH_PX = 1131;
+const CARD_W_PX = 960;
+const CARD_H_PX = 1120;
+export const DEFAULT_CARD_HEIGHT_IN_COLUMN_PX = (CARD_H_PX * TYPICAL_COLUMN_WIDTH_PX) / CARD_W_PX;
+
 export interface ValidateContext {
   sentences: Sentence[];
   /** Page index → that page's word list, the space beat indices address. */
@@ -143,6 +154,13 @@ export interface ValidateContext {
   embedder?: Embedder;
   /** The script's hook line and its accent words: what the opening scene is about. */
   hook?: { text: string; keywords: string[] };
+  /**
+   * The card's visible height expressed in column pixels — what decides whether a
+   * cited block can be framed at a given shot scale. Defaults to the value a
+   * typical 1131px-wide page produces (CARD_H 1120 / (CARD_W 960 / 1131)); the
+   * scenes layer deliberately does not import the composition's geometry.
+   */
+  cardHeightInColumnPx?: number;
 }
 
 /** The narration and the book words a scene may draw its labels from. */
@@ -416,6 +434,48 @@ function toCinematic(s: Scene, ctx: ValidateContext, hero: HeroId, hook?: boolea
 }
 
 /**
+ * The shot a cited block can actually be framed at. A block taller than the
+ * card can show at that scale would have its own words cropped out of frame,
+ * which is the opposite of what a close shot is for, so it steps back.
+ */
+export function shotFor(want: ShotSize, cited: { y0: number; y1: number } | null, cardHeightInColumnPx: number): ShotSize {
+  if (!cited) return want === "close" ? "medium" : want;
+  const height = Math.max(1, cited.y1 - cited.y0);
+  const order: ShotSize[] = ["close", "medium", "wide"];
+  for (const shot of order.slice(order.indexOf(want))) {
+    if (height <= cardHeightInColumnPx / SHOT_SCALE[shot]) return shot;
+  }
+  return "wide";
+}
+
+/**
+ * One shot size per page scene: an establishing wide first, then alternating,
+ * and never the same size twice running. Deterministic, so it is testable
+ * without a model call — the same discipline as the cinematic variety rules.
+ *
+ * "Never the same twice" is the hard rule. When a step-back lands on the size
+ * the previous scene used, the scene is moved to the neighbouring size: a
+ * repeated wide becomes medium even if that medium is a little tight for a very
+ * tall block, because two identical frames in a row is the locked-off look this
+ * exists to remove.
+ */
+export function assignShots(
+  scenes: Scene[],
+  citedFor: (s: Scene) => { y0: number; y1: number } | null,
+  cardHeightInColumnPx: number,
+): void {
+  let previous: ShotSize | null = null;
+  for (const scene of scenes) {
+    if (!PAGE_KINDS.includes(scene.kind)) continue;
+    const want: ShotSize = previous === null ? "wide" : previous === "close" ? "medium" : "close";
+    let shot = shotFor(want, citedFor(scene), cardHeightInColumnPx);
+    if (shot === previous) shot = shot === "close" ? "medium" : shot === "medium" ? "wide" : "medium";
+    scene.shot = shot;
+    previous = shot;
+  }
+}
+
+/**
  * Validate and repair a whole plan. Scene ranges must already be a legal cover
  * of the sentences (see `plan.normalizeRanges`).
  */
@@ -568,6 +628,17 @@ export async function validateScenes(
   if (bookCount < bookFloor) {
     notes.push(`Only ${bookCount} scene(s) show the book; ${bookFloor} were wanted, but no other scene could be converted.`);
   }
+
+  // Shot sizes last, once kinds are final: only scenes that actually show the
+  // page card are framed, and every repair above may have changed which those are.
+  assignShots(
+    scenes,
+    (s) => {
+      const box = ctx.cropFor(s.source.pageIndex, s.source.startWord, s.source.endWord);
+      return box ? { y0: box.y0, y1: box.y1 } : null;
+    },
+    ctx.cardHeightInColumnPx ?? DEFAULT_CARD_HEIGHT_IN_COLUMN_PX,
+  );
 
   return { scenes: scenes.map((s, i) => ({ ...s, index: i })), notes, used };
 }

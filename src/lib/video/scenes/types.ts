@@ -66,6 +66,16 @@ export const BOOK_KINDS: VisualKind[] = ["book-page", "book-crop", "quote"];
 export const PAGE_KINDS: VisualKind[] = ["book-page", "book-crop"];
 
 /**
+ * How tightly a page scene is framed. The composition used to hold one fixed
+ * 960x1120 card for every page scene in every video, which is what made the
+ * frame feel locked off rather than shot.
+ */
+export type ShotSize = "wide" | "medium" | "close";
+
+/** What each shot scales the card to. */
+export const SHOT_SCALE: Record<ShotSize, number> = { wide: 1, medium: 1.5, close: 2.2 };
+
+/**
  * What the director returns for one scene, before validation. Every field
  * beyond `kind` is optional because each template uses a different few; the
  * validator is what insists on the ones its template actually needs.
@@ -134,6 +144,8 @@ export interface Scene {
   concept: string;
   /** Set when the validator replaced what the director asked for. */
   fallbackFrom?: VisualKind;
+  /** Page kinds only: how tightly this scene is framed. */
+  shot?: ShotSize;
 
   // --- per-template content, all resolved and checked ---------------------
   /** `quote`: the words as the book prints them, plus the page they are on. */

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { sentencesOf, slotSentences, normalizeRanges, enforceDurations, MIN_SCENE_SEC, MAX_SCENE_SEC } from "../src/lib/video/scenes/plan";
-import { validateScenes, groundedIn, numberIsSaid, MIN_BOOK_SCENES, type ValidateContext } from "../src/lib/video/scenes/validate";
+import { validateScenes, groundedIn, numberIsSaid, shotFor, assignShots, MIN_BOOK_SCENES, DEFAULT_CARD_HEIGHT_IN_COLUMN_PX, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { renderScene, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
 import { targetSceneCount, planScenes } from "../src/lib/video/scenes";
 import { cardVisibility, cardZooms, glowKeys, buildComposition, CARD_X, CARD_Y, CARD_W, CARD_H, AUDIO_OFFSET } from "../src/lib/video/composition/build";
@@ -14,6 +14,7 @@ import { lexicalEmbedder } from "../src/lib/analysis/embed";
 import { resolveIcon, iconText, iconIndex, iconPaths, findIcons, resetIconIndex, takeIconTrouble } from "../src/lib/video/scenes/icons";
 import type { Beat } from "../src/lib/content/schema";
 import type { TimedWord } from "../src/lib/media/word-timing";
+import { PAGE_KINDS, SHOT_SCALE } from "../src/lib/video/scenes/types";
 import type { Scene, SceneSpec, VisualKind } from "../src/lib/video/scenes/types";
 import { fixtureInput } from "../scripts/fixtures/composition-fixture.mjs";
 
@@ -557,4 +558,78 @@ test("a stat's count-up shows the correct digits on a COLD direct seek, not just
   } finally {
     await browser.close();
   }
+});
+
+// --- shot grammar -------------------------------------------------------------
+
+const SHOT_BEATS = [beat(0, "Open here. One line. Two line. Three line. Four line. Five line.")];
+
+test("page scenes get varied shot sizes: an establishing wide, then never the same twice running", async () => {
+  const sentences = sentencesOf(SHOT_BEATS, timed(SHOT_BEATS));
+  const specs = sentences.map((s) => spec(s.index, s.index, s.index === 0 ? "kinetic-text" : "book-page"));
+  const r = await validateScenes(specs, ctx({ sentences }));
+
+  const shots = r.scenes.filter((s) => PAGE_KINDS.includes(s.kind)).map((s) => s.shot);
+  assert.ok(shots.length >= 3, "the fixture must actually produce page scenes");
+  assert.equal(shots[0], "wide", "the first page scene establishes");
+  for (let i = 1; i < shots.length; i++) {
+    assert.notEqual(shots[i], shots[i - 1], `scenes ${i - 1} and ${i} both used ${shots[i]}`);
+  }
+  for (const s of shots) assert.ok(s && s in SHOT_SCALE, `${s} is a real shot size`);
+  for (const s of r.scenes) if (!PAGE_KINDS.includes(s.kind)) assert.equal(s.shot, undefined, "only page scenes are framed");
+});
+
+test("a cited block too tall to frame closely falls back rather than cropping the words out", () => {
+  // The card shows ~1283 column px. What a shot can frame is 1283 / scale:
+  //   close  2.2x -> 583      medium 1.5x -> 855      wide 1x -> 1283
+  const tall = { y0: 100, y1: 900 }; // 800: over 583, under 855 -> close steps back to medium
+  const taller = { y0: 100, y1: 1100 }; // 1000: over 855 -> medium steps back to wide
+  const short = { y0: 100, y1: 260 };
+  assert.equal(shotFor("close", tall, 1283), "medium", "an 800px block cannot be framed at 2.2x");
+  assert.equal(shotFor("close", short, 1283), "close");
+  assert.equal(shotFor("medium", taller, 1283), "wide", "nor at 1.5x");
+  assert.equal(shotFor("close", taller, 1283), "wide", "close steps back more than one rung when it must");
+  assert.equal(shotFor("close", null, 1283), "medium", "no geometry, no close shot");
+  assert.equal(shotFor("wide", null, 1283), "wide");
+});
+
+test("the default card height is the one a typical 1131px-wide page produces", () => {
+  // CARD_H 1120 / (CARD_W 960 / 1131) -- derived, not pasted, and the same arithmetic build.ts does.
+  assert.equal(DEFAULT_CARD_HEIGHT_IN_COLUMN_PX, (CARD_H * 1131) / CARD_W);
+  assert.ok(DEFAULT_CARD_HEIGHT_IN_COLUMN_PX > 1300 && DEFAULT_CARD_HEIGHT_IN_COLUMN_PX < 1340);
+});
+
+test("assignShots never lets two page scenes share a size, even when a tall block forces a step back", () => {
+  const mk = (i: number, kind: VisualKind): Scene => ({
+    index: i, kind, start: i, end: i + 1, tone: "warm", sentences: [i], beatIndex: 0,
+    source: { pageIndex: 0, startWord: i, endWord: i }, reason: "", concept: "",
+  });
+  // Scene 1 (index 1) is a tall block: close -> wide, which equals the opening wide, so it must move.
+  const scenes = [mk(0, "book-page"), mk(1, "book-crop"), mk(2, "kinetic-text"), mk(3, "book-page"), mk(4, "book-page"), mk(5, "book-page")];
+  const tallAt = new Set([1]);
+  assignShots(scenes, (s) => (tallAt.has(s.index) ? { y0: 0, y1: 1200 } : { y0: 0, y1: 100 }), 1283);
+  const page = scenes.filter((s) => PAGE_KINDS.includes(s.kind));
+  assert.equal(page[0].shot, "wide");
+  for (let i = 1; i < page.length; i++) assert.notEqual(page[i].shot, page[i - 1].shot, `page scenes ${i - 1}/${i}`);
+  assert.equal(scenes[2].shot, undefined, "a non-page scene is left alone");
+});
+
+test("a page scene with no cited geometry never gets a close shot, and never throws", async () => {
+  const sentences = sentencesOf(SHOT_BEATS, timed(SHOT_BEATS));
+  const specs = sentences.map((s) => spec(s.index, s.index, s.index === 0 ? "kinetic-text" : "book-page"));
+  const r = await validateScenes(specs, ctx({ sentences, cropFor: () => null }));
+  const shots = r.scenes.filter((s) => PAGE_KINDS.includes(s.kind)).map((s) => s.shot);
+  assert.ok(shots.length >= 3);
+  assert.ok(shots.every((s) => s && s !== "close"), `got ${shots.join(",")}`);
+  for (let i = 1; i < shots.length; i++) assert.notEqual(shots[i], shots[i - 1]);
+});
+
+test("the context's cardHeightInColumnPx decides what can be framed closely", async () => {
+  const sentences = sentencesOf(SHOT_BEATS, timed(SHOT_BEATS));
+  const specs = sentences.map((s) => spec(s.index, s.index, s.index === 0 ? "kinetic-text" : "book-page"));
+  // The default ctx crop is 120px tall: closeable on a normal card, not on a card showing only 200 column px.
+  const normal = await validateScenes(specs, ctx({ sentences }));
+  assert.ok(normal.scenes.some((s) => s.shot === "close"), "a short block is framed closely on a normal card");
+  const tiny = await validateScenes(specs, ctx({ sentences, cardHeightInColumnPx: 200 }));
+  assert.ok(tiny.scenes.every((s) => s.shot !== "close"), "120px does not fit 200/2.2 = 91px");
 });
