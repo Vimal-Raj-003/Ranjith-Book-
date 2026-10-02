@@ -92,7 +92,7 @@ async function stateAt(page, t) {
         // zoom and the backdrop glow — because an untracked tweened element
         // is an untested one, and this is where a whole template could be
         // silently wrong.
-        "[data-stroke], .caption-line, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, .hook-text, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el], .sc [data-drift]",
+        "[data-stroke], .caption-line, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, .hook-text, #cta-card, #buy-card, #card, #card-zoom, #page-dim, #scene-glow, .sc, .sc [data-el], .sc [data-drift]",
       )) {
         const cs = getComputedStyle(el);
         const key =

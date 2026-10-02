@@ -26,6 +26,11 @@ import { cameraTrack } from "../src/lib/video/sweep";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
 import type { CaptionWord } from "../src/lib/media/captions";
+import { bookThemeById } from "../src/lib/video/composition/themes";
+import type { CompositionInput } from "../src/lib/video/composition/build";
+import { PAGE_KINDS, SHOT_SCALE } from "../src/lib/video/scenes/types";
+import type { Scene } from "../src/lib/video/scenes/types";
+import { fixtureInput } from "../scripts/fixtures/composition-fixture.mjs";
 
 const input = () => ({
   pkg: {
@@ -1110,4 +1115,44 @@ test("a page with a hi-res asset draws it at the SAME declared box; one without 
   });
   assert.match(hi, /<img src="assets\/page-0000@2x\.jpg" width="1000" height="1400"/);
   assert.ok(!hi.includes('src="assets/page-00.jpg"'), "the hi-res file replaces the standard one");
+});
+
+test("every page scene drives the card to its own shot scale, and the scales do not overlap in time", () => {
+  const theme = bookThemeById("marginalia");
+  const base = fixtureInput({ theme, withScenes: true }) as unknown as CompositionInput;
+  // The fixture's two page scenes, in order: a medium page, then a close crop.
+  let n = 0;
+  const shots = ["medium", "close"] as const;
+  const scenes = (base.scenes as Scene[]).map((s) => (PAGE_KINDS.includes(s.kind) ? { ...s, shot: shots[n++ % 2] } : s));
+  const html = buildComposition({ ...base, scenes, bookTitle: "T" });
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as {
+    zooms: { t: number; d: number; v: number }[];
+    dim: { t: number; d: number; o: number; y: number; h: number }[];
+  };
+
+  assert.ok(data.zooms.length >= 2, "more than one shot size is actually used");
+  for (const z of data.zooms) assert.ok(Object.values(SHOT_SCALE).includes(z.v), `${z.v} is a shot scale`);
+  for (let i = 1; i < data.zooms.length; i++) {
+    assert.ok(data.zooms[i - 1].t + data.zooms[i - 1].d <= data.zooms[i].t + 1e-6, "two scale tweens never run at once");
+  }
+
+  // The dim window never fully hides the page, and never covers the cited lines.
+  assert.ok(data.dim.length >= 1, "the close crop dims its surround");
+  for (const d of data.dim) {
+    assert.ok(d.o >= 0 && d.o <= 0.75, `dim opacity ${d.o} leaves the page readable`);
+    assert.ok(d.h > 0, "the transparent window has height");
+  }
+  for (let i = 1; i < data.dim.length; i++) {
+    assert.ok(data.dim[i - 1].t + data.dim[i - 1].d <= data.dim[i].t + 1e-6, "two dim tweens never run at once");
+  }
+  assert.ok(html.includes('id="page-dim"'), "scenes get the dim layer");
+});
+
+test("with no scenes there is no zoom, no dim layer and no change to the old composition", () => {
+  const theme = bookThemeById("marginalia");
+  const html = buildComposition({ ...(fixtureInput({ theme }) as unknown as CompositionInput), bookTitle: "T" });
+  assert.ok(!html.includes('id="page-dim"'), "a photo episode gets no dim layer at all");
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as { zooms: unknown[]; dim: unknown[] };
+  assert.deepEqual(data.zooms, []);
+  assert.deepEqual(data.dim, []);
 });

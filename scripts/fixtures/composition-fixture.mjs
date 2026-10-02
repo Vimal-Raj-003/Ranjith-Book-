@@ -111,9 +111,11 @@ export function fixtureInput({ theme, withScenes = false, cinematic = false }) {
     sceneAt(0, "kinetic-text", 0, 2.0, "deep", { words: [
       { word: "A", start: 0.1, end: 0.5 }, { word: "quiet", start: 0.6, end: 1.1 }, { word: "compounding.", start: 1.2, end: 1.9 },
     ] }),
-    sceneAt(1, "book-page", 2.0, 4.3, "warm", {}),
+    // Shot sizes and crops on both page scenes, so the seek harness drives the
+    // card-zoom scale tweens AND the #page-dim chain (a fromTo, then a to).
+    sceneAt(1, "book-page", 2.0, 4.3, "warm", { shot: "medium", crop: { x0: 40, y0: 60, x1: 900, y1: 130 } }),
     sceneAt(2, "icon-concept", 4.3, 6.6, "cool", { icons: [icon("clock"), icon("bulb")], items: ["time", "ideas"] }),
-    sceneAt(3, "book-crop", 6.6, 8.9, "warm", { crop: { x0: 40, y0: 300, x1: 900, y1: 440 } }),
+    sceneAt(3, "book-crop", 6.6, 8.9, "warm", { crop: { x0: 40, y0: 300, x1: 900, y1: 440 }, shot: "close" }),
     sceneAt(4, "comparison", 8.9, 10.2, "bright", { left: "before", right: "after", icons: [icon("clock"), icon("bulb")] }),
     sceneAt(5, "steps", 10.2, 11.2, "cool", { steps: ["first", "second", "third"] }),
     sceneAt(6, "growth-curve", 11.2, 12.0, "bright", { curve: { points: [4, 12, 30, 70], label: "compounding" } }),

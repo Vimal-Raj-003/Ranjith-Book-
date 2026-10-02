@@ -7,6 +7,11 @@ import type { CaptionLine } from "../../media/captions";
 import type { ContentPackage } from "../../content/schema";
 import type { BeatAudio } from "../../media/tts";
 import { BANDS, CONTENT_WIDTH, FRAME } from "./frame";
+import { cardZooms, dimKeys, type Keyed } from "./highlight";
+
+// Re-exported so the page-highlight geometry can live in its own module while
+// existing callers keep importing it from here.
+export { cardZooms };
 
 /**
  * The page before the marker: a moment for the photograph to settle on screen
@@ -334,19 +339,6 @@ const GLOW_BY_TONE: Record<SceneTone, { o: number; y: number; s: number }> = {
   bright: { o: 0.72, y: -3, s: 1.22 },
   deep: { o: 0.3, y: 7, s: 1.16 },
 };
-
-/**
- * How far a `book-crop` scene magnifies the card.
- *
- * Bounded tightly, and the cap is the load-bearing number: a printed line runs
- * the FULL width of the page, so magnifying about the centre eats the margins
- * first and then the words themselves. Measured on real renders — at 1.8x
- * every line was cut mid-word at both edges, at 1.35x the text still touched
- * them. 1.22x spends roughly the page's own margin and no more. The zoom's job
- * is to make the cited lines comfortably readable, not to crop to them.
- */
-const CROP_MIN = 1.12;
-const CROP_MAX = 1.22;
 
 /** Cumulative top offset of each page inside the one scrolling column. */
 function offsetsFor(pages: { width: number; height: number }[]): number[] {
@@ -754,7 +746,13 @@ function sharedCss(theme: BookTheme): string {
   .column { position:relative; }
   .page { position:absolute; left:0; }
   .page img { display:block; width:100%; height:100%; object-fit:cover; }
-  .stroke { position:absolute; transform-origin:left center; }
+  .stroke { position:absolute; transform-origin:left center; border-radius:3px;
+            filter:blur(0.6px); mix-blend-mode:multiply; }
+  /* The surround of the cited lines. Lives in #column so it scrolls and scales
+     with the page. Its hole is the element itself (transparent); the dimming is
+     the box-shadow outside it. Positioned with top, never bottom. */
+  .page-dim { position:absolute; left:-2000px; right:-2000px; top:0; height:0; opacity:0;
+              box-shadow:0 0 0 4000px ${p.backdropDeep}; pointer-events:none; }
 
   /* --- light sweep (§8) --------------------------------------------------- */
   /* The rotation and the clipping live on the STATIC wrapper; only the inner
@@ -1507,6 +1505,24 @@ const TIMELINE_JS = `
     });
   }
 
+  // The dimmed surround of the cited lines: one tween per change on one element,
+  // each clipped by dimKeys to end before the next. A key that starts from
+  // nothing is a fromTo so the transparent window appears already over the cited
+  // lines rather than sliding in from the top of the column while the page dims.
+  var dimEl = document.getElementById("page-dim");
+  if (dimEl) {
+    var dimPrev = 0;
+    (data.dim || []).forEach(function (k) {
+      var d = Math.max(0.001, k.d);
+      if (dimPrev === 0) {
+        tl.fromTo(dimEl, { top: k.y, height: k.h, opacity: 0 }, { top: k.y, height: k.h, opacity: k.o, duration: d, ease: "power2.out", immediateRender: false }, k.t);
+      } else {
+        tl.to(dimEl, { top: k.y, height: k.h, opacity: k.o, duration: d, ease: "power2.out" }, k.t);
+      }
+      dimPrev = k.o;
+    });
+  }
+
   // The backdrop glow moves with the content: one tween per scene on one
   // element, so the background is never the same for two minutes.
   var glowEl = document.getElementById("scene-glow");
@@ -1557,11 +1573,6 @@ const TIMELINE_JS = `
  * comes back.
  * ======================================================================== */
 
-interface Keyed {
-  t: number;
-  d: number;
-}
-
 /**
  * When the card is on screen. Returns its state at t=0 and one fade per
  * change, so a run of consecutive book scenes costs one tween, not one each.
@@ -1581,34 +1592,6 @@ export function cardVisibility(scenes: Scene[], shift: number): { start: number;
     at.push({ t: Math.max(0, shift + scenes[i].start - SCENE_FADE * 0.5), d: SCENE_FADE, v: wants[i] });
   }
   return { start: wants[0], at };
-}
-
-/**
- * How far the card is magnified, per book scene.
- *
- * A crop zooms the card's CONTENT rather than repositioning it, because the
- * camera has already parked the words being spoken at the card's vertical
- * centre (`cameraTrack`'s MIDDLE). Scaling about that centre therefore closes
- * in on exactly those words, and cannot fight the camera the way an absolute
- * pan would. Bounded at CROP_MAX so a stroke the camera had to clamp (at the
- * very top or bottom of the column, where it cannot centre) is still inside
- * the card when magnified.
- */
-export function cardZooms(scenes: Scene[], shift: number, cardHeightInColumnPx: number): (Keyed & { v: number })[] {
-  const out: (Keyed & { v: number })[] = [];
-  let current = 1;
-  for (const s of scenes) {
-    if (!PAGE_KINDS.includes(s.kind)) continue;
-    let target = 1;
-    if (s.kind === "book-crop" && s.crop) {
-      const h = Math.max(1, s.crop.y1 - s.crop.y0);
-      target = Math.min(CROP_MAX, Math.max(CROP_MIN, cardHeightInColumnPx / (h * 3)));
-    }
-    if (Math.abs(target - current) < 0.02) continue;
-    out.push({ t: Math.max(0, shift + s.start), d: Math.min(1.4, Math.max(0.5, (s.end - s.start) * 0.35)), v: Math.round(target * 1000) / 1000 });
-    current = target;
-  }
-  return out;
 }
 
 /** The backdrop glow's state per scene, so the background moves with the content. */
@@ -1819,6 +1802,7 @@ export function buildComposition(input: CompositionInput): string {
   const bokeh = scenes.length ? bokehField() : [];
   const cardVis = scenes.length ? cardVisibility(scenes, AUDIO_OFFSET) : null;
   const zooms = scenes.length ? cardZooms(scenes, AUDIO_OFFSET, cardViewportHeight(columnWidth)) : [];
+  const dim = scenes.length ? dimKeys(scenes, AUDIO_OFFSET) : [];
   const glow = scenes.length ? glowKeys(scenes, AUDIO_OFFSET) : [];
 
   const data = embed({
@@ -1834,6 +1818,7 @@ export function buildComposition(input: CompositionInput): string {
     anims,
     cardVis,
     zooms,
+    dim,
     glow,
     // The theme's accent colour, read by the Three.js shared material
     // (TIMELINE_JS) exactly once per render — every icon-concept accent in
@@ -1953,6 +1938,7 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
             <div class="scaler" style="transform:scale(${scale.toFixed(6)});">
               <div class="column" id="column" style="width:${columnWidth}px;height:${columnHeight}px;">
                 ${pagesHtml}
+                ${scenes.length ? `<div class="page-dim" id="page-dim"></div>` : ""}
                 ${strokesHtml}
               </div>
             </div>

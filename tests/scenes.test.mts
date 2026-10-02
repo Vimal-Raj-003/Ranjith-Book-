@@ -7,6 +7,7 @@ import { sentencesOf, slotSentences, normalizeRanges, enforceDurations, MIN_SCEN
 import { validateScenes, groundedIn, numberIsSaid, shotFor, assignShots, MIN_BOOK_SCENES, DEFAULT_CARD_HEIGHT_IN_COLUMN_PX, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { renderScene, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
 import { targetSceneCount, planScenes } from "../src/lib/video/scenes";
+import { dimKeys } from "../src/lib/video/composition/highlight";
 import { cardVisibility, cardZooms, glowKeys, buildComposition, CARD_X, CARD_Y, CARD_W, CARD_H, AUDIO_OFFSET } from "../src/lib/video/composition/build";
 import { bookThemeById } from "../src/lib/video/composition/themes";
 import type { CompositionInput } from "../src/lib/video/composition/build";
@@ -334,7 +335,7 @@ test("with scenes the composition carries the layers, the card's visibility, its
   const scenes: Scene[] = [
     { ...sceneOf("kinetic-text"), index: 0, start: 0, end: 4 },
     { ...sceneOf("book-page"), index: 1, start: 4, end: 8, tone: "warm" },
-    { ...sceneOf("book-crop"), index: 2, start: 8, end: 11, tone: "warm", crop: { x0: 0, y0: 100, x1: 900, y1: 220 } },
+    { ...sceneOf("book-crop"), index: 2, start: 8, end: 11, tone: "warm", crop: { x0: 0, y0: 100, x1: 900, y1: 220 }, shot: "close" },
     { ...sceneOf("stat"), index: 3, start: 11, end: 13.4, tone: "deep" },
   ];
   const html = buildComposition({ ...base, bookTitle: "Fixture", scenes });
@@ -351,9 +352,10 @@ test("with scenes the composition carries the layers, the card's visibility, its
   // the book scenes, then goes again for the stat.
   assert.equal(data.cardVis.start, 0);
   assert.deepEqual(data.cardVis.at.map((c: { v: number }) => c.v), [1, 0]);
-  // The crop zooms in; the page scene before it sits at 1.
-  assert.ok(data.zooms.length >= 1);
-  assert.ok(data.zooms.every((z: { v: number }) => z.v >= 1 && z.v <= 1.8));
+  // The close crop pushes in to its shot scale and dims the page around it.
+  assert.deepEqual(data.zooms.map((z: { v: number }) => z.v), [SHOT_SCALE.close]);
+  assert.equal(data.dim.length, 1);
+  assert.ok(html.includes('id="page-dim"'));
   assert.equal(data.glow.length, 4);
 
   const overlaps = overlappingAnims(data.anims);
@@ -378,12 +380,23 @@ test("a quote scene hides the page card: its own layer carries the book's words"
   assert.ok(renderScene(s(1, "quote"), RECT, ACCENT), "and it does have a layer of its own");
 });
 
-test("a crop zoom is bounded, and a page scene returns the card to life size", () => {
-  const s = (i: number, kind: VisualKind, crop?: Scene["crop"]): Scene => ({ ...sceneOf(kind), index: i, start: i * 4, end: i * 4 + 4, crop });
-  const zooms = cardZooms([s(0, "book-crop", { x0: 0, y0: 0, x1: 900, y1: 60 }), s(1, "book-page")], 0, 1280);
-  assert.ok(zooms[0].v > 1 && zooms[0].v <= 1.8, `zoom ${zooms[0].v}`);
+test("a scene's shot size drives the card's scale, and a wide shot returns it to life size", () => {
+  const s = (i: number, kind: VisualKind, shot?: Scene["shot"]): Scene => ({ ...sceneOf(kind), index: i, start: i * 4, end: i * 4 + 4, shot });
+  const zooms = cardZooms([s(0, "book-crop", "close"), s(1, "book-page", "wide")], 0, 1280);
+  assert.equal(zooms[0].v, SHOT_SCALE.close);
   assert.equal(zooms[1].v, 1, "back to life size for the whole page");
   assert.deepEqual(glowKeys([s(0, "stat")], 0).length, 1);
+});
+
+test("the dim frames a cited span, never overlaps itself, and is cleared by the next wide shot", () => {
+  const crop = { x0: 0, y0: 300, x1: 900, y1: 360 };
+  const s = (i: number, kind: VisualKind, shot: Scene["shot"], c?: Scene["crop"]): Scene => ({ ...sceneOf(kind), index: i, start: i * 4, end: i * 4 + 4, shot, crop: c });
+  const keys = dimKeys([s(0, "book-page", "wide"), s(1, "book-crop", "close", crop), s(2, "book-crop", "medium", { ...crop, y0: 500, y1: 580 }), s(3, "book-page", "wide")], 0);
+  assert.deepEqual(keys.map((k) => k.o), [0.62, 0.34, 0], "a wide shot dims nothing, and the one after a dim clears it");
+  assert.deepEqual([keys[0].y, keys[0].h], [300, 60]);
+  assert.deepEqual([keys[2].y, keys[2].h], [500, 80], "the clear fades in place instead of jumping");
+  for (let i = 1; i < keys.length; i++) assert.ok(keys[i - 1].t + keys[i - 1].d <= keys[i].t + 1e-6);
+  assert.deepEqual(dimKeys([s(0, "book-page", "close")], 0), [], "a close shot with no cited span has nothing to frame");
 });
 
 // --- icons -------------------------------------------------------------------------
