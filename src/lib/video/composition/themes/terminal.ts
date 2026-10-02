@@ -119,19 +119,6 @@ export const terminal: BookTheme = {
               mix-blend-mode: multiply;
               box-shadow: 0 0 0 1px ${alpha(p.markerEdge, 0.45)}; }
 
-    /* --- cue: a status chip -----------------------------------------------
-       The tilt is dropped by restating the WHOLE transform on \`.cue\` (which
-       carries no tween — only autoAlpha touches it), never by declaring one on
-       \`.annot\`: same specificity, theme CSS appended last, so an \`.annot\`
-       transform silently drops the translateX that centres the card. */
-    .cue { transform: translateX(-50%); border-radius:4px; }
-    .annot { font-family:${MONO}; font-size:29px; font-weight:500; letter-spacing:0.4px;
-             color:${p.accent}; background:${alpha(p.backdropDeep, 0.9)};
-             border:1px solid ${alpha(p.accent, 0.34)}; border-left:5px solid ${p.accent};
-             box-shadow: 0 18px 42px -18px ${p.cardShadow}; }
-    .annot::before { content:"$ "; color:${alpha(p.accent, 0.5)}; }
-    .cue-emoji { position:relative; top:-1px; }
-
     /* --- captions, hook, CTA, progress ------------------------------------ */
     .caption-line { font-family:${MONO}; font-size:52px; font-weight:700; letter-spacing:-0.5px;
                     border-radius:6px; border-left:6px solid ${p.accent};

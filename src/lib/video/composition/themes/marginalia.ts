@@ -12,9 +12,9 @@ import type { BookTheme } from "../theme-contract";
  * — because the cream card only reads as "floating paper" if there is
  * something darker for it to float against.
  *
- * `.annot` doubles as the styling hook for the shared cue-card element that
- * `build.ts` creates and times (see the theme-contract note there): this file
- * only says what an annotation looks like, never when or where one appears.
+ * This file only says what the surfaces look like, never when or where one
+ * appears: `build.ts` creates, places and times them (see the theme-contract
+ * note there).
  */
 export const marginalia: BookTheme = {
   id: "marginalia",
@@ -87,14 +87,6 @@ export const marginalia: BookTheme = {
               background: linear-gradient(180deg, #ffe97a 0%, #ffe14d 55%, #f2c200 100%);
               mix-blend-mode: multiply; box-shadow: 0 0 6px 2px rgba(255,225,77,.45); }
 
-    /* The rotation deliberately stays on \`.cue\` in the shared skeleton rather
-       than being restated here: a \`transform\` declared on \`.annot\` overrides
-       \`.cue\`'s whole transform (same specificity, theme CSS appended later),
-       which silently drops the \`translateX(-50%)\` that centres the card. */
-    .annot { color:#d9531e; font-family: "Bradley Hand", "Segoe Script", cursive;
-             font-size: 34px; background: #fff7d6;
-             border: 1px solid rgba(217,83,30,0.35); box-shadow: 2px 3px 6px rgba(0,0,0,0.28); }
-
     /* --- captions, hook, CTA, progress ------------------------------------ */
     .caption-line { background: rgba(20,17,12,0.90); color:#fdfaf2;
                     box-shadow: 0 10px 30px -12px rgba(0,0,0,0.7); }
@@ -110,17 +102,13 @@ export const marginalia: BookTheme = {
     .buy-kicker { color:#d9531e; }
     .progress-fill { background: linear-gradient(90deg, #d9531e 0%, #ffd23f 100%); }
 
-    /* The byline is set in the same script face as the annotations, one size
-       down and without the sticky-note card behind it: it is a caption for the
-       object above it, not a third annotation competing with the cue. No
+    /* The byline is set in a handwritten script face, small and without a card
+       behind it: it is a caption for the object above it. No
        \`transform\` here — see the theme-contract note; \`.byline\` carries the
        translateX that centres it, though it is untweened. */
     .byline { color: rgba(246,236,214,0.72);
               font-family: "Bradley Hand", "Segoe Script", cursive;
               text-shadow: 0 2px 10px rgba(0,0,0,0.55); }
-
-    /* The emoji rides slightly high against the script face's own x-height. */
-    .cue-emoji { position:relative; top:-2px; }
 
     .vignette { position:absolute; inset:0; pointer-events:none;
                 box-shadow: inset 0 0 260px 80px rgba(20,12,4,.55); }

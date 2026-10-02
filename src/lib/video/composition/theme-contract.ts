@@ -93,7 +93,7 @@ export interface ThemePalette {
  *    load and then be overwritten the first time the tween runs — a jump), and
  *    the third carries the static column->card scale.
  *  - `.hook-card`, `.cta-card`, `.buy-card`, `.progress-track` /
- *    `.progress-fill`, `.caption-line`, `.cue` / `.cue-emoji` / `.cue-label`,
+ *    `.progress-fill`, `.caption-line`,
  *    `.byline` — placed and timed by `build.ts`, styled by the palette above
  *    and refinable by `css()`.
  *  - `cardFace()` is the one genuinely new markup surface a theme owns: what

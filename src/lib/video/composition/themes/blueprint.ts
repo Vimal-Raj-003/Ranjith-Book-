@@ -22,7 +22,7 @@ import { alpha, mix, fade } from "./color";
  * suspended voicings, very little movement — which is this theme's brief
  * exactly.
  *
- * Type: monospace for every label (cue, byline, kickers), where a drawing sets
+ * Type: monospace for every label (byline, kickers), where a drawing sets
  * its annotations, and the frame's own grotesque for the sentences a viewer
  * actually reads. Both are system stacks with real fallbacks; nothing is
  * fetched, because the composition renders offline.
@@ -127,20 +127,6 @@ export const blueprint: BookTheme = {
               mix-blend-mode: multiply;
               box-shadow: inset 0 3px 0 0 ${p.markerEdge},
                           inset 0 -3px 0 0 ${p.markerEdge}; }
-
-    /* --- cue: a spec tag ---------------------------------------------------
-       Untilted: a drawing's annotations are square to the sheet. The whole
-       transform is restated on \`.cue\` (untweened — only autoAlpha touches
-       it), never on \`.annot\`: same specificity, theme CSS appended last, so
-       an \`.annot\` transform silently drops the translateX that centres it. */
-    .cue { transform: translateX(-50%); border-radius:2px; }
-    .annot { font-family:${MONO}; font-size:26px; font-weight:500; letter-spacing:3.5px;
-             text-transform:uppercase; color:${p.accent};
-             background:${alpha(p.backdropDeep, 0.9)};
-             border:1px solid ${alpha(p.accent, 0.42)};
-             box-shadow: 0 18px 44px -22px ${p.cardShadow}; }
-    .annot::before { content:"+ "; color:${alpha(p.accent, 0.55)}; }
-    .cue-emoji { position:relative; top:-1px; }
 
     /* --- captions, hook, CTA, progress ------------------------------------ */
     .caption-line { font-family:${SANS}; font-size:58px; font-weight:800; letter-spacing:-0.5px;

@@ -92,7 +92,7 @@ async function stateAt(page, t) {
         // zoom and the backdrop glow — because an untracked tweened element
         // is an untested one, and this is where a whole template could be
         // silently wrong.
-        "[data-stroke], .caption-line, .cue, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, .hook-text, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el], .sc [data-drift]",
+        "[data-stroke], .caption-line, #column, #card-pop, #card-drift, #card-sweep, #progress, #hook, .hook-text, #cta-card, #buy-card, #card, #card-zoom, #scene-glow, .sc, .sc [data-el], .sc [data-drift]",
       )) {
         const cs = getComputedStyle(el);
         const key =
@@ -100,17 +100,15 @@ async function stateAt(page, t) {
             ? `stroke:${el.dataset.stroke}`
             : el.dataset.caption !== undefined
               ? `caption:${el.dataset.caption}`
-              : el.dataset.cue !== undefined
-                ? `cue:${el.dataset.cue}`
-                : el.dataset.scene !== undefined
-                  ? `scene:${el.dataset.scene}`
-                  : el.dataset.el !== undefined
-                    ? `el:${el.closest("[data-scene]")?.dataset.scene}:${el.dataset.el}`
-                    : el.hasAttribute("data-drift")
-                      ? `drift:${el.closest("[data-scene]")?.dataset.scene}`
-                      : el.classList.contains("hook-text")
-                        ? "hook-text"
-                        : el.id;
+              : el.dataset.scene !== undefined
+                ? `scene:${el.dataset.scene}`
+                : el.dataset.el !== undefined
+                  ? `el:${el.closest("[data-scene]")?.dataset.scene}:${el.dataset.el}`
+                  : el.hasAttribute("data-drift")
+                    ? `drift:${el.closest("[data-scene]")?.dataset.scene}`
+                    : el.classList.contains("hook-text")
+                      ? "hook-text"
+                      : el.id;
         out[key] = Object.fromEntries(props.map((p) => [p, cs.getPropertyValue(p)]));
       }
       return out;

@@ -124,17 +124,6 @@ export const editorial: BookTheme = {
               mix-blend-mode: multiply;
               box-shadow: inset 0 -5px 0 0 ${p.markerEdge}; }
 
-    /* --- cue: a pull-quote tag -------------------------------------------
-       The whole transform is restated on \`.cue\` (untweened; only autoAlpha
-       touches it) so the tilt can change. Never on \`.annot\`: same
-       specificity, theme CSS appended last, and it would drop the translateX
-       that centres the card. */
-    .cue { transform: translateX(-50%) rotate(-1.2deg); border-radius:2px; }
-    .annot { font-family:${SERIF_TEXT}; font-style:italic; font-size:34px; font-weight:600;
-             color:${p.ink}; background:${p.paper}; border-top:3px solid ${p.accent};
-             box-shadow: 0 0 0 1px ${alpha(p.ink, 0.14)}, 0 16px 36px -18px ${p.cardShadow}; }
-    .cue-emoji { position:relative; top:-2px; }
-
     /* --- captions, hook, CTA, progress ------------------------------------ */
     .caption-line { font-family:${SERIF_TEXT}; font-size:56px; font-weight:700; letter-spacing:-0.5px;
                     border-radius:3px; border-bottom:5px solid ${p.accent};

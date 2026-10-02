@@ -22,8 +22,8 @@ export interface Beat {
   /** Short on-screen label, six words at most. */
   onScreen: string;
   /**
-   * One emoji standing for what THIS beat is about, shown on the cue card and
-   * available to social copy — never spoken.
+   * One emoji standing for what THIS beat is about, available to social copy
+   * and no longer painted on screen — never spoken.
    *
    * Optional in both directions: the CLI providers have no structured-output
    * mode, so nothing can guarantee a reply carries it, and a beat whose

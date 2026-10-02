@@ -71,8 +71,7 @@ export const CARD_RADIUS = 28;
  * edge anchored, so a two-line caption still grows upward the way a
  * one-line one does) rendered correctly. Isolated by swapping only that one
  * property with everything else held constant; not a container-sizing or
- * z-index issue — `.cue` sits in an identically full-inset ancestor and
- * uses `top` already, which is why it never showed this failure.
+ * z-index issue.
  *
  * 1720 rather than the old 1790: the bottom ~200px of a Reel is covered by
  * Instagram's own like/comment/caption chrome, so a caption sitting there is
@@ -94,17 +93,8 @@ export const CAPTION_BASELINE = 1720;
  */
 export const BYLINE_Y = BANDS.title.top;
 
-/**
- * Where the cue / annotation band sits — between the card's bottom edge
- * (1370) and the caption's own top edge (roughly 1640 once `translateY(-100%)`
- * is applied to a one-line caption). The cue used to sit at `top:64px`, which
- * is now inside the progress-bar/brand strip above the card.
- */
-const CUE_TOP = 1450;
-
-/** Fade durations for captions/cues — short enough to read as a cut, not a dissolve. */
+/** Fade duration for captions — short enough to read as a cut, not a dissolve. */
 const CAPTION_FADE = 0.15;
-const CUE_FADE = 0.2;
 /** The hook card's dissolve into the page, and the CTA end card's fade in. */
 export const HOOK_FADE = 0.35;
 /**
@@ -495,63 +485,6 @@ export function bylineText(
 }
 
 /* ===========================================================================
- * Emoji — spec 2026-08-23 §10
- * ======================================================================== */
-
-/** How many code points of a beat's `emoji` are actually painted. */
-const EMOJI_MAX_CHARS = 4;
-
-/**
- * A beat's optional emoji, or `null`.
- *
- * `Beat.emoji` is written by the model and added to the schema by another
- * workstream, so at this call site it may be present, absent, empty, or not a
- * string at all (a number, an array, `null`). Every one of those must produce
- * a cue card without an emoji rather than an exception — a decorative glyph is
- * never worth failing a render for. Hence the `unknown` read and the `typeof`
- * gate, rather than trusting the declared type.
- *
- * Clipped over CODE POINTS (`Array.from`, not `slice`): every interesting
- * emoji is astral, and a UTF-16 slice would cut one in half and paint a
- * replacement glyph. The clip exists at all because "one emoji" is a
- * convention, not a guarantee — a model that returns a sentence here should
- * cost four characters of cue card, not the layout.
- *
- * This function feeds the CUE CARD ONLY. Nothing spoken passes through here:
- * `voiceover` is read straight from the beat by the TTS path and
- * `sanitizeForSpeech` strips emoji there independently, which is what keeps a
- * speech engine from either going silent or reading a glyph's name aloud.
- */
-export function beatEmoji(beat: unknown): string | null {
-  const raw = (beat as { emoji?: unknown } | null | undefined)?.emoji;
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return null;
-  return Array.from(trimmed).slice(0, EMOJI_MAX_CHARS).join("");
-}
-
-/**
- * The on-screen label lives in the shared skeleton, not the theme, even though
- * it is styled by the theme's CSS (`.annot` in Marginalia): WHERE it sits and
- * WHEN it shows/hides is timing and layout, which the theme contract does not
- * own. Only its look is themed.
- *
- * The emoji (§10) is a SIBLING span rather than text prepended to the label,
- * so the theme can size and space it independently of the handwritten cue face
- * — a colour-emoji font and a script font at the same px are not the same
- * optical size — and so that a beat without one leaves no stray leading space.
- */
-function cueMarkup(pkg: ContentPackage): string {
-  return pkg.beats
-    .map((b, i) => {
-      const emoji = beatEmoji(b);
-      const badge = emoji ? `<span class="cue-emoji">${esc(emoji)}</span>` : "";
-      return `<div class="cue annot" data-cue="${i}">${badge}<span class="cue-label">${esc(b.onScreen)}</span></div>`;
-    })
-    .join("\n");
-}
-
-/* ===========================================================================
  * Purchase card — spec 2026-08-23 §11
  * ======================================================================== */
 
@@ -583,14 +516,13 @@ function purchaseLink(bookLink: string | null | undefined): string | null {
 }
 
 /**
- * Text is baked into the markup at build time, the same way `cueMarkup`
- * above does it — NOT left blank and filled in later by
- * `el.textContent = ...` in the runtime script. Verified against a real
+ * Text is baked into the markup at build time — NOT left blank and filled in
+ * later by `el.textContent = ...` in the runtime script. Verified against a real
  * `hyperframes snapshot`/render (not just the in-repo Playwright harnesses,
  * which drive the timeline directly and never exercised this path): a
  * caption line built the JS-assigned way sits at its `autoAlpha:0` rest
- * state for the entire video with no error reported anywhere, while a cue —
- * built exactly like this, text already present in the DOM at load — fades
+ * state for the entire video with no error reported anywhere, while a line
+ * built exactly like this, text already present in the DOM at load, fades
  * in and out correctly. The renderer's own static analysis pass runs over
  * the page before the runtime script populates anything, so an element
  * that is empty at that point never becomes visible content it will render.
@@ -830,17 +762,6 @@ function sharedCss(theme: BookTheme): string {
             font-size:28px; font-weight:600; letter-spacing:0.3px; line-height:1.2;
             font-family: Inter, system-ui, sans-serif; color:${p.bylineInk}; }
 
-  .cues { position:absolute; inset:0; pointer-events:none; }
-  .cue { position:absolute; top:${CUE_TOP}px; left:50%; transform:translateX(-50%) rotate(-4deg);
-         padding:10px 22px; border-radius:6px; opacity:0; visibility:hidden;
-         white-space:nowrap; }
-  /* The emoji (§10) sits beside the label, sized on its own: a colour-emoji
-     font and Marginalia's script face do not share an optical size at the same
-     px, and a beat without an emoji must leave no gap where one would be. */
-  .cue-emoji { display:inline-block; vertical-align:middle; margin-right:12px;
-               font-size:0.92em; line-height:1;
-               font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
-  .cue-label { display:inline-block; vertical-align:middle; }
   .captions { position:absolute; inset:0; pointer-events:none; }
   .caption-line { position:absolute; left:50%; top:${CAPTION_BASELINE}px;
                   transform:translate(-50%, -100%);
@@ -852,8 +773,8 @@ function sharedCss(theme: BookTheme): string {
   /* --- hook card (§2.2) --------------------------------------------------- */
   /* Rest state is VISIBLE: the hook owns t=0, so a render that never ran the
      timeline at all still shows it rather than a blank first frame.
-     It is the LAST full-frame layer, so its scrim also covers beat 0's cue
-     and caption for as long as it holds. That is deliberate: the hook at 76px
+     It is the LAST full-frame layer, so its scrim also covers beat 0's
+     caption for as long as it holds. That is deliberate: the hook at 76px
      is what the first second is FOR, and stacking a 60px caption of the same
      beat's narration under it is two competing headlines, not two pieces of
      information. */
@@ -904,7 +825,6 @@ function sharedCss(theme: BookTheme): string {
 const TIMELINE_JS = `
 (function () {
   var CAPTION_FADE = ${CAPTION_FADE};
-  var CUE_FADE = ${CUE_FADE};
   var HOOK_FADE = ${HOOK_FADE};
   var HOOK_TEXT_LEAD = ${HOOK_TEXT_LEAD};
   var CTA_FADE = ${CTA_FADE};
@@ -1006,16 +926,6 @@ const TIMELINE_JS = `
     // instead of going dark at its own beat's end.
     if (!line.hold) {
       tl.to(el, { autoAlpha: 0, duration: CAPTION_FADE, ease: "none" }, Math.max(line.start + CAPTION_FADE + 0.01, line.end - CAPTION_FADE));
-    }
-  });
-
-  var cueEls = document.querySelectorAll(".cue");
-  data.cues.forEach(function (cue, i) {
-    var el = cueEls[i];
-    if (!el) return;
-    tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: CUE_FADE, ease: "none", immediateRender: false }, cue.start);
-    if (!cue.hold) {
-      tl.to(el, { autoAlpha: 0, duration: CUE_FADE, ease: "none" }, Math.max(cue.start + CUE_FADE + 0.01, cue.end - CUE_FADE));
     }
   });
 
@@ -1588,7 +1498,7 @@ const TIMELINE_JS = `
   // An explicit tail marker: a zero-duration, no-op set at the declared end of
   // the composition. Without it, when the last camera key is skipped (the
   // ordinary "camera settles, then holds for the CTA" shape — see the
-  // zero-distance skip above) and the last cue/caption is held rather than
+  // zero-distance skip above) and the last caption is held rather than
   // faded, nothing in the timeline actually reaches \`data.duration\`, and
   // GSAP's own tl.duration() falls short of what the document declares. A
   // renderer seeking by data-duration would still see the held state, but the
@@ -1602,7 +1512,7 @@ const TIMELINE_JS = `
   // there. Without this, hyperframes' own check command flags
   // gsap_timeline_not_registered, and -- verified against a real render --
   // the renderer falls back to the composition's static initial DOM: every
-  // stroke, caption and cue stayed at its rest state (opacity 0, scaleX 0)
+  // stroke and caption stayed at its rest state (opacity 0, scaleX 0)
   // for the whole video, with no error surfaced anywhere. That failure is
   // invisible to the composition test suite and to the seek-safety script,
   // both of which reach the timeline directly via window.__tl (kept below
@@ -1768,10 +1678,10 @@ export function buildComposition(input: CompositionInput): string {
   const strokes = flattenStrokes(pkg, sweeps, offsets, pages.length, AUDIO_OFFSET, bookPages);
   const cameraData = camera.map((k) => ({ t: AUDIO_OFFSET + k.t, y: k.y }));
 
-  // The last beat is the CTA. Its cue (and its FINAL caption line, if it has
-  // one) must hold through the outro tail rather than fade out at the beat's
-  // own clip end — `beat.end` lands exactly where OUTRO_TAIL begins, so
-  // fading out there produces a video whose entire tail is a blank page.
+  // The last beat is the CTA. Its FINAL caption line (if it has one) must hold
+  // through the outro tail rather than fade out at the beat's own clip end —
+  // `beat.end` lands exactly where OUTRO_TAIL begins, so fading out there
+  // produces a video whose entire tail is a blank page.
   // `hold: true` tells the runtime script to skip that fade-out and leave the
   // element visible all the way to `duration`.
   //
@@ -1792,12 +1702,6 @@ export function buildComposition(input: CompositionInput): string {
     end: AUDIO_OFFSET + c.end,
     hold: i === lastCaptionIndex && c.beatIndex === lastBeatIndex,
   }));
-  const cueData = pkg.beats.map((_, i) => {
-    const audio: BeatAudio | undefined = beats[i];
-    const start = AUDIO_OFFSET + (audio?.start ?? 0);
-    const end = AUDIO_OFFSET + (audio?.end ?? audio?.start ?? 0);
-    return { start, end, hold: i === lastBeatIndex };
-  });
 
   // --- Hook window (spec §2.2) ---------------------------------------------
   // The hook card owns the opening, then hands over to the page.
@@ -1900,7 +1804,6 @@ export function buildComposition(input: CompositionInput): string {
     strokes,
     camera: cameraData,
     captions: captionData,
-    cues: cueData,
     pops,
     lightSweeps,
     hook: hookData,
@@ -2041,9 +1944,6 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
     ${scenes.length ? `<div class="cine-vignette"></div>` : ""}
     ${theme.overlay()}
     ${bylineHtml}
-    <div class="cues">
-      ${cueMarkup(pkg)}
-    </div>
     <div class="captions" id="captions">
       ${captionMarkup(captions)}
     </div>

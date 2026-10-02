@@ -56,7 +56,7 @@ test("a beat's emoji never reaches the spoken script", () => {
 
 test("the emoji field is carried on the beat, not spliced into onScreen or voiceover", () => {
   const p = pkg();
-  assert.equal(p.beats[0].emoji, "🕯️", "the cue card still has an emoji to render");
+  assert.equal(p.beats[0].emoji, "🕯️", "the beat still carries its emoji for social copy");
   assert.equal(p.beats[2].emoji, undefined, "a beat with no honest emoji keeps none");
   assert.equal(beatTexts(p).length, p.beats.length, "every beat still owns its audio slot");
 });

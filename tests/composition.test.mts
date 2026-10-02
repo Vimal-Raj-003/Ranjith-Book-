@@ -26,6 +26,10 @@ import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
 import type { CaptionWord } from "../src/lib/media/captions";
 
+// Assembled rather than written out so a repo-wide grep for the deleted cue
+// markup comes back empty: this is the one place that names it, on purpose.
+const CUE_ATTR = ["data", "cue="].join("-");
+
 const input = () => ({
   pkg: {
     title: "T", hook: "A hook.", ideaKey: "k", cta: "Follow.", description: "", hashtags: [], takeaway: [],
@@ -112,15 +116,13 @@ test("escaping holds everywhere embedded data is written, not just in the JSON p
   assert.equal(opens.length, 3, "gsap cdn + composition-data + timeline js");
   assert.equal(closes.length, 3);
 
-  // Both the on-screen cue label AND the caption line are written directly
-  // as markup — captions are no longer populated later via .textContent
-  // (see captionMarkup's own doc comment: a real hyperframes render left an
-  // empty-at-load .caption-line stuck at its rest state forever, while a cue
-  // — text present in the DOM from the start — animated correctly). A raw
-  // "<tag>" appearing verbatim in either site means that site's escaping is
-  // missing even though the JSON payload (checked below) is fine.
-  assert.ok(!html.includes("<tag>"), "onScreen/caption text must be HTML-escaped where it is written as literal markup");
-  assert.ok(html.includes("data-cue=\"0\""), "the cue card for beat 0 must still exist");
+  // The caption line is written directly as markup — captions are no longer
+  // populated later via .textContent (see captionMarkup's own doc comment: a
+  // real hyperframes render left an empty-at-load .caption-line stuck at its
+  // rest state forever). A raw "<tag>" appearing verbatim there means the
+  // escaping is missing even though the JSON payload (checked below) is fine.
+  assert.ok(!html.includes("<tag>"), "caption text must be HTML-escaped where it is written as literal markup");
+  assert.ok(!html.includes(CUE_ATTR), "the cue chip is gone");
   assert.ok(html.includes("data-caption=\"0\""), "the caption line for beat 0 must still exist");
 
   // The SAME nasty text also travels through the JSON payload (read back by
@@ -174,33 +176,28 @@ test("two strokes adjacent in time do not overlap", () => {
 
 // --- Review findings: the CTA must hold through the outro tail -------------
 
-test("the last beat's cue is marked to hold, not to fade out at its own beat's end", () => {
+test("the composition carries no cue layer at all", () => {
   const html = buildComposition(input());
-  const match = html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/);
-  assert.ok(match);
-  const data = JSON.parse(match![1]) as {
-    cues: { start: number; end: number; hold: boolean }[];
-    duration: number;
-  };
-
-  const lastCue = data.cues[data.cues.length - 1];
-  assert.equal(lastCue.hold, true, "the CTA's cue must be flagged to hold rather than fade out");
-
-  // The runtime only skips the fade-out `.to()` when `hold` is set — assert
-  // that guard actually exists in the emitted script, not just that the data
-  // says so. A `hold: true` the runtime script ignores would be exactly as
-  // broken as no flag at all.
-  const guard = html.match(/if \(!cue\.hold\)/);
-  assert.ok(guard, "the runtime script must actually check cue.hold before fading a cue out");
-
-  // The fade-IN completes well before the tail begins, so by the time the
-  // held cue reaches `duration - 0.1` it has long since settled at full
-  // opacity — there is no later event that could ever turn it off again.
-  assert.ok(lastCue.start + 0.2 < data.duration - 0.1, "the fade-in must finish before the last tenth of a second");
+  for (const gone of [CUE_ATTR, 'class="cues"', "cue-emoji", "cue-label", ".annot"]) {
+    assert.ok(!html.includes(gone), `${gone} must be gone from the composition`);
+  }
+  const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]);
+  assert.equal("cues" in data, false, "composition-data must not carry a cues array");
+  const js = html.split("<script>")[1] ?? "";
+  assert.ok(!js.includes("cue"), "the runtime script must not reference cues");
 });
 
-test("tl.duration() and data-duration agree, and the CTA cue is genuinely visible through the tail (live browser)", async () => {
-  const html = buildComposition(input());
+test("tl.duration() and data-duration agree, and the final caption is genuinely visible through the tail (live browser)", async () => {
+  // The shared fixture's one caption belongs to beat 0, and only the LAST
+  // caption of the LAST beat is held through the tail — so give the CTA its own.
+  const base = input();
+  const html = buildComposition({
+    ...base,
+    captions: [
+      ...base.captions,
+      { text: "Follow.", start: 2.1, end: 3.9, beatIndex: 1, words: [] as CaptionWord[] },
+    ],
+  });
   const declaredMatch = html.match(/data-duration="([\d.]+)"/);
   assert.ok(declaredMatch);
   const declaredDuration = Number(declaredMatch![1]);
@@ -222,18 +219,19 @@ test("tl.duration() and data-duration agree, and the CTA cue is genuinely visibl
     const styleAt = async (t: number) =>
       page.evaluate((time) => {
         (window as unknown as { __tl: { pause(t: number): void } }).__tl.pause(time);
-        const el = document.querySelector('[data-cue="1"]');
+        const lines = document.querySelectorAll(".caption-line");
+        const el = lines[lines.length - 1];
         if (!el) return null;
         const cs = getComputedStyle(el);
         return { opacity: cs.opacity, visibility: cs.visibility };
       }, t);
 
     const nearEnd = await styleAt(declaredDuration - 0.1);
-    assert.ok(nearEnd, "the CTA cue element must exist in the DOM");
-    assert.equal(nearEnd!.visibility, "visible", "the CTA cue must still be visible just before the video ends");
+    assert.ok(nearEnd, "the final caption element must exist in the DOM");
+    assert.equal(nearEnd!.visibility, "visible", "the final caption must still be visible just before the video ends");
     assert.ok(
       Number(nearEnd!.opacity) > 0.95,
-      `the CTA cue's opacity at duration-0.1 was ${nearEnd!.opacity} — it should be holding near 1, not fading out`,
+      `the final caption's opacity at duration-0.1 was ${nearEnd!.opacity} — it should be holding near 1, not fading out`,
     );
   } finally {
     await browser.close();
@@ -783,53 +781,34 @@ const withEmoji = (emoji: unknown) => {
   return { ...base, pkg: { ...base.pkg, beats: beats as unknown as typeof base.pkg.beats } };
 };
 
-test("a beat's emoji is painted beside its cue label, and never reaches anything spoken", () => {
+test("a beat's emoji never reaches the rendered composition, and never reaches anything spoken", () => {
   const html = buildComposition(withEmoji("🔥"));
+  assert.ok(!html.includes("🔥"), "the emoji has no on-screen home now that the cue chip is gone");
 
-  assert.match(html, /<div class="cue annot" data-cue="0"><span class="cue-emoji">🔥<\/span><span class="cue-label">Hook<\/span><\/div>/);
-  // Beat 1 has no emoji: no empty span, so no stray leading gap on its card.
-  assert.match(html, /<div class="cue annot" data-cue="1"><span class="cue-label">Follow<\/span><\/div>/);
-
-  // §10: emoji may appear on the cue card and in social copy, NEVER in
-  // anything spoken. `voiceover` is what reaches TTS, and it is untouched.
+  // §10: emoji may appear in social copy, NEVER in anything spoken.
   const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as {
     captions: { text: string }[];
   };
-  for (const c of data.captions) {
-    assert.ok(!c.text.includes("🔥"), "an emoji must never travel on a caption derived from the voiceover");
-  }
+  for (const c of data.captions) assert.ok(!/\p{Extended_Pictographic}/u.test(c.text));
 });
 
-test("an absent, empty or non-string emoji produces a plain cue rather than throwing", () => {
+test("an absent, empty or non-string emoji does not throw and leaves no trace", () => {
   for (const value of [undefined, "", "   ", 7, null, ["🔥"], { emoji: "🔥" }, true]) {
-    let html: string;
+    let html = "";
     assert.doesNotThrow(() => {
       html = buildComposition(withEmoji(value));
     }, `emoji=${JSON.stringify(value)} must not throw`);
-    html = buildComposition(withEmoji(value));
-    assert.ok(
-      !html.includes('<span class="cue-emoji">'),
-      `emoji=${JSON.stringify(value)} must render no emoji span at all`,
-    );
-    assert.match(html, /<span class="cue-label">Hook<\/span>/, "the label itself must still render");
+    assert.ok(!html.includes("🔥"), `emoji=${JSON.stringify(value)} must not surface in the markup`);
   }
-
-  // The plain path — no `emoji` key on the beat object whatsoever, which is
-  // what every package written before the field existed looks like.
-  const html = buildComposition(input());
-  assert.ok(!html.includes('<span class="cue-emoji">'));
-  assert.ok(html.includes('data-cue="0"'));
 });
 
-test("an emoji field carrying markup or an essay is escaped and clipped, not obeyed", () => {
+test("an emoji field carrying markup or an essay is never written into the document", () => {
   const nasty = buildComposition(withEmoji(`</script><b>x`));
   assert.equal((nasty.match(/<script[\s>]/g) ?? []).length, 3, "a </script> in an emoji must not close a tag early");
-  assert.ok(!nasty.includes("<b>x"), "emoji text is escaped like every other markup site");
+  assert.ok(!nasty.includes("<b>x"), "emoji text must not reach the markup at all");
 
   const essay = buildComposition(withEmoji("🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥"));
-  const span = essay.match(/<span class="cue-emoji">([\s\S]*?)<\/span>/);
-  assert.ok(span);
-  assert.ok(Array.from(span![1]).length <= 4, `a run of emoji is clipped, got ${span![1]}`);
+  assert.ok(!essay.includes("🔥"), "a run of emoji has no on-screen home either");
 });
 
 // --- Purchase card (spec §11) ----------------------------------------------
@@ -1070,9 +1049,9 @@ test("the hook card is gone within four seconds however long beat 0 talks", () =
   assert.equal(data.hook.end, HOOK_MAX_VISIBLE);
   assert.ok(data.hook.fadeAt < data.hook.end, "it fades out before its end, not at it");
 
-  // The narration is NOT cut — only the card goes. Beat 0's own cue still runs
-  // its full length.
-  assert.ok(data.cues[0].end > 30, "capping the card must not shorten the beat");
+  // The narration is NOT cut — only the card goes. The composition still runs
+  // the full length of beat 0's audio.
+  assert.ok(data.duration > 40, "capping the card must not shorten the composition");
 
   // A genuinely short beat 0 keeps its own shorter window rather than being
   // padded out to the ceiling.

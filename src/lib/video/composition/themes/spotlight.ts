@@ -8,8 +8,7 @@ import { alpha, mix, lift, fade } from "./color";
  * This is the loudest theme in the set and it is meant to be — it is the one
  * built for a feed, where the frame has about half a second to stop a thumb.
  * Everything is turned up: the card sits in a hot ring rather than a hairline,
- * the cue is a solid accent chip with black type rather than a quiet tag, the
- * caption is uppercase with a heavy rule under it, and there is a literal
+ * the caption is uppercase with a heavy rule under it, and there is a literal
  * light beam raking down the backdrop behind the card.
  *
  * Restraint is spent in exactly one place, and deliberately: the palette holds
@@ -116,17 +115,6 @@ export const spotlight: BookTheme = {
               mix-blend-mode: multiply;
               box-shadow: inset 0 -7px 0 0 ${p.markerEdge},
                           0 0 30px 2px ${alpha(p.marker, 0.5)}; }
-
-    /* --- cue: a solid accent chip -----------------------------------------
-       The whole transform is restated on \`.cue\` (untweened — only autoAlpha
-       touches it), never on \`.annot\`: same specificity, theme CSS appended
-       last, so an \`.annot\` transform silently drops the translateX that
-       centres the card. */
-    .cue { transform: translateX(-50%) rotate(-2deg); border-radius:3px; }
-    .annot { font-family:${GROTESQUE}; font-size:32px; font-weight:900; letter-spacing:2px;
-             text-transform:uppercase; color:${p.ink}; background:${p.accent};
-             box-shadow: 0 0 40px -6px ${alpha(p.accent, 0.75)}, 0 20px 44px -20px ${p.cardShadow}; }
-    .cue-emoji { position:relative; top:-2px; }
 
     /* --- captions, hook, CTA, progress ------------------------------------ */
     .caption-line { font-family:${GROTESQUE}; font-size:56px; font-weight:900; letter-spacing:-1px;

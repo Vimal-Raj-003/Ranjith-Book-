@@ -190,32 +190,6 @@ test("no theme writes a transform onto an element GSAP already drives", () => {
   }
 });
 
-test("a theme that re-tilts the cue keeps the translate that centres it, and never puts it on .annot", () => {
-  for (const [id, theme] of ALL) {
-    const css = theme.css();
-
-    // `.annot` and `.cue` have equal specificity and theme CSS is appended
-    // last, so a transform on `.annot` silently drops `.cue`'s translateX(-50%)
-    // and the cue card slides half its own width off centre.
-    // `[;{\s]` before the property name: `text-transform:` is a different
-    // property and several themes legitimately set it here.
-    assert.doesNotMatch(
-      css,
-      /\.annot\s*\{[^}]*[;{\s]transform\s*:/,
-      `${id} declares a transform on .annot — it will drop the translateX that centres the cue`,
-    );
-
-    const cueRule = css.match(/\.cue\s*\{([^}]*)\}/);
-    if (cueRule && /[;{\s]transform\s*:/.test(cueRule[1])) {
-      assert.match(
-        cueRule[1],
-        /translateX\(-50%\)/,
-        `${id} restates .cue's transform without translateX(-50%) — the cue will not be centred`,
-      );
-    }
-  }
-});
-
 test("the four new themes take every colour from their own palette", async () => {
   // The rule exists because a hex literal buried in `css()` is what let
   // Marginalia's hook keyword drift out of sync with the thumbnail renderer.
@@ -271,7 +245,6 @@ test("each theme dresses its surfaces differently, and the four new ones set the
       ".card ",
       ".card-face",
       ".stroke",
-      ".annot",
       ".caption-line",
       ".hook-text",
       ".cta-card",
@@ -358,7 +331,6 @@ test("every theme builds a composition that keeps the shared skeleton's guarante
     for (const marker of [
       'class="card"',
       'class="stroke"',
-      'class="cue annot"',
       'class="caption-line"',
       'class="hook-text"',
       'class="cta-card"',
@@ -399,7 +371,6 @@ test("every theme actually paints, in a real browser", async () => {
           const wanted: [string, string, string[]][] = [
             ["stroke", '[data-stroke="0"]', ["background-color", "background-image", "mix-blend-mode", "transform"]],
             ["caption", ".caption-line", ["background-color", "color", "font-family"]],
-            ["cue", ".cue", ["font-family", "transform"]],
             ["hookKey", ".hook-key", ["color"]],
             ["byline", "#byline", ["color", "font-family", "visibility"]],
             ["card", ".card", ["background-color", "box-shadow"]],
@@ -445,23 +416,6 @@ test("every theme actually paints, in a real browser", async () => {
         assert.ok(
           seen.progress!["background-image"] !== "none" || seen.progress!["background-color"] !== "rgba(0, 0, 0, 0)",
           `${id}: the progress bar has no fill`,
-        );
-
-        // Whatever tilt a theme chose, the cue is still centred.
-        assert.ok(
-          seen.cue!.transform === "none" || /matrix/.test(seen.cue!.transform),
-          `${id}: unexpected cue transform ${seen.cue!.transform}`,
-        );
-        const cueBox = await page.evaluate(() => {
-          const el = document.querySelector(".cue");
-          if (!el) return null;
-          const r = el.getBoundingClientRect();
-          return { centre: r.left + r.width / 2, width: r.width };
-        });
-        assert.ok(cueBox, `${id}: the cue must exist`);
-        assert.ok(
-          Math.abs(cueBox!.centre - 540) < 40,
-          `${id}: the cue card is off centre (${cueBox!.centre.toFixed(0)}px) — a transform on .annot drops translateX(-50%)`,
         );
       } finally {
         await page.close();
