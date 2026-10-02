@@ -808,12 +808,12 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     try {
       if (!episode.upload.sourcePath) throw new Error("the upload has no source PDF");
       await fs.mkdir(hiDir, { recursive: true });
-      hiByPageIndex = await renderPagesAt({
+      ({ rendered: hiByPageIndex } = await renderPagesAt({
         pdfPath: episode.upload.sourcePath,
         outDir: hiDir,
         pageIndices: compPages.map((p) => p.pageIndex),
         longEdge: HI_LONG_EDGE,
-      });
+      }));
       if (hiByPageIndex.size === 0) {
         await appendNotes(episodeId, ["No high-resolution page images were produced; close shots use the standard assets."]);
       }

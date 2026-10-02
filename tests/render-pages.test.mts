@@ -19,8 +19,9 @@ test("a vector page renders at the high resolution and lands where it says it di
   const out = await tmp();
   try {
     const got = await renderPagesAt({ pdfPath: VECTOR_PDF, outDir: out, pageIndices: [8, 10], longEdge: HI_LONG_EDGE });
-    assert.deepEqual([...got.keys()].sort((a, b) => a - b), [8, 10]);
-    for (const p of got.values()) {
+    assert.deepEqual([...got.rendered.keys()].sort((a, b) => a - b), [8, 10]);
+    assert.deepEqual(got.skipped, []);
+    for (const p of got.rendered.values()) {
       const st = await fs.stat(p);
       assert.ok(st.size > 50_000, `${p} is a real image, not an empty file`);
     }
@@ -34,7 +35,11 @@ test("a scanned page is skipped — upscaling a photograph buys nothing", async 
   const out = await tmp();
   try {
     const got = await renderPagesAt({ pdfPath: SCANNED_PDF, outDir: out, pageIndices: [0, 1], longEdge: HI_LONG_EDGE });
-    assert.equal(got.size, 0, "no page with zero extractable text is rendered");
+    assert.equal(got.rendered.size, 0, "no page with zero extractable text is rendered");
+    // Absent is not the same as skipped: a crash, a corrupt file or a missing
+    // PyMuPDF also yields an empty map. Only the script itself reports a scan
+    // as skipped, so this proves the skip branch ran.
+    assert.deepEqual(got.skipped, [0, 1], "the scan's pages are reported as skipped, not merely missing");
   } finally {
     await fs.rm(out, { recursive: true, force: true });
   }
@@ -44,8 +49,15 @@ test("a missing PDF resolves to an empty map rather than throwing — the render
   const out = await tmp();
   try {
     const got = await renderPagesAt({ pdfPath: path.join(out, "nope.pdf"), outDir: out, pageIndices: [0], longEdge: HI_LONG_EDGE });
-    assert.equal(got.size, 0);
+    assert.equal(got.rendered.size, 0);
+    assert.deepEqual(got.skipped, [], "a failure is not a skip");
   } finally {
     await fs.rm(out, { recursive: true, force: true });
   }
+});
+
+test("the script is located from the working directory, not from import.meta.url, which Next rewrites", async () => {
+  const src = await fs.readFile(path.join(process.cwd(), "src", "lib", "pdf", "render-pages.ts"), "utf8");
+  assert.ok(!/import\.meta\.url/.test(src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "")), "no import.meta.url in code");
+  await fs.stat(path.join(process.cwd(), "src", "lib", "pdf", "render-pages.py"));
 });
