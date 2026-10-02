@@ -453,26 +453,39 @@ export function shotFor(want: ShotSize, cited: { y0: number; y1: number } | null
  * and never the same size twice running. Deterministic, so it is testable
  * without a model call — the same discipline as the cinematic variety rules.
  *
- * "Never the same twice" is the hard rule. When a step-back lands on the size
- * the previous scene used, the scene is moved to the neighbouring size: a
- * repeated wide becomes medium even if that medium is a little tight for a very
- * tall block, because two identical frames in a row is the locked-off look this
- * exists to remove.
+ * Fit beats variety. A cited block is never framed tighter than it fits: when a
+ * step-back lands on the size the previous scene used, the scene moves to the
+ * neighbouring size ONLY if that size still frames the whole block. Wider is
+ * always safe (close -> medium, medium -> wide). A repeated wide moving to
+ * medium is not: a block taller than the card height / 1.5 would have a third
+ * or more of itself cropped out of frame, so the viewer could not read the
+ * words the narrator is quoting. In that case the repeat is kept and a note is
+ * pushed so the decision is visible. A repeated wide costs one slightly static
+ * frame; a cropped quotation costs the product's premise.
  */
 export function assignShots(
   scenes: Scene[],
   citedFor: (s: Scene) => { y0: number; y1: number } | null,
   cardHeightInColumnPx: number,
+  notes?: string[],
 ): void {
   let previous: ShotSize | null = null;
-  for (const scene of scenes) {
-    if (!PAGE_KINDS.includes(scene.kind)) continue;
+  scenes.forEach((scene, i) => {
+    if (!PAGE_KINDS.includes(scene.kind)) return;
+    const cited = citedFor(scene);
     const want: ShotSize = previous === null ? "wide" : previous === "close" ? "medium" : "close";
-    let shot = shotFor(want, citedFor(scene), cardHeightInColumnPx);
-    if (shot === previous) shot = shot === "close" ? "medium" : shot === "medium" ? "wide" : "medium";
+    let shot = shotFor(want, cited, cardHeightInColumnPx);
+    if (shot === previous) {
+      const next: ShotSize = shot === "close" ? "medium" : shot === "medium" ? "wide" : "medium";
+      if (shotFor(next, cited, cardHeightInColumnPx) === next) {
+        shot = next;
+      } else {
+        notes?.push(`Scene ${i + 1}: kept a repeated ${shot} shot because its cited block is too tall to frame at ${next} without cropping the words.`);
+      }
+    }
     scene.shot = shot;
     previous = shot;
-  }
+  });
 }
 
 /**
@@ -638,6 +651,7 @@ export async function validateScenes(
       return box ? { y0: box.y0, y1: box.y1 } : null;
     },
     ctx.cardHeightInColumnPx ?? DEFAULT_CARD_HEIGHT_IN_COLUMN_PX,
+    notes,
   );
 
   return { scenes: scenes.map((s, i) => ({ ...s, index: i })), notes, used };

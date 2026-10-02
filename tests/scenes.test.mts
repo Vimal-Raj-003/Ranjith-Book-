@@ -580,7 +580,7 @@ test("page scenes get varied shot sizes: an establishing wide, then never the sa
 });
 
 test("a cited block too tall to frame closely falls back rather than cropping the words out", () => {
-  // The card shows ~1283 column px. What a shot can frame is 1283 / scale:
+  // For these fixtures the card shows 1283 column px (explicit here; the default for a 1131px page is 1319.5). What a shot can frame is 1283 / scale:
   //   close  2.2x -> 583      medium 1.5x -> 855      wide 1x -> 1283
   const tall = { y0: 100, y1: 900 }; // 800: over 583, under 855 -> close steps back to medium
   const taller = { y0: 100, y1: 1100 }; // 1000: over 855 -> medium steps back to wide
@@ -599,19 +599,68 @@ test("the default card height is the one a typical 1131px-wide page produces", (
   assert.ok(DEFAULT_CARD_HEIGHT_IN_COLUMN_PX > 1300 && DEFAULT_CARD_HEIGHT_IN_COLUMN_PX < 1340);
 });
 
-test("assignShots never lets two page scenes share a size, even when a tall block forces a step back", () => {
-  const mk = (i: number, kind: VisualKind): Scene => ({
-    index: i, kind, start: i, end: i + 1, tone: "warm", sentences: [i], beatIndex: 0,
-    source: { pageIndex: 0, startWord: i, endWord: i }, reason: "", concept: "",
-  });
-  // Scene 1 (index 1) is a tall block: close -> wide, which equals the opening wide, so it must move.
-  const scenes = [mk(0, "book-page"), mk(1, "book-crop"), mk(2, "kinetic-text"), mk(3, "book-page"), mk(4, "book-page"), mk(5, "book-page")];
-  const tallAt = new Set([1]);
-  assignShots(scenes, (s) => (tallAt.has(s.index) ? { y0: 0, y1: 1200 } : { y0: 0, y1: 100 }), 1283);
-  const page = scenes.filter((s) => PAGE_KINDS.includes(s.kind));
-  assert.equal(page[0].shot, "wide");
-  for (let i = 1; i < page.length; i++) assert.notEqual(page[i].shot, page[i - 1].shot, `page scenes ${i - 1}/${i}`);
+/** The property the whole shot ladder exists to guarantee: a framed block is never cropped. */
+function assertNoCrop(scenes: Scene[], cropOf: (s: Scene) => { y0: number; y1: number } | null, cardHeight: number) {
+  for (const s of scenes) {
+    if (!PAGE_KINDS.includes(s.kind)) continue;
+    const c = cropOf(s);
+    if (!c || !s.shot) continue;
+    const height = Math.max(1, c.y1 - c.y0);
+    assert.ok(
+      s.shot === "wide" || height <= cardHeight / SHOT_SCALE[s.shot],
+      `scene ${s.index} (${height}px) is cropped by its ${s.shot} shot`,
+    );
+  }
+}
+
+const mkPage = (i: number, kind: VisualKind): Scene => ({
+  index: i, kind, start: i, end: i + 1, tone: "warm", sentences: [i], beatIndex: 0,
+  source: { pageIndex: 0, startWord: i, endWord: i }, reason: "", concept: "",
+});
+
+test("assignShots keeps a repeated wide rather than crop a tall block into medium", () => {
+  // Scene 1 is 1200px: close -> wide (1200 > 1283/1.5 = 855), equal to the opening wide. Medium would crop it.
+  const scenes = [mkPage(0, "book-page"), mkPage(1, "book-crop"), mkPage(2, "kinetic-text"), mkPage(3, "book-page"), mkPage(4, "book-page"), mkPage(5, "book-page")];
+  const cropOf = (s: Scene) => (s.index === 1 ? { y0: 0, y1: 1200 } : { y0: 0, y1: 100 });
+  const notes: string[] = [];
+  assignShots(scenes, cropOf, 1283, notes);
+  assert.equal(scenes[0].shot, "wide");
+  assert.equal(scenes[1].shot, "wide", "fit wins: the repeat is kept");
+  assert.equal(notes.length, 1, "and the decision is reported");
+  assert.match(notes[0], /^Scene 2:.*repeated wide/);
   assert.equal(scenes[2].shot, undefined, "a non-page scene is left alone");
+  assertNoCrop(scenes, cropOf, 1283);
+});
+
+test("assignShots still avoids repeats whenever the neighbouring size fits", () => {
+  const scenes = [mkPage(0, "book-page"), mkPage(1, "book-crop"), mkPage(2, "book-page"), mkPage(3, "book-page"), mkPage(4, "book-page")];
+  // 700px: too tall for close (583) but fits medium (855), so close -> medium, never equal to the previous.
+  const cropOf = (s: Scene) => ({ y0: 0, y1: s.index % 2 ? 700 : 100 });
+  const notes: string[] = [];
+  assignShots(scenes, cropOf, 1283, notes);
+  for (let i = 1; i < scenes.length; i++) assert.notEqual(scenes[i].shot, scenes[i - 1].shot, `scenes ${i - 1}/${i}`);
+  assert.deepEqual(notes, []);
+  assertNoCrop(scenes, cropOf, 1283);
+});
+
+test("validateScenes never crops a cited block, whatever its height", async () => {
+  const sentences = sentencesOf(SHOT_BEATS, timed(SHOT_BEATS));
+  const specs = sentences.map((s) => spec(s.index, s.index, s.index === 0 ? "kinetic-text" : "book-page"));
+  const heights = [100, 1000, 300, 900, 1250, 150, 600];
+  for (const h of [...heights, 0]) {
+    for (const cardHeightInColumnPx of [undefined, 900]) {
+      const cropFor = (_p: number, start: number) => ({ x0: 0, y0: 20, x1: 900, y1: 20 + (h || heights[start % heights.length]) });
+      const r = await validateScenes(specs, ctx({ sentences, cropFor, cardHeightInColumnPx }));
+      assertNoCrop(
+        r.scenes,
+        (s) => {
+          const b = cropFor(s.source.pageIndex, s.source.startWord);
+          return { y0: b.y0, y1: b.y1 };
+        },
+        cardHeightInColumnPx ?? DEFAULT_CARD_HEIGHT_IN_COLUMN_PX,
+      );
+    }
+  }
 });
 
 test("a page scene with no cited geometry never gets a close shot, and never throws", async () => {
