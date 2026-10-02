@@ -751,11 +751,12 @@ test("the byline is rendered into the markup, positioned with top, and carries n
   assert.ok(!js.includes("byline"), "the byline is persistent — the runtime script must never touch it");
 });
 
-test("the byline's character budget is sized to the width it actually has", () => {
-  // Inter 600 at 28px with 0.3px tracking runs ~14px per character; the budget must
-  // not promise more characters than CONTENT_WIDTH can show, or the author's name
-  // gets ellipsised away — the exact clip bylineText truncates early to avoid.
-  assert.ok(BYLINE_MAX_CHARS * 14 <= CONTENT_WIDTH, `${BYLINE_MAX_CHARS} chars overflows ${CONTENT_WIDTH}px`);
+test("the byline's character budget is derived from the width it has, not hand-set", () => {
+  // The regression this pins: the budget was 58, sized for the old 960px byline,
+  // and narrowing the byline to CONTENT_WIDTH left it promising more characters
+  // than the line can show — so ellipsis ate the author's name off the end.
+  // BYLINE_CHAR_PX stays module-private: re-deriving it here would only restate
+  // the formula, so the behaviour below is what is pinned.
   const long = bylineText("A Deliberately Overlong Book Title That Runs And Runs", "A Verified Author Name")!;
   assert.ok(Array.from(long).length <= BYLINE_MAX_CHARS, `"${long}" is ${Array.from(long).length} chars`);
   assert.ok(long.includes("A Verified Author Name"), "the author's name survives truncation; the title gives way first");

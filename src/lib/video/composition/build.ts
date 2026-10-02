@@ -424,14 +424,19 @@ function pageMarkup(page: { src: string; width: number; height: number }, offset
  * ======================================================================== */
 
 /**
- * Roughly what fits on one 28px line inside `.byline`'s max-width, which is
- * `CONTENT_WIDTH` (820px) — NOT the card's 960px. Inter 600 at 28px runs about
- * 14px a character, and 58 was the estimate for 960px; scaled to 820 it is
- * 58 * 820 / 960 = 49.5, so 49. Exported so a test can pin it to the width.
- * Promise more than the box can show and CSS ellipsis eats the end of the
- * line, which is the verified author's name.
+ * Roughly how wide one character of the byline is: Inter 600 at 28px runs about
+ * 0.55em for mixed-case Latin, plus the 0.3px tracking. Deliberately a ceiling
+ * rather than an average — overestimating truncates a long title slightly early,
+ * while underestimating lets the line overflow and `text-overflow:ellipsis` eat
+ * the author's name off the end, which is the one thing `bylineText` exists to
+ * prevent.
  */
-export const BYLINE_MAX_CHARS = 49;
+const BYLINE_CHAR_PX = 16.5;
+
+/** How many characters fit one line of the byline at `CONTENT_WIDTH`. Derived, never
+ *  hand-set: an independent constant drifts the moment the width changes, which is
+ *  how it came to promise 58 characters of a 960px line inside an 820px one. */
+export const BYLINE_MAX_CHARS = Math.floor(CONTENT_WIDTH / BYLINE_CHAR_PX);
 /** A title is never truncated below this, even to make room for a long name. */
 const BYLINE_MIN_TITLE_CHARS = 18;
 /** A name longer than this is itself a data problem; it is clipped, not obeyed. */
