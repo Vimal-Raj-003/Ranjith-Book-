@@ -88,17 +88,15 @@ export function gridViolations(items: { name: string; box: Box }[]): string[] {
   const out: string[] = [];
   for (const item of items) {
     const { name, box } = item;
-    if (box.x < 0 || box.y < 0 || box.x + box.w > FRAME.width || box.y + box.h > FRAME.height) {
-      out.push(`${name} is outside the frame: ${JSON.stringify(box)}`);
+    if (![box.x, box.y, box.w, box.h].every(Number.isFinite) || box.w <= 0 || box.h <= 0) {
+      out.push(`${name} has no measurable box: ${JSON.stringify(box)}`);
       continue;
     }
-    let foundReservedViolation = false;
+    if (box.x < 0 || box.y < 0 || box.x + box.w > FRAME.width || box.y + box.h > FRAME.height) {
+      out.push(`${name} is outside the frame: ${JSON.stringify(box)}`);
+    }
     for (const r of RESERVED) {
-      if (overlaps(box, r.box)) {
-        out.push(`${name} reaches into ${r.name}, which the platform covers`);
-        foundReservedViolation = true;
-        break;
-      }
+      if (overlaps(box, r.box)) out.push(`${name} reaches into ${r.name}, which the platform covers`);
     }
   }
   for (let i = 0; i < items.length; i++) {

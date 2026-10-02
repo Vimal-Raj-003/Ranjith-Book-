@@ -50,9 +50,15 @@ test("a two-line caption fits its band and still clears the page card", () => {
 test("gridViolations names what is wrong, and says nothing when all is well", () => {
   assert.deepEqual(gridViolations([{ name: "caption", box: bandBox("caption") }]), []);
 
-  const sunk = gridViolations([{ name: "caption", box: { x: 130, y: 1700, w: 820, h: 100 } }]);
+  const sunk = gridViolations([{ name: "caption", box: { x: 130, y: 1680, w: 820, h: 40 } }]);
   assert.equal(sunk.length, 1);
   assert.match(sunk[0], /caption.*reels-bottom/);
+
+  // One box, two platforms: both must be named, not just the first.
+  const doubleSunk = gridViolations([{ name: "caption", box: { x: 130, y: 1700, w: 820, h: 100 } }]);
+  assert.equal(doubleSunk.length, 2, "a box in two reserved regions is named twice");
+  assert.ok(doubleSunk.some((v) => /reels-bottom/.test(v)));
+  assert.ok(doubleSunk.some((v) => /shorts-bottom/.test(v)));
 
   const wide = gridViolations([{ name: "caption", box: { x: 130, y: 1400, w: 900, h: 100 } }]);
   assert.match(wide[0], /caption.*action-rail/);
@@ -70,4 +76,9 @@ test("gridViolations names what is wrong, and says nothing when all is well", ()
 test("touching edges are not an overlap", () => {
   assert.equal(overlaps({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 10, h: 10 }), false);
   assert.equal(overlaps({ x: 0, y: 0, w: 10, h: 10 }, { x: 9, y: 0, w: 10, h: 10 }), true);
+});
+
+test("a box that could not be measured is a violation, not a silent pass", () => {
+  assert.match(gridViolations([{ name: "ghost", box: { x: 0, y: 0, w: 0, h: 0 } }])[0], /ghost.*no measurable box/);
+  assert.match(gridViolations([{ name: "nan", box: { x: Number.NaN, y: 300, w: 10, h: 10 } }])[0], /nan.*no measurable box/);
 });
