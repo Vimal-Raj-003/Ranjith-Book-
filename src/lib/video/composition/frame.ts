@@ -2,7 +2,7 @@
  * The frame's layout, in one place.
  *
  * Before this module every absolutely positioned element in `build.ts` carried
- * its own hardcoded `y` — the byline's 1388, the (since deleted) cue chip's 1450,
+ * its own hardcoded `y` — `BYLINE_Y = 1388`, `CUE_TOP = 1450`,
  * `CAPTION_BASELINE = 1720` — and nothing compared them against each other, or
  * against the full-frame cinematic heroes, or against the chrome the publishing
  * platforms draw over the video. A collision was therefore invisible until

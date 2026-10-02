@@ -71,7 +71,8 @@ export const CARD_RADIUS = 28;
  * edge anchored, so a two-line caption still grows upward the way a
  * one-line one does) rendered correctly. Isolated by swapping only that one
  * property with everything else held constant; not a container-sizing or
- * z-index issue.
+ * z-index issue: the since-removed cue layer sat in an identically full-inset
+ * ancestor, used `top`, and never showed this failure.
  *
  * 1720 rather than the old 1790: the bottom ~200px of a Reel is covered by
  * Instagram's own like/comment/caption chrome, so a caption sitting there is

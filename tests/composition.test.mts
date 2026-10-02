@@ -26,10 +26,6 @@ import { marginalia } from "../src/lib/video/composition/themes/marginalia";
 import { buildCaptions } from "../src/lib/media/captions";
 import type { CaptionWord } from "../src/lib/media/captions";
 
-// Assembled rather than written out so a repo-wide grep for the deleted cue
-// markup comes back empty: this is the one place that names it, on purpose.
-const CUE_ATTR = ["data", "cue="].join("-");
-
 const input = () => ({
   pkg: {
     title: "T", hook: "A hook.", ideaKey: "k", cta: "Follow.", description: "", hashtags: [], takeaway: [],
@@ -122,7 +118,8 @@ test("escaping holds everywhere embedded data is written, not just in the JSON p
   // rest state forever). A raw "<tag>" appearing verbatim there means the
   // escaping is missing even though the JSON payload (checked below) is fine.
   assert.ok(!html.includes("<tag>"), "caption text must be HTML-escaped where it is written as literal markup");
-  assert.ok(!html.includes(CUE_ATTR), "the cue chip is gone");
+  // Tripwire for a deleted attribute: the cue chip carried `data-cue`.
+  assert.ok(!html.includes("data-cue="), "the cue chip is gone");
   assert.ok(html.includes("data-caption=\"0\""), "the caption line for beat 0 must still exist");
 
   // The SAME nasty text also travels through the JSON payload (read back by
@@ -178,7 +175,7 @@ test("two strokes adjacent in time do not overlap", () => {
 
 test("the composition carries no cue layer at all", () => {
   const html = buildComposition(input());
-  for (const gone of [CUE_ATTR, 'class="cues"', "cue-emoji", "cue-label", ".annot"]) {
+  for (const gone of ["data-cue=", 'class="cues"', "cue-emoji", "cue-label", ".annot"]) {
     assert.ok(!html.includes(gone), `${gone} must be gone from the composition`);
   }
   const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]);
