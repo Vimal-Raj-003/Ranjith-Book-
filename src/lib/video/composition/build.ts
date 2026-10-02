@@ -253,7 +253,7 @@ export interface CompositionInput {
   captions: CaptionLine[];
   /** The DERIVED page images (1600px long edge) — the same coordinate space every
    * OCR box, line run, sweep step and camera key was measured in. Never rescaled. */
-  pages: { src: string; width: number; height: number; pageIndex?: number }[];
+  pages: { src: string; width: number; height: number; pageIndex?: number; hiSrc?: string }[];
   /** One entry per beat in `pkg.beats`/`beats`, not per page — `sweepForBeat` is
    * called once per beat, so `sweeps[i]` is beat `i`'s strokes. */
   sweeps: SweepStep[][];
@@ -421,8 +421,11 @@ function pageIndexOf(sourcePage: number, pageCount: number, bookPages?: (number 
   return Math.min(Math.max(sourcePage, 0), Math.max(pageCount - 1, 0));
 }
 
-function pageMarkup(page: { src: string; width: number; height: number }, offset: number): string {
-  return `<div class="page" style="top:${offset}px;width:${page.width}px;height:${page.height}px;"><img src="${esc(page.src)}" width="${page.width}" height="${page.height}" alt="" /></div>`;
+function pageMarkup(page: { src: string; width: number; height: number; hiSrc?: string }, offset: number): string {
+  // `width`/`height` stay in the 1600px space every measured box lives in; only
+  // the file behind them changes, so the browser downsamples a sharper image.
+  const src = page.hiSrc ?? page.src;
+  return `<div class="page" style="top:${offset}px;width:${page.width}px;height:${page.height}px;"><img src="${esc(src)}" width="${page.width}" height="${page.height}" alt="" /></div>`;
 }
 
 /* ===========================================================================

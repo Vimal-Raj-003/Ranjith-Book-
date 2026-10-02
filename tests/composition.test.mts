@@ -1098,3 +1098,16 @@ test("a caption too long for two lines steps its type down rather than growing a
   assert.match(html, /\.caption-line \{[^}]*-webkit-line-clamp:2/);
   assert.match(html, /\.caption-line \{[^}]*overflow:hidden/);
 });
+
+test("a page with a hi-res asset draws it at the SAME declared box; one without is untouched", () => {
+  const base = input();
+  const plain = buildComposition(base);
+  assert.match(plain, /<img src="assets\/page-00\.jpg" width="1000" height="1400"/);
+
+  const hi = buildComposition({
+    ...base,
+    pages: base.pages.map((p) => ({ ...p, hiSrc: "assets/page-0000@2x.jpg" })),
+  });
+  assert.match(hi, /<img src="assets\/page-0000@2x\.jpg" width="1000" height="1400"/);
+  assert.ok(!hi.includes('src="assets/page-00.jpg"'), "the hi-res file replaces the standard one");
+});

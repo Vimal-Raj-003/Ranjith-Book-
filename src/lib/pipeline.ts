@@ -34,6 +34,7 @@ import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { bookThemeById, isBookThemeId, DEFAULT_BOOK_THEME_ID } from "./video/composition/themes";
 import { writeProject, checkProject, renderProject } from "./video/render";
+import { renderPagesAt, HI_LONG_EDGE } from "./pdf/render-pages";
 import type { BookTheme } from "./video/composition/theme-contract";
 import { beginCancellable, endCancellable, throwIfCancelled, wasCancelled } from "./cancel";
 
@@ -800,6 +801,26 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       }),
     );
 
+    // Sharp pixels for the close shots. Best-effort: a failure here leaves the
+    // 1600px assets in place and costs the video nothing but softness.
+    const hiDir = path.join(workDir, "hires");
+    let hiByPageIndex = new Map<number, string>();
+    try {
+      if (!episode.upload.sourcePath) throw new Error("the upload has no source PDF");
+      await fs.mkdir(hiDir, { recursive: true });
+      hiByPageIndex = await renderPagesAt({
+        pdfPath: episode.upload.sourcePath,
+        outDir: hiDir,
+        pageIndices: compPages.map((p) => p.pageIndex),
+        longEdge: HI_LONG_EDGE,
+      });
+      if (hiByPageIndex.size === 0) {
+        await appendNotes(episodeId, ["No high-resolution page images were produced; close shots use the standard assets."]);
+      }
+    } catch (err) {
+      await appendNotes(episodeId, [`High-resolution page rendering failed (${message(err)}) — the video is unaffected.`]);
+    }
+
     await startStep(EPISODE_STEPS[4]); // Recording the voiceover
     const approvedTexts = beatTexts(pkg);
     let prepared: Prepared | null = null;
@@ -986,7 +1007,13 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       beats: timedBeats,
       captions,
       // `pageIndex`: the book's own page numbers, which is what a beat's `sourcePage` is.
-      pages: compPages.map((p) => ({ src: p.src, width: p.width, height: p.height, pageIndex: p.pageIndex })),
+      pages: compPages.map((p) => ({
+        src: p.src,
+        width: p.width,
+        height: p.height,
+        pageIndex: p.pageIndex,
+        ...(hiByPageIndex.has(p.pageIndex) ? { hiSrc: `assets/${path.basename(hiByPageIndex.get(p.pageIndex)!)}` } : {}),
+      })),
       sweeps,
       camera,
       theme,
@@ -1081,7 +1108,10 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       indexHtml: html,
       audioSource: voice.audioPath,
       musicSource: hasMusic ? musicPath : null,
-      assets: compPages.map((p) => ({ from: p.from, to: p.to })),
+      assets: [
+        ...compPages.map((p) => ({ from: p.from, to: p.to })),
+        ...[...hiByPageIndex.values()].map((f) => ({ from: f, to: path.basename(f) })),
+      ],
     });
     await prisma.episode.update({ where: { id: episodeId }, data: { projectPath: projectDir } });
 
