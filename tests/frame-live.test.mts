@@ -42,14 +42,30 @@ const INK_SELECTORS = [
 
 const TEXT_SELECTORS = `${BOX_SELECTORS}, ${INK_SELECTORS}`;
 
-async function textBoxesAt(page: import("playwright-core").Page, t: number, exclude = "") {
+/** One measured element: where it is, how visible it is, and whether the hook layer is drawn over it. */
+interface Measured {
+  name: string;
+  opacity: number;
+  behindHook: boolean;
+  box: { x: number; y: number; w: number; h: number };
+}
+
+async function textBoxesAt(page: import("playwright-core").Page, t: number): Promise<Measured[]> {
   return within(
     page.evaluate(
-      ({ time, sel, ink, exclude }) => {
+      ({ time, sel, ink }) => {
         (window as unknown as { __tl: { seek(t: number, s: boolean): void } }).__tl.seek(time, false);
-        const out: { name: string; opacity: number; box: { x: number; y: number; w: number; h: number } }[] = [];
+        const out: Measured[] = [];
+        // The hook layer is a full-frame, pointer-events:none element, so elementFromPoint cannot see it
+        // (it would report whatever is underneath as topmost). Decide "behind the hook" structurally instead.
+        const hook = document.querySelector(".hook");
+        let hookOpacity = 0;
+        if (hook && getComputedStyle(hook).visibility !== "hidden") {
+          hookOpacity = 1;
+          for (let n: Element | null = hook; n; n = n.parentElement) hookOpacity *= Number(getComputedStyle(n).opacity);
+        }
+        const hookShowing = hookOpacity > 0.05;
         document.querySelectorAll(sel).forEach((el, i) => {
-          if (exclude && el.matches(exclude)) return;
           const cs = getComputedStyle(el as HTMLElement);
           if (cs.visibility === "hidden") return;
           // Effective opacity: a scene fades as a whole, and a child that sets its own
@@ -69,12 +85,13 @@ async function textBoxesAt(page: import("playwright-core").Page, t: number, excl
           out.push({
             name: `${(el as HTMLElement).className.split(" ").join(".") || el.tagName}#${i}`,
             opacity,
+            behindHook: hookShowing && !(hook as Element).contains(el),
             box: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
           });
         });
         return out;
       },
-      { time: t, sel: TEXT_SELECTORS, ink: INK_SELECTORS, exclude },
+      { time: t, sel: TEXT_SELECTORS, ink: INK_SELECTORS },
     ),
     30_000,
     `boxes at ${t}`,
@@ -155,10 +172,18 @@ const SETTLED_OPACITY = 0.9;
  *
  * `gridViolations` itself stays pure and unchanged; it is shared with the unit tests.
  */
-function frameViolations(items: { name: string; opacity: number; box: Box }[]): string[] {
+function frameViolations(items: Measured[]): string[] {
   const out = new Set<string>();
   for (const item of items) for (const v of gridViolations([item])) out.add(v);
-  const settled = items.filter((i) => i.opacity >= SETTLED_OPACITY);
+  // Occlusion, modelled: while the hook layer is showing, everything not inside it is behind its blur
+  // scrim (14px backdrop-filter, build.ts .hook-scrim), which turns the opening scene's words into an
+  // illegible smudge behind a crisp hook headline. HOOK_TEXT_LEAD exists so the hook's words finish
+  // leaving before the scrim thins: the design says these are never legible together. A box and an opacity
+  // cannot express a scrim, so without this the checker reports the intended look as a collision.
+  // This is PAIRWISE-ONLY. A covered element is still held to the frame and the platform chrome above,
+  // because where an element sits matters whether or not something is covering it right now. It is NOT a
+  // way to silence a failure: once the hook is gone nothing is behind it, so scene text is compared again.
+  const settled = items.filter((i) => i.opacity >= SETTLED_OPACITY && !i.behindHook);
   for (const v of gridViolations(settled)) out.add(v);
   return [...out];
 }
@@ -168,14 +193,14 @@ function frameViolations(items: { name: string; opacity: number; box: Box }[]): 
  * of each kind were actually measured, so a caller can prove the sweep saw the
  * element it claims to be guarding rather than passing over an empty page.
  */
-async function sweep(page: import("playwright-core").Page, exclude = ""): Promise<Map<string, number>> {
+async function sweep(page: import("playwright-core").Page): Promise<Map<string, number>> {
   const duration = await page.evaluate(() => (window as unknown as { __tl: { duration(): number } }).__tl.duration());
   // 24 even steps, plus the very start and the very end, which is where the hook
   // card and the CTA / purchase cards live.
   const instants = [0.1, ...Array.from({ length: 24 }, (_, i) => (duration * (i + 0.5)) / 24), duration - 0.2];
   const seen = new Map<string, number>();
   for (const t of instants) {
-    const boxes = await textBoxesAt(page, t, exclude);
+    const boxes = await textBoxesAt(page, t);
     for (const b of boxes) {
       for (const kind of b.name.split("#")[0].split(".")) seen.set(kind, (seen.get(kind) ?? 0) + 1);
     }
@@ -214,13 +239,12 @@ function plainHtmlWithLink(): string {
   });
 }
 
-// The scene type measured in the plain (non-cinematic) fixture, other than the opening kinetic words.
-const SCENE_KINDS = ["sc-quote-text", "sc-cell-label", "sc-step-t", "sc-tl-label", "sc-stat-value", "sc-curve-label"];
+// The scene type measured in the plain (non-cinematic) fixture.
+const SCENE_KINDS = ["sc-word", "sc-quote-text", "sc-cell-label", "sc-step-t", "sc-tl-label", "sc-stat-value", "sc-curve-label"];
 
 test("the hook card, CTA card, purchase card and scene type clear the chrome too (live browser)", async () => {
   await withComposition(plainHtmlWithLink(), async (page) => {
-    // The opening kinetic words are judged in the next test: the hook card is drawn over them.
-    const seen = await sweep(page, ".sc-kinetic .sc-word");
+    const seen = await sweep(page);
     assertSaw(seen, ["byline", "caption-line", "hook-text", "cta-card", "buy-card"]);
     // Scene type is most of the words on screen: prove it was measured, not skipped.
     assert.ok(
@@ -230,22 +254,42 @@ test("the hook card, CTA card, purchase card and scene type clear the chrome too
   });
 });
 
-// KNOWN, AWAITING A RULING (task 5 fix round 2). While the hook holds, the opening kinetic-text
-// scene's words are fully opaque UNDER the hook card, so a settled word overlaps the settled hook
-// text. A screenshot at t=1.67s shows the hook's scrim blurring them to an illegible smudge behind a
-// crisp hook, which is the documented intent (see .hook-scrim in build.ts) but is not something a
-// box and an opacity can express, so the narrowed pairwise rule still reports it. Do not loosen
-// SETTLED_OPACITY to make this go away. Either teach the checker about the scrim, or drop the scene
-// under the hook; then remove `todo`.
-test(
-  "no settled word overlaps the hook card's text, including the opening scene's words (live browser)",
-  { todo: "the hook scrim blurs the opening kinetic words; the checker cannot see a scrim. Needs a ruling." },
-  async () => {
-    await withComposition(plainHtmlWithLink(), async (page) => {
-      assertSaw(await sweep(page), ["hook-text", "sc-word"]);
-    });
-  },
-);
+test("while the hook holds, the scrimmed scene is not compared pairwise; once it is gone, scene text is (live browser)", async () => {
+  await withComposition(plainHtmlWithLink(), async (page) => {
+    // During the hold: the hook's own words are on screen, and the opening scene beneath them is behind
+    // the scrim. No violation is reported, but only because that scene was recognised as covered.
+    const during = await textBoxesAt(page, 1.67);
+    assert.ok(during.some((m) => m.name.includes("hook-text") && !m.behindHook), "the hook's own text is on screen and is not itself treated as covered");
+    const under = during.filter((m) => m.name.includes("sc-word"));
+    assert.ok(under.length > 0, "the opening scene's words are on screen under the hook");
+    assert.ok(under.every((m) => m.behindHook), "and every one of them is recognised as behind the hook");
+    assert.ok(
+      under.some((m) => m.opacity >= SETTLED_OPACITY),
+      "at least one is fully opaque, so only the scrim exempts it from the pairwise check",
+    );
+    assert.deepEqual(frameViolations(during), [], "no violation while the scrim holds");
+    // The scrimmed words are still held to the frame and the chrome: the exemption is pairwise-only.
+    const moved = during.map((m) => (m.behindHook ? { ...m, box: { ...m.box, y: 1800 } } : m));
+    assert.ok(frameViolations(moved).some((v) => v.includes("reaches into")), "a covered element is still checked against the platform chrome");
+
+    // After the hook has gone: nothing is covered, so the exemption cannot be silencing the rest of the
+    // video, and the scene text IS compared against everything again.
+    let sceneTextAfter = 0;
+    for (const t of [4.5, 6, 8, 10, 12, 14.5]) {
+      const after = await textBoxesAt(page, t);
+      assert.ok(after.every((m) => !m.behindHook), `nothing is behind the hook at t=${t}`);
+      sceneTextAfter += after.filter((m) => /sc-(word|quote-text|cell-label|step-t|tl-label|stat-value|curve-label)/.test(m.name)).length;
+      assert.deepEqual(frameViolations(after), [], `at t=${t}`);
+      // Prove the guard is live here: a settled scene word with a second settled box stacked on it must be reported.
+      const settledScene = after.filter((m) => m.name.includes("sc-") && m.opacity >= SETTLED_OPACITY);
+      if (settledScene.length > 0) {
+        const clash = [...after, { ...settledScene[0], name: "probe", box: settledScene[0].box }];
+        assert.ok(frameViolations(clash).some((v) => v.includes("overlaps")), `a settled overlap is reported at t=${t}`);
+      }
+    }
+    assert.ok(sceneTextAfter > 0, "scene text was measured after the hook");
+  });
+});
 
 test("the byline is above the stage and the captions below it, at every sampled instant (live browser)", async () => {
   const theme = bookThemeById("editorial");
