@@ -1,0 +1,704 @@
+{
+ "_readme": [
+  "Real narration, hand-labelled: the independent check on the hero ranker (scripts/hero-bench.mjs prints it). Regenerate nothing from here; the labels are the point.",
+  "`text`: the spoken narration of one cinematic scene, reassembled from the captions of rendered local projects (.bookreel/projects, deduplicated: passages from the books under test, plus the call-to-action lines that close them). `rendered`: the hero that video actually used when it was rendered (chosen by the director and the old keyword matcher at the time, or by the ranker for the newest ones), kept for reference only; it is NOT the label.",
+  "`accept`: the heroes a viewer would find a fair picture of what the scene says, one to four of them, written by the author of the ranker from the text and each hero's meaning alone, before the trimmed descriptions were scored against it. `orb` is accepted where nothing in the catalogue fits (a call to action, a description of a loaf of bread). One labeller, so it carries his judgement and nobody else's.",
+  "Why it exists: every other set in the fixtures directory was written by the same author while tuning the descriptions, so every figure on them is in-sample. This one is closer to independent but not clean: the scenes (unlabelled) were looked at while the first descriptions were being tuned, which led to one change (dropping the word \"dream\" from the rest hero). The labels were written afterwards, before the trimmed descriptions were scored, and no word list was chosen by scoring against them. Nothing prevents it being tuned against from now on; once it is, it is in-sample too, and the next honest check is new real scenes."
+ ],
+ "scenes": [
+  {
+   "text": "Nine to five isn't your day. It's a slice of it.",
+   "rendered": "clock",
+   "accept": [
+    "clock",
+    "hourglass",
+    "orbit"
+   ]
+  },
+  {
+   "text": "The page notes most people don't even love the job. They enter it reluctantly, leave the moment they can. Yet that resented block rules everything else.",
+   "rendered": "chain",
+   "accept": [
+    "chain"
+   ]
+  },
+  {
+   "text": "Everything else becomes margin. Once you label the sixteen hours as margin, you stop counting them. You just push through the eight you supposedly care about.",
+   "rendered": "focus",
+   "accept": [
+    "hourglass",
+    "clock"
+   ]
+  },
+  {
+   "text": "The fix is a reframe. The page calls it a day inside a day, a smaller box inside a bigger one, running from six at night to ten next morning.",
+   "rendered": "orbit",
+   "accept": [
+    "clock",
+    "orbit"
+   ]
+  },
+  {
+   "text": "Pouring energy into the evening doesn't weaken the workday. The passage insists it raises the worth of those eight hours. Follow for one idea from this book each day.",
+   "rendered": "growth",
+   "accept": [
+    "clock",
+    "pulse",
+    "growth"
+   ]
+  },
+  {
+   "text": "The agony isn't trying for your dream and failing. It's spending your life hungry for it and staying still.",
+   "rendered": "chain",
+   "accept": [
+    "chain",
+    "mountain"
+   ]
+  },
+  {
+   "text": "Leaving Brixton, says the book, is itself a kind of victory.",
+   "rendered": "path",
+   "accept": [
+    "path",
+    "mountain",
+    "chain"
+   ]
+  },
+  {
+   "text": "You moved. You acted. That alone separates you from almost everyone who dreams and does nothing.",
+   "rendered": "staircase",
+   "accept": [
+    "staircase",
+    "path",
+    "mountain"
+   ]
+  },
+  {
+   "text": "The dream lives only inside the skull, which is why it keeps hurting.",
+   "rendered": "pulse",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "Our favourite alibi? The day only holds twenty-four hours.",
+   "rendered": "clock",
+   "accept": [
+    "clock",
+    "hourglass"
+   ]
+  },
+  {
+   "text": "Your commute is the richest training window you own, and it costs nothing.",
+   "rendered": "clock",
+   "accept": [
+    "clock",
+    "staircase"
+   ]
+  },
+  {
+   "text": "No equipment is needed. Not a dumbbell, not a ten-volume encyclopaedia, not even a page to read. The gear sits inside your skull already.",
+   "rendered": "spark",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "Pick any subject when you step outside. Within a few paces your attention has bolted off chasing something else.",
+   "rendered": "focus",
+   "accept": [
+    "focus",
+    "mind"
+   ]
+  },
+  {
+   "text": "Forty times before the station, and you keep hauling it home.",
+   "rendered": "staircase",
+   "accept": [
+    "staircase",
+    "loop",
+    "focus"
+   ]
+  },
+  {
+   "text": "Nobody near you can tell. You're walking, sitting, holding a strap — and the hardest work of your day is invisible to every stranger around you.",
+   "rendered": "pulse",
+   "accept": [
+    "mind",
+    "focus"
+   ]
+  },
+  {
+   "text": "Follow for more passages that pay you back the moment you try them.",
+   "rendered": "bookletters",
+   "accept": [
+    "orb",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "A split crust. A wrinkled olive. Froth on a beast's mouth.",
+   "rendered": "spark",
+   "accept": [
+    "orb"
+   ]
+  },
+  {
+   "text": "The baker's mistake becomes the charm. When a loaf tears open in the oven, those cracks run against what the baking was trying to do.",
+   "rendered": "scales",
+   "accept": [
+    "orb",
+    "spark"
+   ]
+  },
+  {
+   "text": "But that failure is exactly the part your eye loves. The uneven crust pulls at your appetite in a way a smooth top never could.",
+   "rendered": "focus",
+   "accept": [
+    "orb",
+    "focus",
+    "spark"
+   ]
+  },
+  {
+   "text": "Ugly on their own, striking because nature made them that way.",
+   "rendered": "orbit",
+   "accept": [
+    "orb",
+    "orbit"
+   ]
+  },
+  {
+   "text": "Then it turns on you. The same eye that spots beauty in a torn loaf will spot it in an aging face, man or woman alike.",
+   "rendered": "pulse",
+   "accept": [
+    "focus",
+    "mind",
+    "orb"
+   ]
+  },
+  {
+   "text": "So the thing to train isn't the loaf, the fig, or the olive. It's your own eye.",
+   "rendered": "focus",
+   "accept": [
+    "focus",
+    "mind",
+    "staircase"
+   ]
+  },
+  {
+   "text": "If a stranger grabbed your shoulder right now and asked what you were thinking, could you answer without flinching?",
+   "rendered": "pulse",
+   "accept": [
+    "mind",
+    "dialogue"
+   ]
+  },
+  {
+   "text": "Train your mind so that if someone pulls you aside and demands what's running through your head, you answer plainly.",
+   "rendered": "focus",
+   "accept": [
+    "mind",
+    "dialogue"
+   ]
+  },
+  {
+   "text": "Someone who passes this check, the page says, is like a priest, at ease with what's best inside themselves.",
+   "rendered": "mountain",
+   "accept": [
+    "mind",
+    "rest"
+   ]
+  },
+  {
+   "text": "Could I say this aloud? If no, drop it. Follow for one more passage worth sitting with tomorrow.",
+   "rendered": "bookletters",
+   "accept": [
+    "dialogue",
+    "mind",
+    "orb",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "Train your mind so that if someone pulls you aside and demands what's running through your head, you answer plainly. No scramble to edit, no cover story.",
+   "rendered": "spark",
+   "accept": [
+    "mind",
+    "dialogue"
+   ]
+  },
+  {
+   "text": "The point isn't impressing anyone. It's being someone whose inner life is calm and honest, fit for other people to see at any moment.",
+   "rendered": "pulse",
+   "accept": [
+    "mind",
+    "rest"
+   ]
+  },
+  {
+   "text": "So the practice is small and constant. Every passing thought gets one question.",
+   "rendered": "staircase",
+   "accept": [
+    "staircase",
+    "mind"
+   ]
+  },
+  {
+   "text": "Follow for one more passage worth sitting with tomorrow.",
+   "rendered": "bookletters",
+   "accept": [
+    "orb",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "There's a second day hidden inside your twenty-four hours, and almost nobody lives it.",
+   "rendered": "hourglass",
+   "accept": [
+    "clock",
+    "hourglass"
+   ]
+  },
+  {
+   "text": "The page calls those ten hours and six hours nothing but a prologue and epilogue. Your real existence, reduced to bookends around someone else's agenda.",
+   "rendered": "chain",
+   "accept": [
+    "clock",
+    "hourglass",
+    "chain"
+   ]
+  },
+  {
+   "text": "And the damage is sneaky. Once your mind files those sixteen hours as margin, you stop counting them.",
+   "rendered": "focus",
+   "accept": [
+    "hourglass",
+    "clock",
+    "mind"
+   ]
+  },
+  {
+   "text": "The fix is almost playful. Build a smaller day inside the larger one, nested like a Chinese box, starting at six in the evening and ending when work resumes.",
+   "rendered": "spark",
+   "accept": [
+    "clock",
+    "orbit"
+   ]
+  },
+  {
+   "text": "Across that private sixteen-hour stretch, you owe nothing to any employer. The page says you stand level with someone living entirely off a private income.",
+   "rendered": "scales",
+   "accept": [
+    "scales",
+    "clock",
+    "chain"
+   ]
+  },
+  {
+   "text": "Choose one real pursuit waiting at six, and just anticipating it sends a glow backward through the whole day. Follow for one more passage from this book tomorrow.",
+   "rendered": "orbit",
+   "accept": [
+    "clock",
+    "pulse",
+    "spark"
+   ]
+  },
+  {
+   "text": "You can't help your thoughts — unless you decide you can. The page calls control of the mind not just possible, but the thing most people die without ever learning.",
+   "rendered": "focus",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "Pleasure and pain happen inside the skull. So steering what plays there isn't a bonus skill. It's the whole game.",
+   "rendered": "pulse",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "The venue is the walk, the platform, the carriage. No book required. No tool, no fee.",
+   "rendered": "clock",
+   "accept": [
+    "clock",
+    "path"
+   ]
+  },
+  {
+   "text": "Pick a subject and refuse everything else. Within yards your mind escapes. Grab it, the page says, by the scruff of the neck.",
+   "rendered": "focus",
+   "accept": [
+    "focus",
+    "mind"
+   ]
+  },
+  {
+   "text": "Keep going and you can rule your own mind at any hour and in any place. The only secret is refusing to quit.",
+   "rendered": "mountain",
+   "accept": [
+    "mind",
+    "mountain",
+    "staircase"
+   ]
+  },
+  {
+   "text": "What counts is forcing the thinking machine to obey its owner. Follow if you want more pages like this one.",
+   "rendered": "network",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "The page is blunt: people insist they can't help their thoughts.",
+   "rendered": "focus",
+   "accept": [
+    "mind"
+   ]
+  },
+  {
+   "text": "And here's the slot: your front door to your desk. Street, platform, train. Every minute of it counts.",
+   "rendered": "path",
+   "accept": [
+    "clock",
+    "path"
+   ]
+  },
+  {
+   "text": "By the station, you'll have hauled it back forty times. Don't quit.",
+   "rendered": "staircase",
+   "accept": [
+    "mountain",
+    "staircase",
+    "loop"
+   ]
+  },
+  {
+   "text": "Here's the quiet part. On a train, nobody can tell this is happening. Invisible training.",
+   "rendered": "network",
+   "accept": [
+    "mind",
+    "staircase"
+   ]
+  },
+  {
+   "text": "Try it, the page says, and watch what happens to worry. Half the misery in your head is a mind nobody taught to sit still.",
+   "rendered": "pulse",
+   "accept": [
+    "mind",
+    "storm",
+    "rest"
+   ]
+  },
+  {
+   "text": "Follow for one page a day that actually pays you back.",
+   "rendered": "bookletters",
+   "accept": [
+    "orb",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "The cure for a packed day isn't moving faster. It's standing still on purpose for five minutes.",
+   "rendered": "focus",
+   "accept": [
+    "rest",
+    "clock"
+   ]
+  },
+  {
+   "text": "Skipping a task on a whim won't rescue you. The real trouble isn't rigidity. You crammed the schedule so full it spills over before you start.",
+   "rendered": "chain",
+   "accept": [
+    "clock",
+    "storm"
+   ]
+  },
+  {
+   "text": "The clean fix is to attempt less. But some people crave that relentless pace, and the page admits a frantic life beats a drowsy one.",
+   "rendered": "scales",
+   "accept": [
+    "clock",
+    "rest",
+    "scales"
+   ]
+  },
+  {
+   "text": "Spend five minutes in perfect mental quiescence between one task and the next. Not a break to scroll. A deliberate pause, held with full awareness.",
+   "rendered": "hourglass",
+   "accept": [
+    "rest",
+    "focus",
+    "mind"
+   ]
+  },
+  {
+   "text": "Without awareness, your brain carries the pressure of the last task into the next. Noticing the pause is what resets you.",
+   "rendered": "pulse",
+   "accept": [
+    "mind",
+    "rest",
+    "focus"
+   ]
+  },
+  {
+   "text": "Follow for one small idea from one old page, every day.",
+   "rendered": "bookletters",
+   "accept": [
+    "orb",
+    "bookletters",
+    "spark"
+   ]
+  },
+  {
+   "text": "A traffic jam on Oxford Street raised rents in a suburb miles away.",
+   "rendered": "network",
+   "accept": [
+    "network",
+    "orbit"
+   ]
+  },
+  {
+   "text": "Here is the chain. Traffic clogged one street, so commuters tunneled underneath, and the new line sent housing demand to Shepherd's Bush.",
+   "rendered": "chain",
+   "accept": [
+    "network",
+    "orbit"
+   ]
+  },
+  {
+   "text": "Now the pivot. Spend ninety minutes, three evenings a week, tracing the property question across London.",
+   "rendered": "focus",
+   "accept": [
+    "path",
+    "focus",
+    "staircase"
+   ]
+  },
+  {
+   "text": "The job you dread becomes a puzzle you chase home. Your business turns into something you cannot put down.",
+   "rendered": "spark",
+   "accept": [
+    "spark",
+    "focus"
+   ]
+  },
+  {
+   "text": "One question opens history, geology, and politics, all hiding inside your daily map.",
+   "rendered": "bookletters",
+   "accept": [
+    "spark",
+    "network",
+    "orbit",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "The clerk gets picked on purpose, because it is the dullest example around. If curiosity can rescue that desk, it can rescue yours.",
+   "rendered": "scales",
+   "accept": [
+    "spark"
+   ]
+  },
+  {
+   "text": "Two men both long for Mecca. One sets off and may drown before the Red Sea.",
+   "rendered": "path",
+   "accept": [
+    "path",
+    "mountain"
+   ]
+  },
+  {
+   "text": "The other never budges from his own street. The page insists the second man suffers more.",
+   "rendered": "chain",
+   "accept": [
+    "chain",
+    "loop"
+   ]
+  },
+  {
+   "text": "Our excuse? Twenty-four hours isn't enough. The page calls that a lie we tell ourselves to stay still.",
+   "rendered": "clock",
+   "accept": [
+    "hourglass",
+    "clock"
+   ]
+  },
+  {
+   "text": "The page is almost cheerful about this. If you think a neat timetable on paper will fix your life, give up now.",
+   "rendered": "mountain",
+   "accept": [
+    "clock"
+   ]
+  },
+  {
+   "text": "Small results for huge effort. That's the real deal.",
+   "rendered": "scales",
+   "accept": [
+    "mountain",
+    "scales",
+    "staircase"
+   ]
+  },
+  {
+   "text": "Follow for more plain truth from this little book.",
+   "rendered": "bookletters",
+   "accept": [
+    "orb",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "No billionaire alive gets a twenty-fifth hour. The page shoves past the saying that time equals money and argues it's worth far more than that.",
+   "rendered": "hourglass",
+   "accept": [
+    "hourglass",
+    "scales",
+    "clock"
+   ]
+  },
+  {
+   "text": "Each morning something astonishing happens and nobody notices. You open your eyes and a full day lands in your lap, free.",
+   "rendered": "spark",
+   "accept": [
+    "clock",
+    "spark",
+    "hourglass"
+   ]
+  },
+  {
+   "text": "Nobody can lift those hours off you. A thief can't take them. A boss can't dock them. Everyone breathing gets the same stack.",
+   "rendered": "chain",
+   "accept": [
+    "hourglass",
+    "clock",
+    "scales"
+   ]
+  },
+  {
+   "text": "The sharpest mind works with your budget. You can't borrow forward either. Tomorrow stays sealed until it arrives.",
+   "rendered": "bookletters",
+   "accept": [
+    "hourglass",
+    "clock",
+    "scales"
+   ]
+  },
+  {
+   "text": "The hours in front of you are the only ones you'll ever hold. Out of this small allotment you build health, pleasure, respect, and whatever your soul becomes.",
+   "rendered": "focus",
+   "accept": [
+    "hourglass",
+    "clock"
+   ]
+  },
+  {
+   "text": "Two people stand at the exact same sea. One sees scenery.",
+   "rendered": "hourglass",
+   "accept": [
+    "focus",
+    "mind",
+    "orb"
+   ]
+  },
+  {
+   "text": "To the first man, evolution is just a word he's heard somewhere.",
+   "rendered": "focus",
+   "accept": [
+    "bookletters",
+    "mind",
+    "orb"
+   ]
+  },
+  {
+   "text": "The second man carries one idea in his head — everything is quietly becoming something else.",
+   "rendered": "spark",
+   "accept": [
+    "spark",
+    "mind"
+   ]
+  },
+  {
+   "text": "And suddenly the flat scene wakes up around him. Same beach, same ticket price, same horizon. The first man got",
+   "rendered": "pulse",
+   "accept": [
+    "spark",
+    "focus",
+    "orb"
+   ]
+  },
+  {
+   "text": "The routine built to rescue you can be the thing that cages you.",
+   "rendered": "chain",
+   "accept": [
+    "loop",
+    "chain",
+    "clock"
+   ]
+  },
+  {
+   "text": "It warns of men whose days become a weight on themselves and a quiet misery to everyone around them.",
+   "rendered": "pulse",
+   "accept": [
+    "chain"
+   ]
+  },
+  {
+   "text": "That final, flat tone is the giveaway. A whole career has shrunk to the dog's leash and the reading chair.",
+   "rendered": "focus",
+   "accept": [
+    "chain",
+    "loop"
+   ]
+  },
+  {
+   "text": "The fix isn't quitting. It's admitting you packed the schedule too tight, and cutting back until a human can live inside it. Follow for one page from a different book every day.",
+   "rendered": "scales",
+   "accept": [
+    "clock",
+    "rest"
+   ]
+  },
+  {
+   "text": "Readers who chase everything end up knowing nothing. The page here says your first job is to decide where your effort goes and how wide a net you cast.",
+   "rendered": "focus",
+   "accept": [
+    "focus",
+    "path"
+   ]
+  },
+  {
+   "text": "You stop grazing across pages and start owning a patch of ground.",
+   "rendered": "mountain",
+   "accept": [
+    "focus",
+    "bookletters"
+   ]
+  },
+  {
+   "text": "Then speak it aloud. Not thought, not scribbled on a to-do list, actually said. Because what you only mean, you abandon by Friday.",
+   "rendered": "dialogue",
+   "accept": [
+    "dialogue",
+    "mind"
+   ]
+  },
+  {
+   "text": "Pick your version. Write it on one line. Then set the clock before you start. A month, a season, whatever.",
+   "rendered": "spark",
+   "accept": [
+    "clock",
+    "focus"
+   ]
+  },
+  {
+   "text": "Name your one subject tonight. Write it down. Follow for more from this book.",
+   "rendered": "path",
+   "accept": [
+    "focus",
+    "bookletters"
+   ]
+  }
+ ]
+}

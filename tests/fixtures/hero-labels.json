@@ -1,13 +1,23 @@
 {
  "_readme": [
-  "Author-labelled benchmark for the hero ranker (src/lib/video/scenes/heroes.ts). Regenerate the table with: node --import tsx scripts/hero-bench.mjs (add --detail to list every sentence it gets wrong).",
-  "`labelled`: 84 narration-style sentences, four per specific hero (orb is the fallback and has none). The first 56 cover the 14 heroes of the catalogue as it stood when the semantic ranker shipped; the last 28 were added with the seven heroes of the second task (mind, storm, rest, dialogue, wall, heart, loop). Each was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
-  "The first 56 were written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison. The last 28 were written as plain narration without avoiding or seeking any list word, and several use one.",
+  "Author-labelled benchmark for the hero ranker (src/lib/video/scenes/heroes.ts). Regenerate the table with: node --import tsx scripts/hero-bench.mjs (add --detail to list every sentence it gets wrong). The closest thing to independent evidence is tests/fixtures/real-scenes.json: real narration, though the same author labelled it.",
+  "`labelled`: 84 narration-style sentences, four per specific hero (orb is the fallback and has none). The first 56 cover the 14 heroes of the catalogue as it stood when the semantic ranker shipped; the last 28 were added with the seven heroes of the second task (mind, storm, rest, dialogue, wall, heart, loop). `groups` says which is which, and the bench reports them apart because they measure different regimes. Each sentence was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
+  "The first 56 were written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison. The last 28 were written as plain narration without avoiding or seeking any list word, and many use one (the bench prints how many): they are the easy regime, and a hero's own words win them.",
   "Four description formulas were compared on this one set and the shipped one chosen from it, and the wording and word lists of the seven new heroes were tuned against all 84: the differences between formulas are in-sample, and so is every figure on `labelled`. The set shows DIRECTION (embedding ranks paraphrase far better than keyword counting), not magnitude.",
-  "The first 56 were NOT relabelled when the seven heroes arrived, so some labels are now arguable: a sentence about rage or dread that was labelled pulse is at least as much about a storm, and \"Ink on paper carries a mind across centuries\" is about a book and a mind. Relabel such a sentence rather than bending the ranker; the bench shows where each one goes.",
-  "`heldOut`: 14 sentences, two per new hero, written BEFORE the new descriptions were tuned and scored once afterwards: the only figure here that is not in-sample. Once anyone tunes against it, it stops being held out.",
+  "The first 56 were NOT relabelled when the seven heroes arrived, so some labels are arguable. After pulse was narrowed to excitement, energy and a feeling spreading, \"Rage spreads from one person to the whole room\" still goes to storm, and I judge the LABEL right and the pick wrong: its predicate is the spreading, which is what pulse's rings draw, while a cloud draws anger, not contagion. \"A wave of dread washes over you\" also goes to storm, and there I judge the PICK right: dread is fear, which pulse no longer claims. \"Ink on paper carries a mind across centuries\" is about a book and a mind. Neither was relabelled; relabel such a sentence, with a reason, rather than bending the ranker.",
+  "`heldOut`: 14 sentences, two per new hero, by the same author, written after the new heroes' first descriptions had been drafted and read (so from the vocabulary they use: the bench prints how many contain a word from their own hero's list). They were not tuned against, but they are not independent either.",
   "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floor in heroes.ts is set against. The first 8 are unrelated text. The last 8 were added with the second task: the call-to-action and sign-off lines a real narration contains. Some of them score high against a hero anyway (\"Follow for more\" against staircase, \"Link in the description\" against network, \"See you tomorrow\" against clock), so no floor that keeps real matches removes them all."
  ],
+ "groups": {
+  "keywordFree": [
+   0,
+   56
+  ],
+  "plain": [
+   56,
+   84
+  ]
+ },
  "labelled": [
   {
    "hero": "hourglass",

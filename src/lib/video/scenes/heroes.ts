@@ -69,8 +69,8 @@ export const HERO_GUIDE: Record<HeroId, { shows: string; use: string; words: str
   },
   staircase: {
     shows: "a staircase with a glowing light climbing it",
-    use: "small steps, gradual progress, habits, practice, improving over time",
-    words: ["step", "steps", "progress", "improve", "improvement", "habit", "habits", "incremental", "gradual", "gradually", "build", "practice", "ladder", "level", "advance", "slowly", "daily", "consistent", "routine"],
+    use: "small steps, gradual progress, practice, improving over time",
+    words: ["step", "steps", "progress", "improve", "improvement", "incremental", "gradual", "gradually", "build", "practice", "ladder", "level", "advance", "slowly", "daily", "consistent"],
   },
   bookletters: {
     shows: "an open book releasing a spiral of letters",
@@ -109,8 +109,8 @@ export const HERO_GUIDE: Record<HeroId, { shows: string; use: string; words: str
   },
   pulse: {
     shows: "a pulsing core sending out rings and waves",
-    use: "emotion, anger, fear, anxiety, excitement, energy, a feeling spreading",
-    words: ["emotion", "feeling", "feel", "anger", "angry", "fear", "anxiety", "stress", "energy", "excite", "excited", "excitement", "enthusiasm", "passion", "mood", "heart", "rhythm", "noise", "tension", "calm", "restless", "temper", "furious", "cross"],
+    use: "emotion, excitement, energy: a feeling or mood spreading from one person to another",
+    words: ["emotion", "feeling", "feel", "energy", "excite", "excited", "excitement", "enthusiasm", "passion", "mood", "rhythm", "noise", "tension", "restless"],
   },
   focus: {
     shows: "rings converging on one bright point",
@@ -125,7 +125,7 @@ export const HERO_GUIDE: Record<HeroId, { shows: string; use: string; words: str
   mind: {
     shows: "a glass head in profile, scanned in slices, with a web of thoughts firing inside it",
     use: "memory and the mind: remembering, forgetting, thoughts, what goes on inside your head",
-    words: ["mind", "brain", "head", "skull", "memory", "remember", "forget", "forgot", "recall", "thought", "thinking", "mental", "imagination", "consciousness", "inner"],
+    words: ["mind", "brain", "skull", "memory", "remember", "forget", "forgot", "recall", "thought", "thinking", "mental", "imagination", "consciousness"],
   },
   storm: {
     shows: "a dark churning storm cloud lit from inside by flashes of lightning",
@@ -135,27 +135,27 @@ export const HERO_GUIDE: Record<HeroId, { shows: string; use: string; words: str
   rest: {
     shows: "a still lake under a slowly rising moon, everything at rest",
     use: "sleep, rest, recovery, stillness: a good night's sleep, switching off, doing nothing on purpose while the body repairs itself",
-    words: ["sleep", "rest", "recover", "recovery", "still", "stillness", "calm", "quiet", "pause", "night", "slow", "breathe", "relax", "peace", "repair"],
+    words: ["sleep", "rest", "recover", "recovery", "stillness", "calm", "quiet", "pause", "breathe", "relax", "peace", "repair"],
   },
   dialogue: {
     shows: "two glowing forms facing each other, trading light back and forth",
-    use: "a conversation between two people: talking, listening, asking, answering, understanding each other",
-    words: ["conversation", "talk", "talking", "speak", "listen", "listening", "dialogue", "discuss", "argue", "ask", "tell", "communicate", "communication", "question", "heard", "reply"],
+    use: "a conversation: talking, listening, asking, answering, understanding each other",
+    words: ["conversation", "talk", "talking", "speak", "listen", "listening", "dialogue", "discuss", "argue", "communicate", "communication", "reply"],
   },
   wall: {
     shows: "a tall brick wall that cracks and gives way under pressure, light breaking through",
     use: "an obstacle in your way: a wall, a locked door, resistance that pushes back and will not give",
-    words: ["wall", "barrier", "obstacle", "block", "blocked", "resistance", "resist", "stand", "boundary", "refuse", "closed", "impossible", "impediment", "stop"],
+    words: ["wall", "barrier", "obstacle", "blocked", "resistance", "resist", "boundary", "refuse", "impossible", "impediment"],
   },
   heart: {
     shows: "a glowing beating heart with a pulse line running through it",
-    use: "health, the body, vitality, the heartbeat: exercise, eating well, medicine, looking after the body that carries you through life",
-    words: ["heart", "heartbeat", "body", "health", "healthy", "exercise", "fitness", "diet", "vitality", "alive", "blood", "disease", "medicine", "doctor", "physical", "lungs"],
+    use: "your body and your health: the heart, the heartbeat, exercise, diet, medicine, staying fit",
+    words: ["heart", "heartbeat", "body", "health", "healthy", "exercise", "fitness", "diet", "vitality", "blood", "disease", "medicine", "doctor", "lungs"],
   },
   loop: {
     shows: "a closed ring of glowing spheres chasing each other around the same circuit forever",
-    use: "habit, routine, repetition: doing the same thing on autopilot, the cycle you repeat without noticing, stuck going round and round",
-    words: ["habit", "habits", "routine", "repeat", "repetition", "repeating", "cycle", "loop", "autopilot", "automatic", "unconscious", "mindless", "rut", "ritual", "pattern", "trigger"],
+    use: "habit and repetition: doing the same thing on autopilot, the cycle you repeat without noticing, stuck going round and round",
+    words: ["habit", "habits", "repeat", "repetition", "repeating", "cycle", "loop", "autopilot", "unconscious", "mindless", "rut", "ritual", "trigger"],
   },
   orb: {
     shows: "a glowing orb with rings and a swirl of light",
@@ -229,7 +229,10 @@ export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): He
  * A broad list attracts sentences that belong to a neighbour (an early habit list
  * took "Procrastination steals what you cannot earn back" from the hourglass), and
  * one word can do it ("circle" took "Your circle quietly shapes who you turn into"
- * from the network, and was dropped).
+ * from the network, and was dropped). The list is also the keyword matcher's, so
+ * keep to words a narrator says about THIS idea and not about the next one, and
+ * give a shared word exactly one owner: "routine" is the clock's (the day's
+ * structure), "habit" and "habits" the loop's (what you repeat without noticing).
  *
  * How this was chosen, and what that does and does not show. `scripts/hero-bench.mjs`
  * over `tests/fixtures/hero-labels.json` compared descriptions of a hero. The
@@ -239,8 +242,10 @@ export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): He
  * heroes' descriptions tuned, on the same set (so any gain is in-sample). It
  * supports the direction (embedding ranks a paraphrase the keyword list cannot
  * see) and nothing about magnitude: it is not an accuracy figure and not evidence
- * of a real-world improvement. The `heldOut` sentences are the one figure that
- * is not in-sample, and the same author wrote them.
+ * of a real-world improvement. The `heldOut` sentences were not tuned against but
+ * are not independent either (same author, same vocabulary). The nearest thing to
+ * independent evidence is `tests/fixtures/real-scenes.json`: real narration with
+ * hand-labelled accepted heroes, which the bench reports separately.
  *
  * Within that, this single vector measured better than a blend of all three texts
  * and better than the best of two vectors (`shows`, and `use`+`words`), which was
@@ -269,19 +274,21 @@ const MAX_TEXT_CHARS = 1000;
  * but already-used hero in a variety repair. Applies to the embedding source only:
  * a degraded ranker is the keyword matcher, whose own rule is "no keyword, no hero".
  *
- * Retuned for the 21-hero catalogue against the author-labelled sample in
- * `tests/fixtures/hero-labels.json` (`node --import tsx scripts/hero-bench.mjs`
- * prints the sweep). At 0.20 the embedder keeps 51 of the 55 sentences it ranks
- * right and sends 6 of its 29 wrong ones and 10 of 16 off-topic ones to the orb.
- * 0.20 is the knee: each step up to it removes at least two bad picks (wrong or
- * off-topic) per right one it costs (0.18 to 0.20: 5 for 2), and the next step
- * does not (0.20 to 0.22: 2 for 4). It is not distinguishable from 0.18, a
- * difference of two sentences. Genuine fits and misses overlap heavily (right
- * answers score 0.16 to 0.56, wrong 0.16 to 0.50), so this is a blunt floor that
- * removes the weakest matches, not a classifier. It cannot remove off-topic text
- * that shares a word with a hero: "Follow for more" scores 0.28 on the staircase
- * and "Link in the description" 0.25 on the network, above any floor that still
- * keeps real matches. A new hero moves every score: re-run the sweep.
+ * Retuned for the 21-hero catalogue (`node --import tsx scripts/hero-bench.mjs`
+ * prints both sweeps). On the author-labelled sample, 0.20 keeps 52 of the 53
+ * sentences the embedder ranks right and sends 6 of its 31 wrong ones and 11 of
+ * 16 off-topic ones to the orb; 0.22 would cost two more right ones for four more
+ * bad ones, and 0.25 nine for seven. On the 84 real scenes (hand-labelled with the
+ * heroes a viewer would accept) the sweep is flat from 0.20 to 0.22 (38 and 37
+ * accepted, 29 and 26 wrong) and clearly worse at 0.25 (29 accepted), so the
+ * independent evidence puts the knee at 0.20 to 0.22 too. Kept at 0.20: it is
+ * the value this shipped with, and the generic orb is not free (at 0.22 a
+ * further 4 of those 84 scenes lose their hero). Genuine fits and misses overlap
+ * heavily (right answers score 0.17 to 0.56, wrong 0.16 to 0.50), so this is a
+ * blunt floor that removes the weakest matches, not a classifier. It cannot remove
+ * off-topic text that shares a word with a hero: "Follow for more" scores 0.28 on
+ * the staircase and "Link in the description" 0.25 on the network, above any floor
+ * that still keeps real matches. A new hero moves every score: re-run the sweeps.
  */
 export const MIN_HERO_SCORE = 0.2;
 
