@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { heroRanker, heroForTextSync, heroMatch, HERO_IDS, HERO_GUIDE, type HeroId } from "../src/lib/video/scenes/heroes";
+import { heroRanker, heroForTextSync, heroMatch, HERO_IDS, HERO_GUIDE, MIN_HERO_SCORE, MIN_HERO_SCORE_LEXICAL, type HeroId } from "../src/lib/video/scenes/heroes";
+import { validateScenes, type ValidateContext } from "../src/lib/video/scenes/validate";
+import { sentencesOf } from "../src/lib/video/scenes/plan";
 import { lexicalEmbedder, type Embedder } from "../src/lib/analysis/embed";
 import { planScenes } from "../src/lib/video/scenes";
 import type { Beat } from "../src/lib/content/schema";
@@ -15,18 +17,32 @@ import type { TimedWord } from "../src/lib/media/word-timing";
  * the ranker's descriptions of the hero are made of); a text of the form `want:<id> ...`
  * is the same vector, whatever else it says. Everything else is a vector
  * orthogonal to every hero.
+ *
+ * A text starting `mix:chain=0.6,path=0.1` has exactly those cosines with those
+ * heroes (and 0 with the rest), so a test can say how well a hero fits.
  */
-function stubEmbedder(opts: { failAfter?: number; failMessage?: string } = {}): Embedder & { calls: string[][] } {
+function stubEmbedder(opts: { failAfter?: number; failMessage?: string; id?: string } = {}): Embedder & { calls: string[][] } {
   const calls: string[][] = [];
   const DIM = HERO_IDS.length + 1;
   return {
-    id: "stub-embedder",
+    id: opts.id ?? "stub-embedder",
     calls,
     async embed(texts) {
       if (opts.failAfter !== undefined && calls.length >= opts.failAfter) throw new Error(opts.failMessage ?? "stub embedder failed");
       calls.push(texts);
       return texts.map((t) => {
         const v = new Float32Array(DIM);
+        const mix = /^mix:(\S+)/.exec(t)?.[1];
+        if (mix) {
+          let sq = 0;
+          for (const pair of mix.split(",")) {
+            const [id, score] = pair.split("=");
+            v[HERO_IDS.indexOf(id as HeroId)] = Number(score);
+            sq += Number(score) ** 2;
+          }
+          v[DIM - 1] = Math.sqrt(Math.max(0, 1 - sq)); // unit length, so each score IS the cosine
+          return v;
+        }
         const want = /^want:(\w+)/.exec(t)?.[1];
         const idx = HERO_IDS.findIndex((id) => id === want || t.includes(HERO_GUIDE[id].shows) || t.includes(HERO_GUIDE[id].use));
         v[idx >= 0 ? idx : DIM - 1] = 1;
@@ -153,6 +169,95 @@ test("score is how well the best hero fits, so a near-miss scores lower than a m
   assert.equal(await r.score("nothing relevant at all"), 0);
 });
 
+// --- a fair fit, or nothing --------------------------------------------------------
+
+test("text that fits nothing well gets the generic orb, not an arbitrary unused hero", async () => {
+  const r = await heroRanker(stubEmbedder());
+  const below = MIN_HERO_SCORE - 0.02;
+  const above = MIN_HERO_SCORE + 0.02;
+  assert.equal(await r.pick(`mix:chain=${below} something`), "orb", "the best fit is below the floor");
+  assert.equal(await r.pick(`mix:chain=${above} something`), "chain", "just above it is a fit");
+  assert.equal(await r.pick("completely unrelated text"), "orb", "orthogonal to every hero");
+  assert.ok(Math.abs((await r.score(`mix:chain=${below} something`)) - below) < 1e-6, "`score` still reports the raw best cosine");
+});
+
+test("an unused hero below the floor does not displace a used one that fits", async () => {
+  const r = await heroRanker(stubEmbedder());
+  const weak = `mix:chain=0.6,path=${MIN_HERO_SCORE - 0.05} x`;
+  const fair = `mix:chain=0.6,path=${MIN_HERO_SCORE + 0.05} x`;
+  assert.equal(await r.pick(weak, ["chain"]), "chain", "path is unused but not a fit: the good repeat stands");
+  assert.equal(await r.pick(fair, ["chain"]), "path", "path is unused and a fair fit: it is taken");
+  assert.equal(await r.pick(weak), "chain");
+  // And when even the repeat is below the floor, there is nothing to repeat.
+  assert.equal(await r.pick(`mix:chain=${MIN_HERO_SCORE - 0.05},path=${MIN_HERO_SCORE - 0.1} x`, ["chain"]), "orb");
+});
+
+test("the floor is per source: each embedder is held to its own", async () => {
+  const semantic = await heroRanker(stubEmbedder());
+  const lexical = await heroRanker(stubEmbedder({ id: lexicalEmbedder.id }));
+  assert.equal(semantic.source, "embedding");
+  assert.equal(lexical.source, "lexical");
+  for (const [r, floor] of [[semantic, MIN_HERO_SCORE], [lexical, MIN_HERO_SCORE_LEXICAL]] as const) {
+    assert.equal(await r.pick(`mix:chain=${floor - 0.01} x`), "orb", `${r.source}: just under its floor`);
+    assert.equal(await r.pick(`mix:chain=${floor + 0.01} x`), "chain", `${r.source}: just over its floor`);
+  }
+});
+
+const beatAt = (i: number, voiceover: string): Beat => ({ id: `b${i}`, voiceover, onScreen: "", sourcePage: 0, startWord: 0, endWord: 9 });
+function timedWords(beats: Beat[], perWord = 0.4): TimedWord[] {
+  const out: TimedWord[] = [];
+  let t = 1;
+  beats.forEach((b, bi) => {
+    b.voiceover.split(/\s+/).filter(Boolean).forEach((word, i) => {
+      out.push({ word, start: +t.toFixed(3), end: +(t + perWord * 0.8).toFixed(3), beatIndex: bi, index: i, source: "audio" });
+      t += perWord;
+    });
+    t += 0.34;
+  });
+  return out;
+}
+const specAt = (i: number, extra: object) => ({ fromSentence: i, toSentence: i, from: i, to: i, kind: "cinematic" as const, concept: "a thing", reason: "r", ...extra });
+async function validatorContext(beats: Beat[]): Promise<ValidateContext> {
+  return {
+    sentences: sentencesOf(beats, timedWords(beats)),
+    pageWords: new Map([[0, "Time is the one thing nobody gets back".split(" ")]]),
+    cropFor: () => null,
+    hasPage: () => true,
+    locate: () => null,
+    heroRanker: await heroRanker(stubEmbedder()),
+  };
+}
+
+test("the variety repair declines a swap below the floor, and takes one above it", async () => {
+  const beats = [
+    beatAt(0, "Time is the one thing nobody gets back."),
+    beatAt(1, "Your past can weigh you down like a chain."),
+    beatAt(2, "It follows you into every new room."),
+    beatAt(3, "Follow for more."),
+  ];
+  const run = async (concept2: string) => {
+    // Scenes 1 and 2 are both a chain, which the never-twice-in-a-row rule must repair.
+    const r = await validateScenes(
+      [specAt(0, { hero: "mountain" }), specAt(1, { hero: "chain" }), specAt(2, { hero: "chain", concept: concept2 }), specAt(3, { hero: "spark" })],
+      await validatorContext(beats),
+    );
+    return r.scenes.map((s) => s.cine?.hero);
+  };
+  const declined = await run(`mix:chain=0.6,path=${MIN_HERO_SCORE - 0.05}`);
+  assert.equal(declined[2], "chain", "the only unused fit is below the floor: the repeat stays");
+  const taken = await run(`mix:chain=0.6,path=${MIN_HERO_SCORE + 0.05}`);
+  assert.equal(taken[2], "path", "a fair unused fit replaces the repeat");
+});
+
+test("a cinematic scene the director gave no hero, about nothing in the catalogue, shows the orb", async () => {
+  const beats = [beatAt(0, "Time is the one thing nobody gets back."), beatAt(1, "Add two cups of flour and stir."), beatAt(2, "Follow for more.")];
+  const r = await validateScenes(
+    [specAt(0, { hero: "mountain" }), specAt(1, { concept: "nothing in the catalogue" }), specAt(2, { hero: "spark" })],
+    await validatorContext(beats),
+  );
+  assert.equal(r.scenes[1].cine?.hero, "orb");
+});
+
 // --- degradation never fails a plan -----------------------------------------------
 
 test("with no usable model the ranker is built on the lexical embedder and says why", async () => {
@@ -170,6 +275,14 @@ test("a model that loads and then fails mid-plan degrades the ranker rather than
   assert.equal(r.source, "lexical", "and the ranker reports that it is no longer semantic");
   assert.match(r.degradedBecause ?? "", /onnx session died/);
   assert.ok(HERO_IDS.includes(await r.pick("Small steps and good habits")), "later asks keep working");
+});
+
+test("a model that dies mid-plan is held to the lexical floor from then on", async () => {
+  const r = await heroRanker(stubEmbedder({ failAfter: 1 }));
+  assert.equal(r.source, "embedding");
+  await r.pick("anything at all"); // the embed fails and the ranker degrades
+  assert.equal(r.source, "lexical");
+  assert.equal(await r.pick("zzz qqq xyzzy"), "orb", "no overlap with any hero: nothing fits");
 });
 
 test("an embedder that returns the wrong number of vectors is treated as a failure, not trusted", async () => {

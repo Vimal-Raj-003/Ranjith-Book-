@@ -1,0 +1,246 @@
+{
+ "_readme": [
+  "Author-labelled benchmark for the hero ranker (src/lib/video/scenes/heroes.ts). Regenerate the table with: node --import tsx scripts/hero-bench.mjs",
+  "`labelled`: 56 narration-style sentences, four per hero in the catalogue as it stood when Task 1 shipped (15 heroes; orb is the fallback and has none). Each was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
+  "Written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison.",
+  "Four description formulas were compared on this one set and the shipped one chosen from it: the differences between formulas are in-sample. The set shows DIRECTION (embedding ranks paraphrase far better than keyword counting), not magnitude.",
+  "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floors in heroes.ts were set against (provisional; Task 2's larger catalogue may retune them).",
+  "When the catalogue grows (Task 2), a label here can become wrong because a NEW hero fits better than the labelled one; relabel it rather than bending the ranker."
+ ],
+ "labelled": [
+  {
+   "hero": "hourglass",
+   "text": "Every candle burns down eventually"
+  },
+  {
+   "hero": "hourglass",
+   "text": "You only get so many summers"
+  },
+  {
+   "hero": "hourglass",
+   "text": "The seconds slip through your fingers while you hesitate"
+  },
+  {
+   "hero": "hourglass",
+   "text": "Procrastination steals what you cannot earn back"
+  },
+  {
+   "hero": "clock",
+   "text": "From the alarm to the last email, your whole day is spoken for"
+  },
+  {
+   "hero": "clock",
+   "text": "You sprint between meetings and never arrive"
+  },
+  {
+   "hero": "clock",
+   "text": "The same train, the same desk, the same lunch, every single weekday"
+  },
+  {
+   "hero": "clock",
+   "text": "Packed back to back with no breathing room"
+  },
+  {
+   "hero": "staircase",
+   "text": "A thousand tiny repetitions turn into mastery"
+  },
+  {
+   "hero": "staircase",
+   "text": "Greatness is made of ordinary Tuesdays"
+  },
+  {
+   "hero": "staircase",
+   "text": "Climb one rung at a time and don't look down"
+  },
+  {
+   "hero": "staircase",
+   "text": "Show up, do the unglamorous work, and repeat it"
+  },
+  {
+   "hero": "bookletters",
+   "text": "Somebody wrote this down so you wouldn't have to learn it the hard way"
+  },
+  {
+   "hero": "bookletters",
+   "text": "Great sentences outlive the people who wrote them"
+  },
+  {
+   "hero": "bookletters",
+   "text": "Libraries are quiet rooms full of other people's lives"
+  },
+  {
+   "hero": "bookletters",
+   "text": "Ink on paper carries a mind across centuries"
+  },
+  {
+   "hero": "chain",
+   "text": "Nobody can carry yesterday's mistakes forever"
+  },
+  {
+   "hero": "chain",
+   "text": "You keep dragging that old failure into every new room"
+  },
+  {
+   "hero": "chain",
+   "text": "Forgive them, or stay tied to the person who hurt you"
+  },
+  {
+   "hero": "chain",
+   "text": "Some people never put down what happened to them"
+  },
+  {
+   "hero": "path",
+   "text": "Two forks in the trail, and no map"
+  },
+  {
+   "hero": "path",
+   "text": "At some point you must pick a side"
+  },
+  {
+   "hero": "path",
+   "text": "Where you end up depends on which door you open now"
+  },
+  {
+   "hero": "path",
+   "text": "Every fork asks who you want to become"
+  },
+  {
+   "hero": "mountain",
+   "text": "The top is hidden in cloud but you keep walking up"
+  },
+  {
+   "hero": "mountain",
+   "text": "Nothing worth having comes without a brutal slog"
+  },
+  {
+   "hero": "mountain",
+   "text": "The hardest stretch comes right before it opens up"
+  },
+  {
+   "hero": "mountain",
+   "text": "Dream big, then earn every inch of it"
+  },
+  {
+   "hero": "spark",
+   "text": "That flash of understanding arrives out of nowhere"
+  },
+  {
+   "hero": "spark",
+   "text": "Suddenly everything makes sense"
+  },
+  {
+   "hero": "spark",
+   "text": "A small question cracked the whole problem open"
+  },
+  {
+   "hero": "spark",
+   "text": "Then it clicks, and you can't unsee it"
+  },
+  {
+   "hero": "scales",
+   "text": "The scale tips toward the heavier side"
+  },
+  {
+   "hero": "scales",
+   "text": "Gaining one thing means giving up another"
+  },
+  {
+   "hero": "scales",
+   "text": "Every yes is a quiet no to something else"
+  },
+  {
+   "hero": "scales",
+   "text": "Put the upside on one side and the downside on the other"
+  },
+  {
+   "hero": "network",
+   "text": "Strangers become allies when you show up for them"
+  },
+  {
+   "hero": "network",
+   "text": "No one succeeds alone"
+  },
+  {
+   "hero": "network",
+   "text": "Your circle quietly shapes who you turn into"
+  },
+  {
+   "hero": "network",
+   "text": "We are all knotted together in ways we cannot see"
+  },
+  {
+   "hero": "pulse",
+   "text": "Rage spreads from one person to the whole room"
+  },
+  {
+   "hero": "pulse",
+   "text": "Your chest tightens before you even know why"
+  },
+  {
+   "hero": "pulse",
+   "text": "A wave of dread washes over you"
+  },
+  {
+   "hero": "pulse",
+   "text": "Joy is contagious in the same way"
+  },
+  {
+   "hero": "focus",
+   "text": "You are drowning in notifications"
+  },
+  {
+   "hero": "focus",
+   "text": "Cut everything except what truly counts"
+  },
+  {
+   "hero": "focus",
+   "text": "Your phone buzzes and the thought is gone"
+  },
+  {
+   "hero": "focus",
+   "text": "Say no to a hundred good ideas so you can do the best one"
+  },
+  {
+   "hero": "growth",
+   "text": "A pebble becomes an avalanche"
+  },
+  {
+   "hero": "growth",
+   "text": "Small deposits stack up into a fortune"
+  },
+  {
+   "hero": "growth",
+   "text": "It starts slowly, then it explodes"
+  },
+  {
+   "hero": "growth",
+   "text": "Each win feeds the next one, faster and faster"
+  },
+  {
+   "hero": "orbit",
+   "text": "Step back and the pieces fit into one design"
+  },
+  {
+   "hero": "orbit",
+   "text": "Seasons turn and everything returns to where it began"
+  },
+  {
+   "hero": "orbit",
+   "text": "Zoom out far enough and your problem becomes tiny"
+  },
+  {
+   "hero": "orbit",
+   "text": "Everything is held in place by something larger"
+  }
+ ],
+ "offTopic": [
+  "The quick brown fox jumps over the lazy dog",
+  "qwertyuiop asdfghjkl zxcvbnm",
+  "Add two cups of flour and stir until smooth",
+  "Tomatoes need full sun and regular watering",
+  "Thanks for watching, see you in the next one",
+  "Press the green button and wait for the beep",
+  "The invoice was sent to the wrong address",
+  "Cats sleep on warm windowsills"
+ ]
+}

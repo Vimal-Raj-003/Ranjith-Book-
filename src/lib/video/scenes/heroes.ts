@@ -184,10 +184,19 @@ export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): He
  *   - what it is FOR: narration states an idea, which is what `use` and `words`
  *     are written in.
  *
- * One blended description of all three was measured worse than either on its own
- * material. On 56 hand-labelled narration-only sentences (none containing a
- * catalogue word) the blend ranked the right hero first 26 times, these two
- * separate descriptions 36, and the keyword matcher 6.
+ * Why two descriptions and not one blended string: a single vector of all three
+ * served neither kind of text well in a small check, `scripts/hero-bench.mjs`
+ * over `tests/fixtures/hero-labels.json`. Read that check for what it is. The 56
+ * sentences were written and labelled by this code's author, deliberately without
+ * the catalogue's keywords (so the keyword matcher is handicapped by
+ * construction), and the formula was chosen on the same set (so any gain between
+ * formulas is in-sample). `use`+`words` alone scored as well or better than the
+ * form shipped here on that narration-only set. It supports the direction
+ * (embedding ranks a paraphrase the keyword list cannot see) and nothing about
+ * magnitude: it is not an accuracy figure and is not evidence of a real-world
+ * improvement. The two-description form is kept, at some cost on narration, because
+ * it also copes with picture-style text like a director's concept, which that set
+ * does not contain. Re-run the bench when the catalogue changes.
  */
 function heroDescriptions(id: HeroId): string[] {
   const g = HERO_GUIDE[id];
@@ -197,16 +206,48 @@ function heroDescriptions(id: HeroId): string[] {
 /** Longer than any scene's narration needs to be; bounds the work and the cache key. */
 const MAX_TEXT_CHARS = 1000;
 
+/**
+ * Below this cosine similarity a hero is not an honest fit for a text, so it is
+ * neither chosen outright (the generic `orb` is) nor allowed to displace a better
+ * but already-used hero in a variety repair.
+ *
+ * PROVISIONAL. Set against the author-labelled sample in
+ * `tests/fixtures/hero-labels.json` (`node --import tsx scripts/hero-bench.mjs`
+ * prints the sweep): at 0.20 the embedder keeps 32 of the 33 sentences it ranks
+ * right and drops 4 of its 23 wrong ones and 5 of 8 off-topic ones to the orb.
+ * Genuine fits and misses overlap heavily (right answers score 0.19 to 0.75, wrong
+ * 0.14 to 0.40), so this is a blunt floor that removes the weakest matches, not a
+ * classifier. Task 2 grows the catalogue, which moves every score: retune with
+ * the bench then.
+ */
+export const MIN_HERO_SCORE = 0.2;
+/**
+ * Lexical (hashed bag-of-words) cosines are on another scale and noisier, so they
+ * get their own floor, as `icons.ts` does (`MIN_SCORE_LEXICAL`). Same value as the
+ * icon one for the same reason: it only removes the weakest hash collisions. On the
+ * sample no floor separates off-topic text from a weak lexical match (best
+ * off-topic 0.27 against right answers at 0.08 to 0.60), and a higher one sends
+ * most degraded-mode scenes to the orb. PROVISIONAL, retune with Task 2.
+ */
+export const MIN_HERO_SCORE_LEXICAL = 0.18;
+
 /** By id, not identity: the same module can be loaded twice (ESM and CJS) and book analysis compares ids too. */
 const isLexical = (e: Embedder) => e.id === lexicalEmbedder.id;
+const floorOf = (e: Embedder) => (isLexical(e) ? MIN_HERO_SCORE_LEXICAL : MIN_HERO_SCORE);
 
 export interface HeroRanker {
   /**
    * The hero whose meaning best fits `text`, skipping those in `avoid` while any
-   * other still fits (when all are used the best pick repeats rather than
-   * failing). Always resolves to a real hero. A text the ranker has not seen is
-   * embedded on the spot, so there is no way to ask about a string and quietly
-   * get keyword matching instead.
+   * other still FITS. In order of preference:
+   *   1. the best hero not in `avoid` that scores at least the floor
+   *      (`MIN_HERO_SCORE`, or `MIN_HERO_SCORE_LEXICAL` for the lexical source);
+   *   2. else the best hero overall that does, a repeat, so a text whose only good
+   *      fits are all used repeats rather than failing;
+   *   3. else `"orb"`: nothing in the catalogue fits.
+   * So a result inside `avoid` (or `"orb"`) means "no fresh hero is a fair fit":
+   * callers that must not repeat should decline the swap. Always resolves to a real
+   * hero. A text the ranker has not seen is embedded on the spot, so there is no
+   * way to ask about a string and quietly get keyword matching instead.
    */
   pick(text: string, avoid?: readonly HeroId[]): Promise<HeroId>;
   /** Cosine similarity of the best match, 0..1 — how well the catalogue actually fits. */
@@ -218,9 +259,12 @@ export interface HeroRanker {
 }
 
 interface RankedHeroes {
-  /** Specific heroes, best first. Empty when nothing fits at all. */
-  ranked: HeroId[];
+  /** Specific heroes with their cosine, best first. Empty for blank text. */
+  ranked: { id: HeroId; s: number }[];
+  /** The best cosine (0 for blank text), whether or not it clears the floor. */
   best: number;
+  /** The floor of the embedder that produced these scores. */
+  floor: number;
 }
 
 /**
@@ -279,7 +323,7 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
 
   async function rank(text: string): Promise<RankedHeroes> {
     const key = text.trim().slice(0, MAX_TEXT_CHARS);
-    if (!key) return { ranked: [], best: 0 };
+    if (!key) return { ranked: [], best: 0, floor: floorOf(state.embedder) };
     let st = state;
     const hit = st.cache.get(key);
     if (hit) return hit;
@@ -296,9 +340,11 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
       order,
       s: Math.max(...st.vectors.slice(order * perHero, (order + 1) * perHero).map((v) => cosine(query, v))),
     })).sort((a, b) => b.s - a.s || a.order - b.order);
-    const best = scored[0]?.s ?? 0;
-    // Nothing in common at all (a blank vector, or only words no hero mentions) is the one case the generic backdrop is for.
-    const out: RankedHeroes = { ranked: best > 0 ? scored.map((x) => x.id) : [], best: Math.max(0, best) };
+    const out: RankedHeroes = {
+      ranked: scored.map(({ id, s }) => ({ id, s })),
+      best: Math.max(0, scored[0]?.s ?? 0),
+      floor: floorOf(st.embedder),
+    };
     st.cache.set(key, out);
     return out;
   }
@@ -311,8 +357,9 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
       return degradedBecause;
     },
     async pick(text, avoid = []) {
-      const { ranked } = await rank(text);
-      return ranked.find((id) => !avoid.includes(id)) ?? ranked[0] ?? "orb";
+      const { ranked, floor } = await rank(text);
+      const fits = ranked.filter((r) => r.s >= floor);
+      return (fits.find((r) => !avoid.includes(r.id)) ?? fits[0])?.id ?? "orb";
     },
     async score(text) {
       return (await rank(text)).best;

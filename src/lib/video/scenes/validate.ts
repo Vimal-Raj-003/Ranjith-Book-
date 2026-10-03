@@ -551,8 +551,12 @@ export async function validateScenes(
     const prev = heroOf(scenes[i - 1]);
     if (h !== prev && (h === "orb" ? heroUses(h) <= 1 : heroUses(h) <= MAX_HERO_USES)) continue;
     const used = scenes.flatMap((s) => (heroOf(s) ? [heroOf(s)!] : []));
-    const next = await heroFor(ctx, `${scenes[i].concept} ${narrationOf(scenes[i], ctx)}`, [...used, ...(prev ? [prev] : [])]);
-    if (next !== h && next !== "orb") scenes[i] = toCinematic(scenes[i], ctx, next, scenes[i].cine?.hook);
+    const avoid = [...used, ...(prev ? [prev] : [])];
+    const next = await heroFor(ctx, `${scenes[i].concept} ${narrationOf(scenes[i], ctx)}`, avoid);
+    // Swap only to a hero that is new to this video AND a fair fit. The ranker answers "orb" when nothing
+    // fits and a repeat when no unused hero does; either way the swap is declined and the scene keeps the
+    // hero it had, because a weak-but-unused hero is worse than a good-but-repeated one.
+    if (next !== "orb" && !avoid.includes(next)) scenes[i] = toCinematic(scenes[i], ctx, next, scenes[i].cine?.hook);
   }
 
   // Quote cards are the book's words on their own; two is a video about a book,

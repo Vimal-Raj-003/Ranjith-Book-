@@ -505,6 +505,7 @@ test("with no director at all, the plan still covers the narration and is still 
     hasPage: () => true,
     provider: "claude-cli",
     skipDirector: true,
+    heroEmbedder: lexicalEmbedder, // "without a model" means it: no sentence model loaded for the hero choice either
   });
   assert.equal(plan.directed, false);
   assert.ok(plan.scenes.length >= 2, `${plan.scenes.length} scenes`);

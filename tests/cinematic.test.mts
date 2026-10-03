@@ -218,8 +218,10 @@ test("the narration's own concepts choose each scene's hero", async () => {
  * choice in `validateScenes` still comes from `heroForTextSync` it shows up as a
  * hero this ranker never returned.
  */
+/** What `recordingRanker` answers first, derived so a catalogue that grows or reorders does not break the asserts. */
+const RECORDING_RANKER_ORDER = HERO_IDS.filter((h) => h !== "orb").reverse();
 function recordingRanker(): HeroRanker & { asked: { text: string; avoid: readonly HeroId[] }[]; scored: string[]; answers: Set<HeroId> } {
-  const order = HERO_IDS.filter((h) => h !== "orb").reverse();
+  const order = RECORDING_RANKER_ORDER;
   const asked: { text: string; avoid: readonly HeroId[] }[] = [];
   const scored: string[] = [];
   const answers = new Set<HeroId>();
@@ -249,7 +251,8 @@ test("the opening hero comes from the ranker, asked about the hook and the openi
   const heroRanker = recordingRanker();
   const specs = sentences.map((s) => spec(s.index, s.index, "kinetic-text"));
   const r = await validateScenes(specs, ctx({ sentences, heroRanker, hook: { text: "Time is running out", keywords: ["time"] } }));
-  assert.equal(r.scenes[0].cine?.hero, "growth", "the keyword matcher would have said hourglass");
+  assert.equal(r.scenes[0].cine?.hero, RECORDING_RANKER_ORDER[0], "the ranker's first choice");
+  assert.notEqual(RECORDING_RANKER_ORDER[0], heroForTextSync("Time is running out Time is the one thing nobody gets back."), "which the keyword matcher would not have said");
   assert.ok(heroRanker.asked.some((a) => a.text.includes("Time is running out") && a.text.includes("Time is the one thing")), "it was asked about the hook AND the narration");
 });
 
@@ -261,7 +264,7 @@ test("a director's own valid hero is kept without asking the ranker; an invalid 
   assert.equal(keep.scenes[0].cine?.hero, "mountain");
   assert.ok(!kept.asked.some((a) => a.text.includes("Time is the one thing")), "scene 0 was not second-guessed");
   const repaired = await validateScenes([spec(0, 0, "cinematic", { hero: "dragon" }), ...rest], ctx({ sentences, heroRanker: recordingRanker() }));
-  assert.equal(repaired.scenes[0].cine?.hero, "growth", "an invented hero is replaced by the ranker's pick, not the keyword matcher's");
+  assert.equal(repaired.scenes[0].cine?.hero, RECORDING_RANKER_ORDER[0], "an invented hero is replaced by the ranker's pick, not the keyword matcher's");
 });
 
 test("every repair pass takes its hero from the ranker: variety repeats, the cinematic floor, and the candidate order", async () => {
