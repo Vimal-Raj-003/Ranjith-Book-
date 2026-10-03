@@ -154,11 +154,11 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
   const report = await validateScenes(resolved, ctx);
 
   // A degraded run is visible rather than silent: without the model, heroes are
-  // matched on shared words, which misses a sentence that says the idea in other words.
+  // matched on the words each hero lists (the keyword matcher), which misses a sentence that says the idea in other words.
   // Read AFTER validation, because the model can also fail partway through it.
   if (ranker.source === "lexical") {
     notes.push(
-      `Hero objects were chosen by word overlap, not meaning${ranker.degradedBecause ? ` (the semantic model was unavailable: ${ranker.degradedBecause})` : ""} — a scene that says an idea in other words may have got a generic hero.`,
+      `Hero objects were chosen by word overlap with each object's keyword list, not by meaning${ranker.degradedBecause ? ` (the semantic model was unavailable: ${ranker.degradedBecause})` : ""} — a scene that says an idea in other words may have got the generic orb.`,
     );
   }
 

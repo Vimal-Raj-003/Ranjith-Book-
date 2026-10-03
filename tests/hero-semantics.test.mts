@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { heroRanker, heroForTextSync, heroMatch, HERO_IDS, HERO_GUIDE, MIN_HERO_SCORE, MIN_HERO_SCORE_LEXICAL, type HeroId } from "../src/lib/video/scenes/heroes";
+import fs from "node:fs";
+import path from "node:path";
+import { heroRanker, heroForTextSync, heroMatch, isHeroId, HERO_IDS, HERO_GUIDE, MIN_HERO_SCORE, type HeroId, type HeroRanker } from "../src/lib/video/scenes/heroes";
 import { validateScenes, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { sentencesOf } from "../src/lib/video/scenes/plan";
 import { lexicalEmbedder, type Embedder } from "../src/lib/analysis/embed";
@@ -192,17 +194,6 @@ test("an unused hero below the floor does not displace a used one that fits", as
   assert.equal(await r.pick(`mix:chain=${MIN_HERO_SCORE - 0.05},path=${MIN_HERO_SCORE - 0.1} x`, ["chain"]), "orb");
 });
 
-test("the floor is per source: each embedder is held to its own", async () => {
-  const semantic = await heroRanker(stubEmbedder());
-  const lexical = await heroRanker(stubEmbedder({ id: lexicalEmbedder.id }));
-  assert.equal(semantic.source, "embedding");
-  assert.equal(lexical.source, "lexical");
-  for (const [r, floor] of [[semantic, MIN_HERO_SCORE], [lexical, MIN_HERO_SCORE_LEXICAL]] as const) {
-    assert.equal(await r.pick(`mix:chain=${floor - 0.01} x`), "orb", `${r.source}: just under its floor`);
-    assert.equal(await r.pick(`mix:chain=${floor + 0.01} x`), "chain", `${r.source}: just over its floor`);
-  }
-});
-
 const beatAt = (i: number, voiceover: string): Beat => ({ id: `b${i}`, voiceover, onScreen: "", sourcePage: 0, startWord: 0, endWord: 9 });
 function timedWords(beats: Beat[], perWord = 0.4): TimedWord[] {
   const out: TimedWord[] = [];
@@ -260,29 +251,78 @@ test("a cinematic scene the director gave no hero, about nothing in the catalogu
 
 // --- degradation never fails a plan -----------------------------------------------
 
-test("with no usable model the ranker is built on the lexical embedder and says why", async () => {
-  const r = await heroRanker(failing);
+const fixture = JSON.parse(fs.readFileSync(path.join(process.cwd(), "tests", "fixtures", "hero-labels.json"), "utf8")) as {
+  labelled: { hero: string; text: string }[];
+  offTopic: string[];
+};
+const CORPUS = [
+  ...fixture.labelled.map((x) => x.text),
+  ...fixture.offTopic,
+  "",
+  "   ",
+  "zzz qqq xyzzy",
+  "Time is running out before the deadline",
+  "Small steps and good habits build progress",
+  "time ".repeat(400),
+];
+const AVOIDS: (readonly HeroId[])[] = [[], ["hourglass", "clock"], HERO_IDS];
+
+/** The three ways a ranker ends up degraded: asked for, never loaded, or lost partway. */
+async function degradedRankers(): Promise<[string, HeroRanker][]> {
+  const midPlan = await heroRanker(stubEmbedder({ failAfter: 1, failMessage: "onnx session died" }));
+  assert.equal(midPlan.source, "embedding", "the hero descriptions embedded fine");
+  await midPlan.pick("anything at all"); // this embed fails, and from here the ranker is degraded
+  return [
+    ["lexical embedder asked for", await heroRanker(lexicalEmbedder)],
+    ["model unavailable at construction", await heroRanker(failing)],
+    ["model died mid-plan", midPlan],
+  ];
+}
+
+test("a degraded ranker is exactly the keyword matcher, and never yields an undefined hero", async () => {
+  for (const [how, r] of await degradedRankers()) {
+    assert.equal(r.source, "lexical", how);
+    for (const text of CORPUS) {
+      for (const avoid of AVOIDS) {
+        const got = await r.pick(text, avoid);
+        assert.ok(isHeroId(got), `${how}: "${text.slice(0, 40)}" gave ${String(got)}`);
+        assert.equal(got, heroForTextSync(text, avoid), `${how}: "${text.slice(0, 40)}" avoiding ${avoid.length}`);
+      }
+    }
+  }
+});
+
+test("a degraded ranker says why, and a degraded score is the keyword hit count squashed into 0..1", async () => {
+  const [asked, never, midPlan] = (await degradedRankers()).map(([, r]) => r);
+  assert.equal(asked.degradedBecause, null, "lexical was asked for: nothing went wrong");
+  assert.match(never.degradedBecause ?? "", /no cached model and no network/);
+  assert.match(midPlan.degradedBecause ?? "", /onnx session died/);
+  for (const r of [asked, never, midPlan]) {
+    assert.equal(await r.score("zzz qqq xyzzy"), 0, "no keyword hit: 0, so a floor-style check still routes it to the orb");
+    assert.equal(await r.score(""), 0);
+    const one = await r.score("a deadline");
+    const many = await r.score("time and deadline");
+    assert.ok(one > 0 && one < many && many < 1, `more keyword hits score higher, inside 0..1 (${one}, ${many})`);
+  }
+});
+
+test("asking for the lexical embedder does no embedding work at all", async () => {
+  const stub = stubEmbedder({ id: lexicalEmbedder.id });
+  const r = await heroRanker(stub);
   assert.equal(r.source, "lexical");
-  assert.match(r.degradedBecause ?? "", /no cached model and no network/);
-  assert.ok(HERO_IDS.includes(await r.pick("Time is running out before the deadline")));
+  await r.pick("Time is running out before the deadline");
+  await r.score("Time is running out before the deadline");
+  assert.equal(stub.calls.length, 0, "the keyword matcher needs no vectors");
 });
 
 test("a model that loads and then fails mid-plan degrades the ranker rather than the plan", async () => {
   const r = await heroRanker(stubEmbedder({ failAfter: 1, failMessage: "onnx session died" }));
-  assert.equal(r.source, "embedding", "the hero descriptions embedded fine");
+  assert.equal(r.source, "embedding");
   const hero = await r.pick("Time is running out before the deadline");
-  assert.ok(HERO_IDS.includes(hero), "the failing embed still produced a hero");
+  assert.equal(hero, "hourglass", "the failing embed was answered by the keyword matcher");
   assert.equal(r.source, "lexical", "and the ranker reports that it is no longer semantic");
   assert.match(r.degradedBecause ?? "", /onnx session died/);
-  assert.ok(HERO_IDS.includes(await r.pick("Small steps and good habits")), "later asks keep working");
-});
-
-test("a model that dies mid-plan is held to the lexical floor from then on", async () => {
-  const r = await heroRanker(stubEmbedder({ failAfter: 1 }));
-  assert.equal(r.source, "embedding");
-  await r.pick("anything at all"); // the embed fails and the ranker degrades
-  assert.equal(r.source, "lexical");
-  assert.equal(await r.pick("zzz qqq xyzzy"), "orb", "no overlap with any hero: nothing fits");
+  assert.equal(await r.pick("Small steps and good habits"), heroForTextSync("Small steps and good habits"), "later asks keep working");
 });
 
 test("an embedder that returns the wrong number of vectors is treated as a failure, not trusted", async () => {

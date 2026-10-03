@@ -4,7 +4,7 @@
   "`labelled`: 56 narration-style sentences, four per hero in the catalogue as it stood when Task 1 shipped (15 heroes; orb is the fallback and has none). Each was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
   "Written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison.",
   "Four description formulas were compared on this one set and the shipped one chosen from it: the differences between formulas are in-sample. The set shows DIRECTION (embedding ranks paraphrase far better than keyword counting), not magnitude.",
-  "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floors in heroes.ts were set against (provisional; Task 2's larger catalogue may retune them).",
+  "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floor in heroes.ts was set against (provisional; Task 2's larger catalogue may retune them).",
   "When the catalogue grows (Task 2), a label here can become wrong because a NEW hero fits better than the labelled one; relabel it rather than bending the ranker."
  ],
  "labelled": [

@@ -11,8 +11,9 @@
  * Two matchers live here. `heroRanker` chooses by MEANING, comparing the
  * narration against what each hero is for with the sentence embedder book
  * analysis already uses. `heroForTextSync` is the older keyword counter, kept
- * as the floor: purely lexical like `emphasis.ts` and `three-shapes.ts`, no
- * model call, no network, the same text mapped to the same hero on every run.
+ * as the floor, and what a degraded `heroRanker` is: purely lexical like
+ * `emphasis.ts` and `three-shapes.ts`, no model call, no network, the same text
+ * mapped to the same hero on every run.
  * Both run when the scenes are PLANNED, never when the video is rendered.
  */
 import { normalizeToken } from "../../ingest/align";
@@ -211,7 +212,8 @@ const MAX_TEXT_CHARS = 1000;
 /**
  * Below this cosine similarity a hero is not an honest fit for a text, so it is
  * neither chosen outright (the generic `orb` is) nor allowed to displace a better
- * but already-used hero in a variety repair.
+ * but already-used hero in a variety repair. Applies to the embedding source only:
+ * a degraded ranker is the keyword matcher, whose own rule is "no keyword, no hero".
  *
  * PROVISIONAL. Set against the author-labelled sample in
  * `tests/fixtures/hero-labels.json` (`node --import tsx scripts/hero-bench.mjs`
@@ -224,40 +226,40 @@ const MAX_TEXT_CHARS = 1000;
  * score: retune with the bench then.
  */
 export const MIN_HERO_SCORE = 0.2;
-/**
- * Lexical (hashed bag-of-words) cosines are on another scale and noisier, so they
- * get their own floor, as `icons.ts` does (`MIN_SCORE_LEXICAL`). Same value as the
- * icon one for the same reason: it only removes the weakest hash collisions. On the
- * sample the lexical ranking is about chance (3 of 56 first-place hits) and no
- * floor separates right answers from wrong ones or from off-topic text (off-topic
- * best 0.27, wrong up to 0.38, the few right ones 0.08 to 0.22); this value already
- * sends over half of degraded-mode scenes to the orb, and a higher one most.
- * PROVISIONAL, retune with Task 2.
- */
-export const MIN_HERO_SCORE_LEXICAL = 0.18;
 
 /** By id, not identity: the same module can be loaded twice (ESM and CJS) and book analysis compares ids too. */
 const isLexical = (e: Embedder) => e.id === lexicalEmbedder.id;
-const floorOf = (e: Embedder) => (isLexical(e) ? MIN_HERO_SCORE_LEXICAL : MIN_HERO_SCORE);
 
 export interface HeroRanker {
   /**
    * The hero whose meaning best fits `text`, skipping those in `avoid` while any
-   * other still FITS. In order of preference:
-   *   1. the best hero not in `avoid` that scores at least the floor
-   *      (`MIN_HERO_SCORE`, or `MIN_HERO_SCORE_LEXICAL` for the lexical source);
+   * other still FITS. When `source` is "embedding", in order of preference:
+   *   1. the best hero not in `avoid` that scores at least `MIN_HERO_SCORE`;
    *   2. else the best hero overall that does, a repeat, so a text whose only good
    *      fits are all used repeats rather than failing;
    *   3. else `"orb"`: nothing in the catalogue fits.
    * So a result inside `avoid` (or `"orb"`) means "no fresh hero is a fair fit":
-   * callers that must not repeat should decline the swap. Always resolves to a real
-   * hero. A text the ranker has not seen is embedded on the spot, so there is no
-   * way to ask about a string and quietly get keyword matching instead.
+   * callers that must not repeat should decline the swap.
+   *
+   * When `source` is "lexical" (degraded) this is exactly `heroForTextSync(text,
+   * avoid)`: see `heroRanker`.
+   *
+   * Always resolves to a real hero. A text the ranker has not seen is embedded on
+   * the spot, so there is no way to ask about a string and quietly get a different
+   * matcher than the ranker's `source` says.
    */
   pick(text: string, avoid?: readonly HeroId[]): Promise<HeroId>;
-  /** Cosine similarity of the best match, 0..1 — how well the catalogue actually fits. */
+  /**
+   * How well the catalogue fits `text`, in 0..1, for ordering candidates. "embedding":
+   * the cosine of the best match. "lexical": the keyword hit count n squashed to
+   * n / (n + 1), so 0 when nothing matches and a strictly higher score for more hits
+   * (the order the keyword matcher itself uses). Comparable within a source only.
+   */
   score(text: string): Promise<number>;
-  /** Which embedder is doing the ranking right now. Becomes "lexical" if the model fails mid-plan. */
+  /**
+   * "embedding": ranking by meaning. "lexical": the degraded mode, matching words
+   * against each hero's keyword list. Becomes "lexical" if the model fails mid-plan.
+   */
   readonly source: "embedding" | "lexical";
   /** Why the semantic model was not used, when it was not (null when it ran, or when lexical was asked for). */
   readonly degradedBecause: string | null;
@@ -268,8 +270,6 @@ interface RankedHeroes {
   ranked: { id: HeroId; s: number }[];
   /** The best cosine (0 for blank text), whether or not it clears the floor. */
   best: number;
-  /** The floor of the embedder that produced these scores. */
-  floor: number;
 }
 
 /**
@@ -285,10 +285,15 @@ interface RankedHeroes {
  * descriptions are embedded here, once per plan. Used by the scene planner,
  * never at render time.
  *
- * Degradation never fails a plan. With no cached model and no network the
- * ranker is built on `lexicalEmbedder` (bag of words, never unavailable); if
- * the model dies after loading, the ranker switches to it from then on. Either
- * way `source` and `degradedBecause` say so, so the plan can record it.
+ * Degradation never fails a plan, and never leaves it worse off than before the
+ * ranker existed. With no cached model and no network, or when the lexical
+ * embedder is asked for, or if the model dies after loading, the ranker IS the
+ * keyword matcher (`heroForTextSync`) from then on: no embedding at all. The
+ * bag-of-words embedder was tried as the fallback and ranked about at chance on
+ * the labelled sample (3 of 56 first-place hits against 6 for the keyword matcher
+ * that it replaced), so it is not used for ranking. `source` and `degradedBecause`
+ * say what happened, so the plan can record it; answers already given before a
+ * mid-plan failure stay as they were.
  */
 export async function heroRanker(embedder: Embedder = transformersEmbedder): Promise<HeroRanker> {
   const descriptions = SPECIFIC.map(heroDescription);
@@ -299,70 +304,66 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
     return vectors;
   }
 
-  // One consistent snapshot of "the embedder in use, its hero vectors, and the
-  // answers computed with them", replaced whole on degradation so a question
-  // already in flight can never mix vectors from two different embedders.
-  interface State {
-    embedder: Embedder;
-    /** One vector per specific hero, in catalogue order. */
-    vectors: Float32Array[];
-    cache: Map<string, RankedHeroes>;
-  }
+  // Either semantic (the embedder, its hero vectors, and the answers computed with
+  // them) or degraded to keywords, which needs no data. Replaced whole on
+  // degradation, so a question in flight never mixes two matchers.
+  type State =
+    | { mode: "semantic"; embedder: Embedder; vectors: Float32Array[]; cache: Map<string, RankedHeroes> }
+    | { mode: "keyword" };
+  const KEYWORD: State = { mode: "keyword" };
   let degradedBecause: string | null = null;
-  let state: State;
-  try {
-    state = { embedder, vectors: await embedAll(embedder, descriptions), cache: new Map() };
-  } catch (err) {
-    degradedBecause = err instanceof Error ? err.message : String(err);
-    state = { embedder: lexicalEmbedder, vectors: await lexicalEmbedder.embed(descriptions), cache: new Map() };
-  }
-
-  async function degrade(from: State, err: unknown): Promise<State> {
-    if (state === from) {
+  let state: State = KEYWORD;
+  if (!isLexical(embedder)) {
+    try {
+      // One vector per specific hero, in catalogue order.
+      state = { mode: "semantic", embedder, vectors: await embedAll(embedder, descriptions), cache: new Map() };
+    } catch (err) {
       degradedBecause = err instanceof Error ? err.message : String(err);
-      state = { embedder: lexicalEmbedder, vectors: await lexicalEmbedder.embed(descriptions), cache: new Map() };
     }
-    return state;
   }
 
-  async function rank(text: string): Promise<RankedHeroes> {
+  /** The ranking for `text`, or null when this ranker is (or has just become) the keyword matcher. */
+  async function rank(text: string): Promise<RankedHeroes | null> {
+    const st = state;
+    if (st.mode === "keyword") return null;
     const key = text.trim().slice(0, MAX_TEXT_CHARS);
-    if (!key) return { ranked: [], best: 0, floor: floorOf(state.embedder) };
-    let st = state;
+    if (!key) return { ranked: [], best: 0 };
     const hit = st.cache.get(key);
     if (hit) return hit;
     let query: Float32Array;
     try {
       query = (await embedAll(st.embedder, [key]))[0];
     } catch (err) {
-      if (isLexical(st.embedder)) throw err; // pure code: cannot fail, and must not loop if it ever did
-      st = await degrade(st, err);
-      query = (await lexicalEmbedder.embed([key]))[0];
+      if (state === st) {
+        degradedBecause = err instanceof Error ? err.message : String(err);
+        state = KEYWORD;
+      }
+      return null;
     }
     const scored = SPECIFIC.map((id, order) => ({ id, order, s: cosine(query, st.vectors[order]) })).sort((a, b) => b.s - a.s || a.order - b.order);
-    const out: RankedHeroes = {
-      ranked: scored.map(({ id, s }) => ({ id, s })),
-      best: Math.max(0, scored[0]?.s ?? 0),
-      floor: floorOf(st.embedder),
-    };
+    const out: RankedHeroes = { ranked: scored.map(({ id, s }) => ({ id, s })), best: Math.max(0, scored[0]?.s ?? 0) };
     st.cache.set(key, out);
     return out;
   }
 
   return {
     get source() {
-      return isLexical(state.embedder) ? "lexical" : "embedding";
+      return state.mode === "semantic" ? "embedding" : "lexical";
     },
     get degradedBecause() {
       return degradedBecause;
     },
     async pick(text, avoid = []) {
-      const { ranked, floor } = await rank(text);
-      const fits = ranked.filter((r) => r.s >= floor);
+      const ranked = await rank(text);
+      if (!ranked) return heroForTextSync(text, avoid);
+      const fits = ranked.ranked.filter((r) => r.s >= MIN_HERO_SCORE);
       return (fits.find((r) => !avoid.includes(r.id)) ?? fits[0])?.id ?? "orb";
     },
     async score(text) {
-      return (await rank(text)).best;
+      const ranked = await rank(text);
+      if (ranked) return ranked.best;
+      const hits = heroMatch(text);
+      return hits / (hits + 1);
     },
   };
 }

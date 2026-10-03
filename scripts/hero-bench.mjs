@@ -5,7 +5,7 @@
  *
  * NON-GATING: it prints a table and always exits 0. It exists so the numbers
  * behind the choices in src/lib/video/scenes/heroes.ts (the two-description form
- * and the two similarity floors) can be regenerated, e.g. after Task 2 adds
+ * and the similarity floor) can be regenerated, e.g. after Task 2 adds
  * heroes, instead of being trusted from a comment.
  *
  * READ THE RESULT FOR WHAT IT IS. The sentences in tests/fixtures/hero-labels.json
@@ -16,7 +16,7 @@
  * figure and not evidence of a real-world improvement.
  */
 import fs from "node:fs";
-import { HERO_IDS, HERO_GUIDE, MIN_HERO_SCORE, MIN_HERO_SCORE_LEXICAL, heroForTextSync, heroMatch, heroRanker } from "../src/lib/video/scenes/heroes.ts";
+import { HERO_IDS, HERO_GUIDE, MIN_HERO_SCORE, heroForTextSync, heroMatch, heroRanker } from "../src/lib/video/scenes/heroes.ts";
 import { cosine, lexicalEmbedder, transformersEmbedder } from "../src/lib/analysis/embed.ts";
 
 const fixture = JSON.parse(fs.readFileSync(new URL("../tests/fixtures/hero-labels.json", import.meta.url), "utf8"));
@@ -70,9 +70,8 @@ async function section(name, embedder) {
   const off = (await rankAll(embedder, FORMULAS[SHIPPED], offTopic)).map((r) => r[0].s);
   const right = ranks.filter((r, i) => r[0].id === labelled[i].hero).map((r) => r[0].s);
   const wrong = ranks.filter((r, i) => r[0].id !== labelled[i].hero).map((r) => r[0].s);
-  const lexical = embedder.id === lexicalEmbedder.id;
-  const grid = lexical ? [0.1, 0.15, 0.18, 0.2, 0.25, 0.3, 0.35] : [0.12, 0.15, 0.18, 0.2, 0.22, 0.25, 0.28];
-  const shipped = lexical ? MIN_HERO_SCORE_LEXICAL : MIN_HERO_SCORE;
+  const grid = [0.12, 0.15, 0.18, 0.2, 0.22, 0.25, 0.28];
+  const shipped = MIN_HERO_SCORE;
   console.log(`\nfloor sweep (shipped formula; right = top-1 is the label: ${right.length}, wrong: ${wrong.length}, off-topic: ${off.length})`);
   for (const f of grid) {
     console.log(
@@ -102,4 +101,11 @@ try {
 } catch (err) {
   console.log(`\n=== semantic: skipped, the model is not available (${err instanceof Error ? err.message : err}) ===`);
 }
-await section("lexical fallback", lexicalEmbedder);
+
+// Degraded mode (no model, or the lexical embedder asked for): the ranker is the keyword matcher itself.
+// The bag-of-words embedder was measured as a fallback and ranked about at chance, below the keyword matcher.
+const degraded = await heroRanker(lexicalEmbedder);
+const degradedPicks = [];
+for (const x of labelled) degradedPicks.push(await degraded.pick(x.text));
+console.log(`\n=== degraded mode (source ${degraded.source}): heroRanker(lexicalEmbedder) ===`);
+console.log(`top-1 ${pct(degradedPicks.filter((p, i) => p === labelled[i].hero).length, labelled.length)}, orb ${degradedPicks.filter((p) => p === "orb").length}; identical to heroForTextSync on every sentence: ${degradedPicks.every((p, i) => p === heroForTextSync(labelled[i].text))}`);
