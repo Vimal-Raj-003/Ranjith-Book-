@@ -79,6 +79,16 @@ test("every hero has a brief, and the matcher picks the object that fits the nar
   assert.ok(heroMatch("time and deadline") >= 2);
 });
 
+/** The concept families measured as unreachable before they had an object: mind, fear, rest, others, obstacles, the body, habit. */
+const NEW_HEROES = ["mind", "storm", "rest", "dialogue", "wall", "heart", "loop"] as const;
+
+test("every concept family the narration actually uses has a hero that can show it", () => {
+  for (const id of NEW_HEROES) {
+    assert.ok(HERO_IDS.includes(id), `${id} is in the catalogue`);
+    assert.ok(HERO_GUIDE[id].shows.length > 5 && HERO_GUIDE[id].words.length >= 6, `${id} is described well enough to embed`);
+  }
+});
+
 test("a hero already used is skipped while a different one also matches", () => {
   const text = "Time passes and the past is a burden";
   const first = heroForTextSync(text);
@@ -551,6 +561,88 @@ test("a hero frame depends only on the instant, however it was reached: cold see
     await seek(page, 6.4);
     const later = await heroPixels(page, 2);
     assert.ok(frameDiff(cold.samples, later.samples).share > 0.002, "…and the hero really does move between instants");
+  });
+});
+
+test("every new hero paints real pixels in a real browser, clear of the headline, and draws the same frame from the same instant (live)", async () => {
+  // The multi-group trap (Box/Cylinder/Cone/Capsule) paints a blank canvas with no error at all, and an id the
+  // runtime does not define silently draws the ORB, which paints fine: so this asks the runtime whether the
+  // hero is defined before it believes any pixel, and draws in the composition's own buffer so FIT means what it means in a render.
+  await withPage(composition("marginalia"), async (page, errors) => {
+    // The test runner's transpiler wraps named inner functions in a `__name` helper that does not exist in the page.
+    await page.evaluate("globalThis.__name = (f) => f");
+    const results = await page.evaluate((ids) => {
+      type Engine = { ensure(h: string): unknown; draw(h: string, t: number, p: number, low?: boolean): void; canvas: HTMLCanvasElement; dispose(): void };
+      const w = window as unknown as { CINE: { heroes: string[]; create(o: object): Engine }; THREE: unknown };
+      const W = 720, H = 1280;
+      const scratch = document.createElement("canvas");
+      scratch.width = W;
+      scratch.height = H;
+      const sx = scratch.getContext("2d", { willReadFrequently: true })!;
+      const read = (eng: Engine) => {
+        sx.clearRect(0, 0, W, H);
+        sx.drawImage(eng.canvas, 0, 0);
+        return sx.getImageData(0, 0, W, H).data;
+      };
+      /** Pixels with any paint, and the rows the solid part of the object spans. */
+      const measure = (d: Uint8ClampedArray) => {
+        let painted = 0, top = H, bottom = 0;
+        for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) {
+          const a = d[(y * W + x) * 4 + 3];
+          if (a > 8) painted += 4;
+          if (a > 100) { if (y < top) top = y; if (y > bottom) bottom = y; }
+        }
+        return { painted, top, bottom };
+      };
+      const fingerprint = (d: Uint8ClampedArray) => {
+        const s: number[] = [];
+        for (let k = 0; k < d.length; k += 4 * 7) s.push(d[k], d[k + 1], d[k + 2], d[k + 3]);
+        return s;
+      };
+      const diff = (a: number[], b: number[]) => {
+        let big = 0, max = 0;
+        for (let i = 0; i < a.length; i++) { const x = Math.abs(a[i] - b[i]); if (x > max) max = x; if (x > 6) big++; }
+        return { share: big / a.length, max };
+      };
+      const out: { hero: string; light: boolean; defined: boolean; painted: number; top: number; bottom: number; repeat: { share: number; max: number }; moves: number }[] = [];
+      for (const light of [false, true]) {
+        const eng = w.CINE.create({ THREE: w.THREE, width: W, height: H, accent: "#d9531e", light });
+        for (const hero of ids) {
+          const defined = w.CINE.heroes.includes(hero);
+          eng.ensure(hero);
+          eng.draw(hero, 2.0, 0.5); // cold: the very first frame this hero ever draws
+          const cold = fingerprint(read(eng));
+          let painted = Infinity, top = H, bottom = 0;
+          for (const [t, p] of [[0.4, 0.05], [2.0, 0.5], [4.0, 0.95]]) {
+            eng.draw(hero, t, p);
+            const m = measure(read(eng));
+            painted = Math.min(painted, m.painted);
+            top = Math.min(top, m.top);
+            bottom = Math.max(bottom, m.bottom);
+          }
+          eng.draw(hero, 2.0, 0.5); // warm: reached by way of other instants
+          const warm = fingerprint(read(eng));
+          eng.draw(hero, 3.0, 0.5);
+          const later = fingerprint(read(eng));
+          out.push({ hero, light, defined, painted, top, bottom, repeat: diff(cold, warm), moves: diff(cold, later).share });
+        }
+        eng.dispose();
+      }
+      return out;
+    }, [...NEW_HEROES]);
+    for (const r of results) {
+      const label = `${r.hero} (${r.light ? "light" : "dark"})`;
+      assert.ok(r.defined, `${label}: the runtime defines it, so it is not the orb in disguise`);
+      assert.ok(r.painted > 12_000, `${label}: only ${r.painted} painted pixels in its sparsest frame, likely a multi-group geometry`);
+      assert.ok(r.top >= 380, `${label}: solid paint reaches y=${r.top} of 1280, into the headline (the type starts at y=200)`);
+      assert.ok(r.bottom <= 1180, `${label}: solid paint reaches y=${r.bottom} of 1280, into the captions`);
+      // GPU rasterisation is not bit-exact: a hero that already ships (the network) differs from itself at a handful of
+      // anti-aliased edge samples by up to ~13 levels. An impure frame (accumulated state, an unseeded random) moves thousands.
+      assert.ok(r.repeat.share < 0.0005, `${label}: same instant, different picture: ${JSON.stringify(r.repeat)}`);
+      assert.ok(r.moves > 0.0005, `${label}: nothing moved in a second (${r.moves})`);
+    }
+    assert.equal(results.length, NEW_HEROES.length * 2);
+    assert.deepEqual(errors, []);
   });
 });
 

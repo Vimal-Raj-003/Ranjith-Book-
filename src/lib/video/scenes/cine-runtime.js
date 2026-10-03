@@ -149,6 +149,87 @@
 
   function accentOr(E, dark, light) { return E.light ? light : dark; }
 
+  /**
+   * A flat ribbon along a polyline: one ungrouped, indexed geometry, so a bolt or a
+   * heart-monitor trace can be as thick as it should be (a Line is one pixel wide).
+   * `set(pts, halfWidth)` re-lays it every frame, `halfWidth` a number or (i, n) => number.
+   * Its positions are rewritten after the first draw, so the mesh must not be frustum-culled.
+   */
+  function strip(T, n) {
+    var g = new T.BufferGeometry(), pos = new Float32Array(n * 6), idx = [];
+    for (var i = 0; i < n - 1; i++) { var a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    g.setAttribute("position", new T.BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    return {
+      geo: g,
+      set: function (pts, hw) {
+        for (var i = 0; i < n; i++) {
+          var p = pts[i], a = pts[i > 0 ? i - 1 : 0], b = pts[i < n - 1 ? i + 1 : n - 1];
+          var dx = b[0] - a[0], dy = b[1] - a[1], l = Math.sqrt(dx * dx + dy * dy) || 1;
+          var w = typeof hw === "function" ? hw(i, n) : hw, nx = -dy / l * w, ny = dx / l * w;
+          pos[i * 6] = p[0] + nx; pos[i * 6 + 1] = p[1] + ny; pos[i * 6 + 2] = p[2];
+          pos[i * 6 + 3] = p[0] - nx; pos[i * 6 + 4] = p[1] - ny; pos[i * 6 + 5] = p[2];
+        }
+        g.attributes.position.needsUpdate = true;
+      },
+    };
+  }
+
+  /** A disc with a firm body and a soft rim: what a cloud puff or a billow of smoke is made of. */
+  function bodyTexture(T) {
+    var c = document.createElement("canvas");
+    c.width = c.height = 64;
+    var x = c.getContext("2d");
+    var g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, "rgba(255,255,255,1)");
+    g.addColorStop(0.5, "rgba(255,255,255,0.95)");
+    g.addColorStop(0.78, "rgba(255,255,255,0.4)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    x.fillStyle = g;
+    x.fillRect(0, 0, 64, 64);
+    var tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace;
+    return tex;
+  }
+
+  /** An ordinary-blended sprite: unlike sprite(), it can be DARKER than what is behind it (a cloud, smoke, mist). `firm`: a body with a soft rim, not a glow. */
+  function puff(E, color, size, opacity, firm) {
+    var T = E.T;
+    if (firm && !E.bodyTex) E.bodyTex = bodyTexture(T);
+    var s = new T.Sprite(new T.SpriteMaterial({ map: firm ? E.bodyTex : E.soft, color: color, transparent: true, opacity: opacity, depthWrite: false, blending: T.NormalBlending }));
+    s.scale.set(size, size, 1);
+    return s;
+  }
+
+  /** Distance between two phases on a circle of circumference 1, signed to (-0.5, 0.5]. */
+  function wrap1(d) { return d - Math.floor(d + 0.5); }
+
+  /**
+   * A closed outline [[x, y], ...] lofted into a plump solid, as one ungrouped indexed geometry:
+   * K+1 slices stacked front to back, each the outline shrunk toward its own centre
+   * (`pw` > 2 squares the profile off). The two poles collapse to a point, so they are given
+   * the flat cap's normal. `pos` holds the vertices, slice by slice, for contour lines.
+   */
+  function loft(T, ol, K, D, pw) {
+    var N = ol.length, cx = 0, cy = 0, pos = [], idx = [], i, k;
+    for (i = 0; i < N; i++) { cx += ol[i][0]; cy += ol[i][1]; }
+    cx /= N; cy /= N;
+    for (k = 0; k <= K; k++) {
+      var w = Math.cos((k / K) * Math.PI), sc = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(w), pw)), 1 / pw);
+      for (i = 0; i < N; i++) pos.push(cx + (ol[i][0] - cx) * sc, cy + (ol[i][1] - cy) * sc, D * w);
+    }
+    for (k = 0; k < K; k++) for (i = 0; i < N; i++) {
+      var a = k * N + i, b = k * N + (i + 1) % N, c = (k + 1) * N + i, d = (k + 1) * N + (i + 1) % N;
+      idx.push(a, b, c, b, d, c);
+    }
+    var geo = new T.BufferGeometry(), arr = new Float32Array(pos);
+    geo.setAttribute("position", new T.BufferAttribute(arr, 3));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    var nrm = geo.attributes.normal;
+    for (i = 0; i < N; i++) { nrm.setXYZ(i, 0, 0, 1); nrm.setXYZ(K * N + i, 0, 0, -1); }
+    return { geo: geo, pos: arr, N: N, K: K, cx: cx, cy: cy };
+  }
+
   /* ----------------------------------------------------------------- heroes
    * Each builder returns { group, update(t, p), cam(t, p, cam) }.
    *   t: seconds since the scene started.   p: 0..1 through the scene.
@@ -920,6 +1001,604 @@
     };
   };
 
+  /* -- loop: habit, routine, repetition, the cycle you repeat without noticing (runners lapping one ring) -- */
+  HEROES.loop = function (E) {
+    var T = E.T, g = new T.Group(), R = 1.6, N = 40, TAU = Math.PI * 2;
+    var ink = E.light ? 0x2a2622 : 0xdfe8f5, add = E.light ? T.NormalBlending : T.AdditiveBlending;
+    // The circuit is laid down flat, so it reads as a track the eye can follow round and round.
+    var ring = new T.Group(); ring.rotation.x = 0.9; g.add(ring);
+    var road = new T.Mesh(new T.RingGeometry(R * 0.9, R * 1.1, 120), new T.MeshBasicMaterial({ color: E.acc, transparent: true, opacity: E.light ? 0.1 : 0.09, depthWrite: false, side: T.DoubleSide, blending: add }));
+    road.geometry.clearGroups(); ring.add(road);
+    ring.add(new T.Mesh(new T.TorusGeometry(R, 0.016, 8, 180), new T.MeshBasicMaterial({ color: ink, transparent: true, opacity: E.light ? 0.5 : 0.42, depthWrite: false })));
+    ring.add(new T.Mesh(new T.TorusGeometry(R * 1.22, 0.008, 6, 180), new T.MeshBasicMaterial({ color: E.light ? 0x2a2622 : E.acc2, transparent: true, opacity: E.light ? 0.28 : 0.34, depthWrite: false })));
+    ring.add(new T.Mesh(new T.TorusGeometry(R * 0.7, 0.006, 6, 140), new T.MeshBasicMaterial({ color: E.light ? 0x2a2622 : E.acc2, transparent: true, opacity: E.light ? 0.22 : 0.28, depthWrite: false })));
+    // The beads of the circuit swell as a runner passes them and shrink again behind it.
+    var bg = new T.SphereGeometry(1, 16, 12), beads = [];
+    for (var i = 0; i < N; i++) {
+      var b = new T.Mesh(bg, std(E, E.light ? 0x3a3631 : 0xdfe8f5, { metal: 0.3, rough: 0.4, emissive: E.acc, ei: 0 }));
+      ring.add(b); beads.push(b);
+    }
+    // Three runners lap the same ring: the same start, the same finish, forever.
+    var RUN = 3, runners = [];
+    for (i = 0; i < RUN; i++) {
+      var r = new T.Group();
+      r.add(new T.Mesh(new T.SphereGeometry(0.26, 24, 18), new T.MeshBasicMaterial({ color: E.light ? E.acc : 0xffffff })));
+      r.add(sprite(E, E.acc, E.light ? 1.4 : 2.4, E.light ? 0.4 : 0.9));
+      ring.add(r); runners.push(r);
+    }
+    // Cue, routine, reward: three stations that flash as a runner goes through them.
+    var stations = [0, 1, 2].map(function (k) {
+      var s = new T.Group(), a = k * TAU / 3 + 0.5;
+      var m = new T.Mesh(new T.TorusGeometry(0.3, 0.02, 8, 48), new T.MeshBasicMaterial({ color: k === 1 ? (E.light ? 0x2a2622 : E.acc2) : E.acc, transparent: true, opacity: 0.9, depthWrite: false, blending: add }));
+      s.add(m);
+      var halo = sprite(E, k === 1 ? (E.light ? 0x2a2622 : E.acc2) : E.acc, 1.4, 0); s.add(halo);
+      s.position.set(Math.cos(a) * R, Math.sin(a) * R, 0); ring.add(s);
+      return { g: s, m: m, halo: halo, a: a };
+    });
+    var dust = points(E, 70, 0.04, E.light ? 0x8a7a68 : E.acc2, E.light ? 0.4 : 0.5), rnd = mulberry(83), dp = [];
+    for (i = 0; i < 70; i++) dp.push([rnd() * 6 - 3, rnd() * 4 - 2, rnd() * 3 - 2, rnd()]);
+    g.add(dust);
+    var core = sprite(E, E.acc, 3.2, E.light ? 0.0 : 0.22); core.position.z = -0.4; g.add(core);
+    g.add(contactShadow(E, 4.4, -1.35));
+    function behind(a, head) { return fract((head - a) / TAU); } // 0 at the runner, rising to 1 a full lap behind it
+    return {
+      group: g,
+      update: function (t, p) {
+        var w = 0.62, heads = [];
+        for (var k = 0; k < RUN; k++) heads.push(t * w + k * TAU / RUN);
+        for (k = 0; k < RUN; k++) runners[k].position.set(Math.cos(heads[k]) * R, Math.sin(heads[k]) * R, 0.0);
+        for (var j = 0; j < N; j++) {
+          var a = (j / N) * TAU, env = 0;
+          for (k = 0; k < RUN; k++) env = Math.max(env, Math.exp(-behind(a, heads[k]) * 9));
+          beads[j].position.set(Math.cos(a) * R, Math.sin(a) * R, 0);
+          beads[j].scale.setScalar(0.05 + 0.12 * env);
+          beads[j].material.emissiveIntensity = (E.light ? 0 : 1.2) * env;
+        }
+        stations.forEach(function (s) {
+          var hit = 0;
+          for (var q = 0; q < RUN; q++) { var d = wrap1((heads[q] - s.a) / TAU); hit = Math.max(hit, Math.exp(-d * d * 1400)); }
+          s.g.scale.setScalar(0.85 + 0.55 * hit); s.m.material.opacity = 0.45 + 0.55 * hit; s.halo.material.opacity = (E.light ? 0.5 : 0.9) * hit;
+        });
+        var dpp = dust.geometry.attributes.position;
+        for (j = 0; j < 70; j++) { var d2 = dp[j]; dpp.setXYZ(j, d2[0] + Math.sin(t * 0.3 + d2[3] * 6) * 0.2, d2[1] + Math.cos(t * 0.25 + d2[3] * 5) * 0.15, d2[2]); }
+        dpp.needsUpdate = true;
+        ring.rotation.x = 0.9 + Math.sin(t * 0.35) * 0.05;
+        ring.rotation.z = Math.sin(p * 2.2) * 0.12;
+        g.rotation.y = Math.sin(p * 2.6) * 0.18;
+      },
+      cam: function (t, p, cam) { var d = lerp(11.2, 9.6, ease(p)); cam.position.set(Math.sin(p * 0.7 - 0.2) * 1.4, 2.2, d); cam.lookAt(0, -0.1, 0); },
+    };
+  };
+
+  /* -- heart: health, the body, vitality, a heartbeat (a beating heart with a monitor trace through it) -- */
+  HEROES.heart = function (E) {
+    var T = E.T, g = new T.Group(), N = 96, K = 22, D = 0.9, S = 0.1, ol = [], cy, i;
+    for (i = 0; i < N; i++) {
+      var a = (i / N) * Math.PI * 2, sn = Math.sin(a);
+      var y = (13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)) * S;
+      ol.push([16 * sn * sn * sn * S, y]);
+    }
+    // Three passes of a [1 2 1] blur round the tip and the cleft, which would otherwise loft into hard creases.
+    for (var pass = 0; pass < 3; pass++) ol = ol.map(function (q, j) {
+      var a0 = ol[(j + N - 1) % N], a1 = ol[(j + 1) % N];
+      return [(a0[0] + 2 * q[0] + a1[0]) / 4, (a0[1] + 2 * q[1] + a1[1]) / 4];
+    });
+    // The classic outline, lofted into a plump solid.
+    var hl = loft(T, ol, K, D, 2.4), hg = hl.geo;
+    cy = hl.cy;
+    var body = new T.Color(E.light ? 0xa8170f : 0xc2281f).lerp(E.acc, E.light ? 0.15 : 0.3);
+    var hm = std(E, body, { metal: 0.12, rough: 0.3, double: true, emissive: E.acc, ei: 0 });
+    var heart = new T.Mesh(hg, hm); g.add(heart);
+    var glow = sprite(E, E.acc, 5.0, E.light ? 0.0 : 0.4); glow.position.z = -0.6; g.add(glow);
+    var rings = [0, 1].map(function () {
+      var r = new T.Mesh(new T.TorusGeometry(1, 0.012, 6, 120), new T.MeshBasicMaterial({ color: E.acc, transparent: true, opacity: 0, depthWrite: false, blending: E.light ? T.NormalBlending : T.AdditiveBlending }));
+      r.position.z = -0.3; g.add(r); return r;
+    });
+    // The monitor trace: a ribbon that scrolls, its tall spike landing on the heart as the heart beats.
+    var TN = 120, trace = strip(T, TN), glowTrace = strip(T, TN), tp = [], gp = [];
+    for (i = 0; i < TN; i++) { tp.push([0, 0, 0]); gp.push([0, 0, 0]); }
+    var tm = new T.Mesh(trace.geo, new T.MeshBasicMaterial({ color: E.light ? 0x2a2622 : 0xffffff, side: T.DoubleSide, transparent: true, opacity: 0.95, depthWrite: false })); tm.frustumCulled = false; g.add(tm);
+    var gm = new T.Mesh(glowTrace.geo, new T.MeshBasicMaterial({ color: E.acc, side: T.DoubleSide, transparent: true, opacity: E.light ? 0.0 : 0.3, depthWrite: false, blending: T.AdditiveBlending })); gm.frustumCulled = false; g.add(gm);
+    // Circulation: cells flowing round a loop that follows the heart's own outline.
+    var cells = points(E, 80, 0.05, E.acc, E.light ? 0.8 : 0.95), rnd = mulberry(91), cd = [];
+    for (i = 0; i < 80; i++) cd.push([rnd(), (rnd() - 0.5) * 0.5, rnd()]);
+    g.add(cells);
+    var dust = points(E, 60, 0.04, E.light ? 0x8a7a68 : E.acc2, E.light ? 0.4 : 0.5), dd = [];
+    for (i = 0; i < 60; i++) dd.push([rnd() * 6 - 3, rnd() * 4.4 - 2.2, rnd() * 3 - 2, rnd()]);
+    g.add(dust);
+    g.add(contactShadow(E, 3.4, -1.95));
+    var PERIOD = 0.9, V = 2.7;
+    function gauss(d, s) { return Math.exp(-(d * d) / (s * s)); }
+    /** One heartbeat's trace, by phase 0..1: small P, then Q, R, S in a spike, then a broad T. */
+    function ecg(ph) {
+      return 0.1 * gauss(wrap1(ph - 0.955), 0.025) - 0.12 * gauss(wrap1(ph - 0.035), 0.009) + 1.0 * gauss(wrap1(ph - 0.057), 0.0075) - 0.3 * gauss(wrap1(ph - 0.082), 0.01) + 0.24 * gauss(wrap1(ph - 0.27), 0.04);
+    }
+    return {
+      group: g,
+      update: function (t, p) {
+        var ph = fract(t / PERIOD), lub = gauss(wrap1(ph - 0.075), 0.05), dub = 0.55 * gauss(wrap1(ph - 0.3), 0.05), beat = Math.min(1, lub + dub);
+        heart.scale.setScalar(1 + 0.15 * beat);
+        hm.emissiveIntensity = (E.light ? 0.06 : 0.3) + (E.light ? 0.15 : 0.7) * beat;
+        glow.material.opacity = (E.light ? 0 : 0.28) + (E.light ? 0 : 0.22) * beat;
+        rings.forEach(function (r, j) {
+          var f = fract(ph * 1 + j * 0.5 - 0.05);
+          r.scale.setScalar(1.25 + f * 1.05); r.material.opacity = (1 - f) * (1 - f) * (E.light ? 0.45 : 0.55) * (j ? 0.6 : 1);
+        });
+        for (var q = 0; q < TN; q++) {
+          var u = q / (TN - 1), x = (u - 0.5) * 6.4, edge = smooth(0, 0.1, u) * smooth(1, 0.9, u);
+          tp[q][0] = x; tp[q][1] = -0.05 + 0.95 * ecg(fract((t - x / V) / PERIOD)) * edge; tp[q][2] = D + 0.6;
+          gp[q][0] = x; gp[q][1] = tp[q][1]; gp[q][2] = D + 0.55;
+        }
+        trace.set(tp, function (j, n) { return 0.032 * (0.35 + 0.65 * Math.sin(Math.PI * j / (n - 1))); });
+        glowTrace.set(gp, function (j, n) { return 0.12 * Math.sin(Math.PI * j / (n - 1)); });
+        var cp = cells.geometry.attributes.position;
+        for (q = 0; q < 80; q++) {
+          var c = cd[q], a2 = (fract(c[0] + t * (0.07 + c[2] * 0.04))) * Math.PI * 2, s2 = Math.sin(a2);
+          var oy = (13 * Math.cos(a2) - 5 * Math.cos(2 * a2) - 2 * Math.cos(3 * a2) - Math.cos(4 * a2)) * S;
+          var gro = 1.32 + c[1] * 0.5 + 0.05 * beat;
+          cp.setXYZ(q, 16 * s2 * s2 * s2 * S * gro, cy + (oy - cy) * gro, (c[2] - 0.5) * 0.9);
+        }
+        cp.needsUpdate = true;
+        var dpp = dust.geometry.attributes.position;
+        for (q = 0; q < 60; q++) { var d = dd[q]; dpp.setXYZ(q, d[0] + Math.sin(t * 0.3 + d[3] * 6) * 0.2, d[1] + ((t * 0.1 * (0.4 + d[3]) + d[3] * 4.4) % 4.4) - 2.2, d[2]); }
+        dpp.needsUpdate = true;
+        heart.rotation.y = Math.sin(t * 0.55) * 0.2 + Math.sin(p * 2.0) * 0.06;
+      },
+      cam: function (t, p, cam) { var d = lerp(10.4, 8.8, ease(p)); cam.position.set(0, 0.4, d); cam.lookAt(0, -0.1, 0); },
+    };
+  };
+
+  /* -- wall: an obstacle, a barrier, resistance, whatever stands in the way (a brick wall that cracks and gives) -- */
+  HEROES.wall = function (E) {
+    var T = E.T, g = new T.Group(), COLS = 5, ROWS = 13, BW = 0.62, BH = 0.3, BD = 0.36, W = COLS * BW, H = ROWS * BH, rnd = mulberry(47), i, k;
+    // A crack that climbs the wall, off the middle, in a jagged line.
+    var CN = 18, cx = [], cyy = [];
+    for (i = 0; i < CN; i++) { var u = i / (CN - 1); cyy.push(-H / 2 + u * H); cx.push(0.2 + Math.sin(u * 5.4) * 0.2 + (i % 2 ? 0.07 : -0.07) * (0.4 + rnd())); }
+    function crackAt(y) {
+      var u = clamp((y + H / 2) / H, 0, 1) * (CN - 1), j = Math.min(CN - 2, Math.floor(u));
+      return lerp(cx[j], cx[j + 1], u - j);
+    }
+    var bgeo = box(T, BW - 0.025, BH - 0.025, BD), bricks = [];
+    function brick(x, y, w) {
+      var col = new T.Color(E.light ? 0xb98462 : 0x6a4034).offsetHSL((rnd() - 0.5) * 0.03, (rnd() - 0.5) * 0.1, (rnd() - 0.5) * 0.08);
+      var m = new T.Mesh(bgeo, std(E, col, { metal: 0.05, rough: 0.85, emissive: E.acc, ei: 0 }));
+      m.scale.x = w / BW; g.add(m);
+      var side = x >= crackAt(y) ? 1 : -1, dist = Math.abs(x - crackAt(y));
+      bricks.push({ m: m, x: x, y: y, side: side, dist: dist, bt: 0.5 + dist * 0.85 + (rnd() - 0.5) * 0.05, a: rnd(), b: rnd(), c: rnd(), z: (rnd() - 0.5) * 0.03 });
+    }
+    for (var r = 0; r < ROWS; r++) {
+      var y = -H / 2 + (r + 0.5) * BH;
+      if (r % 2 === 0) for (k = 0; k < COLS; k++) brick(-W / 2 + (k + 0.5) * BW, y, BW);
+      else {
+        brick(-W / 2 + BW * 0.25, y, BW / 2);
+        for (k = 0; k < COLS - 1; k++) brick(-W / 2 + (k + 1) * BW, y, BW);
+        brick(W / 2 - BW * 0.25, y, BW / 2);
+      }
+    }
+    var trace = strip(T, CN), tpts = [];
+    for (i = 0; i < CN; i++) tpts.push([0, 0, 0]);
+    var tm = new T.Mesh(trace.geo, new T.MeshBasicMaterial({ color: E.light ? E.acc : 0xfff0d8, side: T.DoubleSide, transparent: true, opacity: 0.95, depthWrite: false })); tm.frustumCulled = false; g.add(tm);
+    var glowBack = sprite(E, E.acc, 3.4, 0); glowBack.position.z = -0.5; g.add(glowBack);
+    var beam = new T.Mesh(new T.PlaneGeometry(0.7, 4.6), new T.MeshBasicMaterial({ map: E.soft, color: E.acc, transparent: true, opacity: 0, depthWrite: false, blending: E.light ? T.NormalBlending : T.AdditiveBlending, side: T.DoubleSide }));
+    beam.geometry.clearGroups(); beam.position.z = -0.3; g.add(beam);
+    // Pressure: motes streaming at the wall from the left, and stopping against it.
+    var PN = 46, push = points(E, PN, 0.05, E.acc, E.light ? 0.85 : 1), pd = [];
+    for (i = 0; i < PN; i++) pd.push([rnd(), (rnd() - 0.5) * H * 0.95, (rnd() - 0.5) * 0.5, 0.6 + rnd() * 0.8]);
+    g.add(push);
+    var dustN = 90, dust = points(E, dustN, 0.05, E.light ? 0x8a7a68 : 0xd8c9a8, E.light ? 0.55 : 0.6), dd = [];
+    for (i = 0; i < dustN; i++) dd.push([rnd(), rnd(), rnd(), rnd()]);
+    g.add(dust);
+    g.add(contactShadow(E, 5.6, -H / 2 - 0.02));
+    return {
+      group: g,
+      update: function (t, p) {
+        var front = smooth(0.14, 0.52, p), frontY = -H / 2 + front * H, shake = 0.011 * smooth(0.0, 0.35, p) * (1 - smooth(0.5, 0.62, p));
+        bricks.forEach(function (b, n) {
+          var e = Math.max(0, p - b.bt), glow = (b.y - BH / 2 < frontY && b.dist < 0.9) ? Math.exp(-b.dist * 3.4) : 0;
+          var fall = Math.min(e, 0.5);
+          var x = b.x + Math.sin(t * 41 + n * 1.7) * shake, yy = b.y + Math.cos(t * 37 + n * 2.3) * shake * 0.6;
+          if (e > 0) {
+            x += b.side * (fall * 1.8 * (0.5 + b.a) + e * 0.5);
+            yy = Math.max(-H / 2 + BH * 0.5 + b.c * 0.05, b.y - fall * fall * 11 * (0.6 + b.b * 0.8));
+            b.m.rotation.set((b.b - 0.5) * fall * 3, 0, -b.side * fall * 3.2 * (0.4 + b.c));
+            b.m.position.set(x, yy, b.z + fall * 0.9 * b.a);
+          } else {
+            b.m.rotation.set(0, 0, 0);
+            b.m.position.set(x, yy, b.z);
+          }
+          b.m.material.emissiveIntensity = (E.light ? 0.5 : 1.7) * glow * (0.75 + 0.25 * Math.sin(t * 6 + n));
+        });
+        for (var j = 0; j < CN; j++) {
+          var y2 = Math.min(cyy[j], frontY);
+          tpts[j][0] = crackAt(y2) + (j > 0 ? Math.sin(j * 2.9) * 0.03 : 0); tpts[j][1] = y2; tpts[j][2] = BD / 2 + 0.03;
+        }
+        trace.set(tpts, 0.022 * smooth(0.12, 0.2, p) * (1 + 0.6 * smooth(0.5, 0.9, p)));
+        var breach = smooth(0.46, 0.95, p);
+        glowBack.position.x = 0.15; glowBack.material.opacity = (E.light ? 0.5 : 0.85) * breach; glowBack.scale.setScalar(2.6 + 2.4 * breach);
+        beam.position.x = 0.15; beam.material.opacity = (E.light ? 0.3 : 0.6) * breach; beam.scale.x = 0.6 + 2.4 * breach;
+        var pp = push.geometry.attributes.position;
+        for (j = 0; j < PN; j++) {
+          var d = pd[j], f = fract(d[0] + t * 0.38 * d[3]), x0 = -3.4 + f * (3.4 - W / 2 - 0.05);
+          pp.setXYZ(j, x0 + Math.sin(t * 9 + j) * 0.01, d[1] + Math.sin(t * 2 + j) * 0.03, d[2] * 0.6);
+        }
+        pp.needsUpdate = true;
+        var dp = dust.geometry.attributes.position, dOn = smooth(0.46, 0.62, p);
+        for (j = 0; j < dustN; j++) {
+          var q = dd[j], f2 = fract(q[0] + t * 0.18 * (0.5 + q[1]));
+          dp.setXYZ(j, 0.15 + (q[2] - 0.5) * (0.8 + 2.4 * breach) + Math.sin(t * 0.7 + q[3] * 6) * 0.1, -H / 2 + f2 * (H * 0.9), (q[3] - 0.5) * 0.9);
+        }
+        dp.needsUpdate = true;
+        dust.material.opacity = (E.light ? 0.55 : 0.6) * dOn;
+        g.rotation.y = Math.sin(p * 2.0) * 0.12;
+      },
+      cam: function (t, p, cam) { var a = lerp(-0.3, 0.22, ease(p)), d = lerp(12.6, 11.2, ease(p)); cam.position.set(Math.sin(a) * d, 0.9, Math.cos(a) * d); cam.lookAt(0, -0.1, 0); },
+    };
+  };
+
+  /* -- dialogue: a conversation, listening, what passes between two people (two figures trading light) -- */
+  HEROES.dialogue = function (E) {
+    var T = E.T, g = new T.Group(), SEP = 1.5, i;
+    var add = E.light ? T.NormalBlending : T.AdditiveBlending;
+    var colB = E.light ? 0x2a2622 : E.acc2;
+    var body = [[0, -1.25], [0.5, -1.25], [0.68, -1.1], [0.76, -0.75], [0.7, -0.3], [0.52, 0.05], [0.3, 0.3], [0.17, 0.42], [0.15, 0.56], [0, 0.58]];
+    function figure(x, dir, col) {
+      var f = new T.Group(); f.position.x = x; g.add(f);
+      var mat = std(E, col, { metal: 0.3, rough: 0.35, emissive: col, ei: 0 });
+      var torso = new T.Mesh(lathe(T, body, 40), mat); f.add(torso);
+      var head = new T.Group(); head.position.y = 0.98; f.add(head);
+      var skull = new T.Mesh(new T.SphereGeometry(0.36, 32, 24), mat); skull.scale.y = 1.1; head.add(skull);
+      var nose = new T.Mesh(new T.SphereGeometry(0.075, 16, 12), mat); nose.position.set(dir * 0.35, -0.04, 0); head.add(nose);
+      var halo = sprite(E, col, 3.0, 0); halo.position.set(dir * 0.2, 0.98, -0.5); f.add(halo);
+      var arcs = [0, 1, 2].map(function () {
+        var a = new T.Mesh(new T.TorusGeometry(0.5, 0.014, 6, 40, 1.3), new T.MeshBasicMaterial({ color: col, transparent: true, opacity: 0, depthWrite: false, blending: add }));
+        a.rotation.z = (dir > 0 ? 0 : Math.PI) - 0.65; a.position.set(dir * 0.38, 0.95, 0); f.add(a); return a;
+      });
+      var base = new T.Mesh(new T.TorusGeometry(0.95, 0.01, 6, 80), new T.MeshBasicMaterial({ color: col, transparent: true, opacity: 0, depthWrite: false, blending: add }));
+      base.rotation.x = Math.PI / 2; base.position.y = -1.24; f.add(base);
+      return { f: f, mat: mat, head: head, halo: halo, arcs: arcs, base: base, dir: dir };
+    }
+    var A = figure(-SEP, 1, E.acc), B = figure(SEP, -1, colB);
+    // What passes between them: points of light riding an arch from the speaker's head to the listener's.
+    var P0 = [-SEP + 0.45, 1.05], P1 = [0, 2.5], P2 = [SEP - 0.45, 1.05], FN = 34;
+    function flow(col) {
+      var p = points(E, FN, 0.11, col, 0), lead = sprite(E, col, 0.9, 0); g.add(p, lead);
+      return { pts: p, lead: lead };
+    }
+    var flowA = flow(E.acc), flowB = flow(colB);
+    function arch(u, out) {
+      var a = (1 - u) * (1 - u), b = 2 * (1 - u) * u, c = u * u;
+      out[0] = a * P0[0] + b * P1[0] + c * P2[0]; out[1] = a * P0[1] + b * P1[1] + c * P2[1];
+    }
+    var archLine = new T.BufferGeometry(), al = new Float32Array(48 * 3);
+    for (i = 0; i < 48; i++) { var o = [0, 0]; arch(i / 47, o); al[i * 3] = o[0]; al[i * 3 + 1] = o[1]; }
+    archLine.setAttribute("position", new T.BufferAttribute(al, 3));
+    var archMat = new T.LineBasicMaterial({ color: E.light ? 0x2a2622 : 0xdfe8ff, transparent: true, opacity: E.light ? 0.3 : 0.25, depthWrite: false, blending: add });
+    var archObj = new T.Line(archLine, archMat); archObj.frustumCulled = false; g.add(archObj);
+    var dust = points(E, 80, 0.04, E.light ? 0x8a7a68 : E.acc2, E.light ? 0.4 : 0.5), rnd = mulberry(59), dp = [];
+    for (i = 0; i < 80; i++) dp.push([rnd() * 6 - 3, rnd() * 4 - 1.5, rnd() * 3 - 2, rnd()]);
+    g.add(dust);
+    g.add(contactShadow(E, 6.4, -1.27));
+    var PERIOD = 4.8, tmp = [0, 0];
+    function speak(t, shift) {
+      var ph = fract(t / PERIOD + 0.06 + shift);
+      return smooth(0.0, 0.08, ph) * (1 - smooth(0.42, 0.5, ph));
+    }
+    function lay(fp, u0, speakerEnv, from) {
+      var pp = fp.pts.geometry.attributes.position;
+      for (var k = 0; k < FN; k++) {
+        var u = fract(k / FN + u0); arch(from ? u : 1 - u, tmp);
+        pp.setXYZ(k, tmp[0], tmp[1], 0.05 * Math.sin(k * 1.7));
+      }
+      pp.needsUpdate = true;
+      fp.pts.material.opacity = speakerEnv * (E.light ? 0.85 : 1);
+      arch(from ? fract(u0) : 1 - fract(u0), tmp);
+      fp.lead.position.set(tmp[0], tmp[1], 0.1); fp.lead.material.opacity = speakerEnv * (E.light ? 0.6 : 0.9);
+    }
+    return {
+      group: g,
+      update: function (t, p) {
+        var ea = speak(t, 0), eb = speak(t, 0.5);
+        lay(flowA, t * 0.3, ea, true); lay(flowB, t * 0.3, eb, false);
+        [[A, ea, eb], [B, eb, ea]].forEach(function (s) {
+          var fg = s[0], me = s[1], other = s[2];
+          fg.mat.emissiveIntensity = (E.light ? 0.04 : 0.1) + (E.light ? 0.2 : 0.5) * me;
+          fg.halo.material.opacity = (E.light ? 0.08 : 0.14) + (E.light ? 0.4 : 0.55) * me;
+          fg.f.rotation.z = -fg.dir * (0.045 * me - 0.02 * other) + Math.sin(t * 1.3 + fg.dir) * 0.006;
+          fg.head.rotation.z = -fg.dir * (0.16 * other) + Math.sin(t * 3.1) * 0.012 * me;
+          fg.f.scale.y = 1 + Math.sin(t * 1.9 + fg.dir) * 0.006;
+          fg.arcs.forEach(function (a, k) {
+            var f = fract(t * 0.9 + k / 3);
+            a.scale.setScalar(0.55 + f * 1.7); a.material.opacity = (1 - f) * (1 - f) * me * (E.light ? 0.7 : 0.9);
+          });
+          fg.base.scale.setScalar(0.9 + 0.12 * me + 0.1 * Math.sin(t * 2.4)); fg.base.material.opacity = (E.light ? 0.25 : 0.4) * me;
+        });
+        var dpp = dust.geometry.attributes.position;
+        for (var k = 0; k < 80; k++) { var d = dp[k]; dpp.setXYZ(k, d[0] + Math.sin(t * 0.3 + d[3] * 6) * 0.2, d[1] + ((t * 0.09 * (0.4 + d[3]) + d[3] * 4) % 4), d[2]); }
+        dpp.needsUpdate = true;
+        g.rotation.y = Math.sin(p * 2.2) * 0.2;
+      },
+      cam: function (t, p, cam) { var d = lerp(12.6, 10.8, ease(p)); cam.position.set(Math.sin(p * 0.6 - 0.2) * 1.2, 1.1, d); cam.lookAt(0, 0.2, 0); },
+    };
+  };
+
+  /* -- storm: fear, anger, stress, turmoil (a dark cloud churning, lit from inside by lightning) -- */
+  HEROES.storm = function (E) {
+    var T = E.T, g = new T.Group(), rnd = mulberry(67), i;
+    var add = E.light ? T.NormalBlending : T.AdditiveBlending;
+    var under = new T.Color(E.light ? 0x38342f : 0x232b44), crown = new T.Color(E.light ? 0x857d73 : 0x66769c), glow = new T.Color(E.light ? 0xe8672e : 0xffd9a8), tmpC = new T.Color();
+    // The cloud: firm puffs heaped into a thunderhead, flat and dark underneath, pale on the crown.
+    var PN = 58, puffs = [];
+    for (i = 0; i < PN; i++) {
+      var x = (rnd() + rnd() + rnd() - 1.5) * 1.5, top = 0.4 + 1.1 * Math.exp(-(x * x) / 1.1), hgt = Math.pow(rnd(), 0.85), y = 0.3 + hgt * top, z = (rnd() - 0.5) * 1.0;
+      var size = 0.7 + rnd() * 0.75;
+      var base = new T.Color().copy(under).lerp(crown, clamp(hgt * 0.8 + (rnd() - 0.5) * 0.3, 0, 1));
+      var pf = puff(E, base, size, E.light ? 0.82 : 0.9, true);
+      pf.position.set(x, y, z); g.add(pf);
+      puffs.push({ s: pf, x: x, y: y, z: z, size: size, base: base, a: rnd() * 6.28, b: rnd() * 6.28, sp: 0.6 + rnd() * 0.8 });
+    }
+    // Lightning: two channels strike on their own rhythms; each strike's jagged path comes from its own seed.
+    var BN = 15, CHANNELS = [{ period: 2.4, off: 0.5, x: -0.5 }, { period: 3.3, off: 1.9, x: 0.9 }];
+    var bolts = CHANNELS.map(function () {
+      var core = strip(T, BN), halo = strip(T, BN), branch = strip(T, 8), pts = [], hp = [], bp = [];
+      for (var j = 0; j < BN; j++) { pts.push([0, 0, 0.5]); hp.push([0, 0, 0.45]); }
+      for (j = 0; j < 8; j++) bp.push([0, 0, 0.5]);
+      var cm = new T.Mesh(core.geo, new T.MeshBasicMaterial({ color: E.light ? 0xe8672e : 0xffffff, side: T.DoubleSide, transparent: true, opacity: 0, depthWrite: false }));
+      var hm = new T.Mesh(halo.geo, new T.MeshBasicMaterial({ color: E.acc, side: T.DoubleSide, transparent: true, opacity: 0, depthWrite: false, blending: add }));
+      var bm = new T.Mesh(branch.geo, new T.MeshBasicMaterial({ color: E.light ? 0xe8672e : 0xffffff, side: T.DoubleSide, transparent: true, opacity: 0, depthWrite: false }));
+      cm.frustumCulled = hm.frustumCulled = bm.frustumCulled = false;
+      g.add(hm, cm, bm);
+      return { core: core, halo: halo, branch: branch, cm: cm, hm: hm, bm: bm, pts: pts, hp: hp, bp: bp };
+    });
+    var flash = sprite(E, glow, 4.2, 0); flash.position.set(0, 0.9, 0.2); g.add(flash);
+    // Rain: short streaks falling under the cloud.
+    var RN = 90, rg = new T.BufferGeometry(); rg.setAttribute("position", new T.BufferAttribute(new Float32Array(RN * 6), 3));
+    var rain = new T.LineSegments(rg, lineMat(E, E.light ? 0x3a4a66 : 0xbfd0ff, E.light ? 0.45 : 0.4)); rain.frustumCulled = false; g.add(rain);
+    var rd = [];
+    for (i = 0; i < RN; i++) rd.push([(rnd() - 0.5) * 5.2, rnd(), 0.8 + rnd() * 0.6, (rnd() - 0.5) * 1.2]);
+    // Turmoil: grit whipped round the underside of the cloud.
+    var SN = 70, grit = points(E, SN, 0.05, E.light ? 0x6b5f55 : 0xbfd0ff, E.light ? 0.6 : 0.7), gd = [];
+    for (i = 0; i < SN; i++) gd.push([rnd() * 6.28, 1.0 + rnd() * 1.7, rnd(), 0.4 + rnd() * 0.8]);
+    g.add(grit);
+    var shake = 0;
+    function strike(ch, t) {
+      var c = CHANNELS[ch], tt = t + c.off, k = Math.floor(tt / c.period), age = tt - k * c.period;
+      var env = age < 0.3 ? (1 - age / 0.3) * (0.72 + 0.28 * Math.sin(age * 130)) : 0;
+      return { k: k, env: Math.max(0, env) };
+    }
+    return {
+      group: g,
+      update: function (t, p) {
+        var s0 = strike(0, t), s1 = strike(1, t), lightTotal = Math.min(1, s0.env + s1.env);
+        shake = lightTotal * 0.05;
+        puffs.forEach(function (q) {
+          var churn = 0.09 * (0.5 + 0.5 * p);
+          q.s.position.set(q.x + Math.sin(t * q.sp + q.a) * churn + Math.sin(t * 0.3 + q.b) * 0.05, q.y + Math.cos(t * q.sp * 0.8 + q.b) * churn * 0.8, q.z);
+          q.s.scale.setScalar(q.size * (1 + 0.07 * Math.sin(t * 1.3 + q.a)));
+          var lit = 0;
+          [[s0, CHANNELS[0].x], [s1, CHANNELS[1].x]].forEach(function (c) { var dx = q.x - c[1], dy = q.y - 0.9; lit += c[0].env * Math.exp(-(dx * dx + dy * dy * 0.6) / 0.9); });
+          lit = Math.min(0.72, lit);
+          tmpC.copy(q.base).lerp(glow, lit); q.s.material.color.copy(tmpC);
+        });
+        flash.material.opacity = (E.light ? 0.3 : 0.55) * lightTotal; flash.scale.setScalar(3.6 + 1.2 * lightTotal);
+        [s0, s1].forEach(function (s, ch) {
+          var b = bolts[ch], c = CHANNELS[ch], r = mulberry(1000 + s.k * 7 + ch * 131 + 3), x = c.x + (r() - 0.5) * 0.7, y = 0.5, step = 2.0 / (BN - 1);
+          for (var j = 0; j < BN; j++) {
+            b.pts[j][0] = x; b.pts[j][1] = y; b.hp[j][0] = x; b.hp[j][1] = y;
+            if (j === 6) { b.bx = x; b.by = y; b.bd = r() < 0.5 ? -1 : 1; }
+            x += (r() - 0.5) * 0.62 + (j > 0 ? 0.02 : 0); y -= step * (0.7 + r() * 0.6);
+          }
+          var bx = b.bx, by = b.by;
+          for (j = 0; j < 8; j++) { b.bp[j][0] = bx; b.bp[j][1] = by; bx += b.bd * (0.14 + r() * 0.2); by -= 0.18 + r() * 0.16; }
+          b.core.set(b.pts, function (i2, n) { return 0.04 * (1 - i2 / (n * 1.5)); });
+          b.halo.set(b.hp, function (i2, n) { return 0.11 * (1 - i2 / (n * 1.6)); });
+          b.branch.set(b.bp, function (i2, n) { return 0.034 * (1 - i2 / n); });
+          b.cm.material.opacity = s.env > 0.02 ? Math.min(1, s.env * 1.3) : 0;
+          b.hm.material.opacity = s.env * (E.light ? 0.25 : 0.45);
+          b.bm.material.opacity = s.env > 0.02 ? Math.min(1, s.env * 1.1) * 0.9 : 0;
+        });
+        var rp = rain.geometry.attributes.position;
+        for (var k = 0; k < RN; k++) {
+          var d = rd[k], f = fract(d[1] + t * 1.5 * d[2]), yy = 0.3 - f * 2.1, xx = d[0] * 0.55 + d[3] * f - 0.1;
+          rp.setXYZ(k * 2, xx, yy, 0.2); rp.setXYZ(k * 2 + 1, xx - 0.05, yy - 0.28, 0.2);
+        }
+        rp.needsUpdate = true;
+        var gp = grit.geometry.attributes.position;
+        for (k = 0; k < SN; k++) {
+          var q2 = gd[k], a = q2[0] + t * q2[3] * (0.7 + 0.5 * p), rr = q2[1];
+          gp.setXYZ(k, Math.cos(a) * rr * 1.25, 0.15 + Math.sin(a) * rr * 0.28 + (q2[2] - 0.5) * 0.7, Math.sin(a) * rr * 0.5);
+        }
+        gp.needsUpdate = true;
+        g.rotation.y = Math.sin(p * 2.0) * 0.12;
+      },
+      cam: function (t, p, cam) {
+        var d = lerp(11.4, 9.6, ease(p)), sx = Math.sin(t * 61) * shake, sy = Math.cos(t * 53) * shake;
+        cam.position.set(Math.sin(p * 0.5) * 0.7 + sx, 0.6 + sy, d); cam.lookAt(0, 0.0, 0);
+      },
+    };
+  };
+
+  /* -- rest: sleep, rest, recovery, stillness (a still moonlit lake under a slow moon, everything at rest) -- */
+  HEROES.rest = function (E) {
+    var T = E.T, g = new T.Group(), rnd = mulberry(73), i;
+    var add = E.light ? T.NormalBlending : T.AdditiveBlending;
+    var moonCol = E.light ? 0xe8883a : 0xf3eee0;
+    // The moon: a pale sphere mottled by a painted canvas, lit from within so it glows, rising very slowly.
+    var mc = document.createElement("canvas"); mc.width = mc.height = 256;
+    var mx = mc.getContext("2d"), mr = mulberry(5);
+    mx.fillStyle = E.light ? "#f2a95a" : "#f2eee2"; mx.fillRect(0, 0, 256, 256);
+    for (i = 0; i < 28; i++) {
+      var rx = mr() * 256, ry = mr() * 256, rr = 14 + mr() * 40, gr = mx.createRadialGradient(rx, ry, 0, rx, ry, rr);
+      gr.addColorStop(0, E.light ? "rgba(170,100,50,0.34)" : "rgba(140,145,170,0.36)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+      mx.fillStyle = gr; mx.fillRect(rx - rr, ry - rr, rr * 2, rr * 2);
+    }
+    var mt = new T.CanvasTexture(mc); mt.colorSpace = T.SRGBColorSpace;
+    var moon = new T.Mesh(new T.SphereGeometry(0.66, 48, 36), new T.MeshStandardMaterial({ map: mt, emissiveMap: mt, emissive: 0xffffff, emissiveIntensity: E.light ? 0.6 : 0.7, roughness: 1, metalness: 0 }));
+    moon.position.z = -3.0; g.add(moon);
+    var halo = sprite(E, moonCol, 4.6, E.light ? 0.4 : 0.5); halo.position.z = -3.4; g.add(halo);
+    var halo2 = sprite(E, moonCol, 9, E.light ? 0.18 : 0.16); halo2.position.z = -3.6; g.add(halo2);
+    // Land and water, as paper-thin layers that fade out toward the foot of the picture.
+    function band(z, top, bottom, col, aTop, seed, amp) {
+      var N = 44, pos = [], cols = [], idx = [], r = mulberry(seed), p1 = r() * 6.28, p2 = r() * 6.28, c = new T.Color(col);
+      for (var k = 0; k <= N; k++) {
+        var x = -6 + (k / N) * 12, y = top + (amp ? Math.sin(x * 0.6 + p1) * amp + Math.sin(x * 1.7 + p2) * amp * 0.4 : 0);
+        pos.push(x, y, 0, x, bottom, 0); cols.push(c.r, c.g, c.b, aTop, c.r, c.g, c.b, 0);
+      }
+      for (k = 0; k < N; k++) { var a = k * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      var geo = new T.BufferGeometry();
+      geo.setAttribute("position", new T.BufferAttribute(new Float32Array(pos), 3));
+      geo.setAttribute("color", new T.BufferAttribute(new Float32Array(cols), 4));
+      geo.setIndex(idx);
+      var m = new T.Mesh(geo, new T.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: T.DoubleSide }));
+      m.position.z = z; g.add(m); return m;
+    }
+    band(-2.6, -0.2, -1.5, E.light ? 0x8f8270 : 0x1b2442, 1, 11, 0.2);
+    band(-2.2, -0.2, -2.9, E.light ? 0x7f95a8 : 0x141c33, E.light ? 0.62 : 0.92, 13, 0);
+    band(-0.9, -1.65, -2.55, E.light ? 0x7a6e5c : 0x0b0f1d, 1, 17, 0.22);
+    // The moon's reflection on the water and the slow ripples that spread from it.
+    var refl = sprite(E, moonCol, 1, E.light ? 0.55 : 0.7); refl.position.set(0, -0.95, -2.1); g.add(refl);
+    var ripples = [0, 1, 2].map(function () {
+      var r = new T.Mesh(new T.TorusGeometry(1, 0.012, 6, 90), new T.MeshBasicMaterial({ color: E.light ? 0x8a7a68 : 0xcfd8f0, transparent: true, opacity: 0, depthWrite: false, blending: add }));
+      r.position.z = -2.0; g.add(r); return r;
+    });
+    var shimmer = [];
+    for (i = 0; i < 7; i++) {
+      var sg = new T.PlaneGeometry(1, 0.026); sg.clearGroups();
+      var sm = new T.Mesh(sg, new T.MeshBasicMaterial({ color: moonCol, transparent: true, opacity: 0, depthWrite: false, blending: add }));
+      sm.position.z = -2.05; g.add(sm); shimmer.push(sm);
+    }
+    // Stars on a dark night, a few drifting clouds on a pale one.
+    var starsA = points(E, 70, 0.045, 0xffffff, E.light ? 0.0 : 0.85), starsB = points(E, 70, 0.045, 0xdfe8ff, E.light ? 0.0 : 0.85), sd = [];
+    for (i = 0; i < 140; i++) sd.push([rnd() * 12 - 6, rnd() * 3.2 + 0.4, -rnd() * 2 - 4]);
+    [starsA, starsB].forEach(function (s, n) {
+      var sp = s.geometry.attributes.position;
+      for (var k = 0; k < 70; k++) sp.setXYZ(k, sd[n * 70 + k][0], sd[n * 70 + k][1], sd[n * 70 + k][2]);
+      sp.needsUpdate = true; g.add(s);
+    });
+    var mist = [];
+    for (i = 0; i < 6; i++) { var mp = puff(E, E.light ? 0xffffff : 0x8a9ac0, 4.2 + (i % 3), E.light ? 0.4 : 0.1); mp.position.set(0, -0.3 - (i % 3) * 0.5, -1.5 - i * 0.1); g.add(mp); mist.push(mp); }
+    var motes = points(E, 40, 0.04, E.light ? 0x8a7a68 : moonCol, E.light ? 0.4 : 0.55), md = [];
+    for (i = 0; i < 40; i++) md.push([rnd() * 5 - 2.5, rnd() * 2.4 - 1.2, rnd() * 2 - 1.5, rnd()]);
+    g.add(motes);
+    return {
+      group: g,
+      update: function (t, p) {
+        var rise = smooth(0.0, 1.0, p), breath = Math.sin(t * 1.15);
+        var my = lerp(-0.05, 0.72, rise), mx2 = lerp(0.5, 0.25, rise);
+        moon.position.set(mx2, my, -3.0); moon.rotation.y = t * 0.02; moon.scale.setScalar(1 + 0.012 * breath);
+        halo.position.set(mx2, my, -3.4); halo.scale.setScalar(4.6 + 0.35 * breath); halo.material.opacity = (E.light ? 0.4 : 0.5) * (0.9 + 0.1 * breath);
+        halo2.position.set(mx2, my, -3.6); halo2.scale.setScalar(9 + 0.6 * breath);
+        var rx2 = mx2 * 0.78;
+        refl.position.set(rx2, -1.0, -2.1); refl.scale.set(0.9 + 0.04 * breath, 2.6, 1);
+        ripples.forEach(function (r, k) {
+          var f = fract(t * 0.07 + k / 3);
+          r.position.set(rx2, -1.05, -2.0); r.scale.set(0.3 + f * 2.3, (0.3 + f * 2.3) * 0.12, 1); r.material.opacity = (1 - f) * (1 - f) * (E.light ? 0.45 : 0.4);
+        });
+        shimmer.forEach(function (s, k) {
+          var w = 0.5 + 0.9 * (0.5 + 0.5 * Math.sin(t * 0.6 + k * 1.7)), y = -0.55 - k * 0.2;
+          s.position.set(rx2 + Math.sin(t * 0.3 + k) * 0.08, y, -2.05); s.scale.set(w * (1 - k * 0.07), 1, 1); s.material.opacity = (E.light ? 0.4 : 0.5) * (0.5 + 0.5 * Math.sin(t * 0.8 + k * 2.1)) * (1 - k * 0.1);
+        });
+        starsA.material.opacity = (E.light ? 0 : 0.85) * (0.55 + 0.45 * Math.sin(t * 0.9)); starsB.material.opacity = (E.light ? 0 : 0.85) * (0.55 + 0.45 * Math.sin(t * 0.9 + 3.14));
+        mist.forEach(function (m, k) { m.position.x = lerp(-3.2, 3.2, fract(t * 0.012 + k / 6)); });
+        var mpz = motes.geometry.attributes.position;
+        for (var k = 0; k < 40; k++) { var d = md[k]; mpz.setXYZ(k, d[0] + Math.sin(t * 0.18 + d[3] * 6) * 0.3, d[1] + Math.sin(t * 0.13 + d[3] * 9) * 0.25, d[2]); }
+        mpz.needsUpdate = true;
+        g.rotation.y = Math.sin(p * 1.6) * 0.05;
+      },
+      cam: function (t, p, cam) { var d = lerp(10.6, 9.4, ease(p)); cam.position.set(Math.sin(p * 0.5) * 0.4, 0.35, d); cam.lookAt(0, -0.2, 0); },
+    };
+  };
+
+  /* -- mind: thinking, memory, what happens inside your head (a head in profile, scanned, thoughts moving inside it) -- */
+  HEROES.mind = function (E) {
+    var T = E.T, g = new T.Group(), rnd = mulberry(37), i, k;
+    var ink = E.light ? 0x2a2622 : 0xcfeaf6;
+    // The profile of a head, facing right: back of the neck, up over the crown, down the face, under the chin.
+    var key = [
+      [-0.5, -1.5], [-0.56, -1.1], [-0.78, -0.7], [-0.98, -0.25], [-1.06, 0.25], [-1.0, 0.72], [-0.78, 1.12], [-0.4, 1.38], [0.05, 1.46],
+      [0.5, 1.38], [0.86, 1.12], [1.04, 0.78], [1.1, 0.42], [1.13, 0.12], [1.18, -0.02], [1.46, -0.32], [1.2, -0.4], [1.2, -0.55],
+      [1.14, -0.64], [1.18, -0.72], [1.1, -0.84], [1.12, -1.02], [0.95, -1.22], [0.55, -1.28], [0.4, -1.34], [0.36, -1.5], [-0.07, -1.54],
+    ];
+    var curve = new T.CatmullRomCurve3(key.map(function (q) { return new T.Vector3(q[0], q[1], 0); }), true, "centripetal");
+    var ol = curve.getSpacedPoints(120).slice(0, 120).map(function (q) { return [q.x, q.y]; });
+    var N = ol.length, K = 15, hl = loft(T, ol, K, 0.8, 2.2);
+    // A pane of glass, the contour of every slice (a scan), and the bright outline of the profile itself.
+    g.add(new T.Mesh(hl.geo, std(E, E.light ? 0x6f6a62 : 0x7fb4d6, { metal: 0.1, rough: 0.2, opacity: E.light ? 0.1 : 0.16, double: true, depthWrite: false, emissive: E.light ? 0x000000 : 0x2f6f96, ei: 0.5 })));
+    var cp = [];
+    for (k = 1; k < K; k++) for (i = 0; i < N; i++) {
+      var a = (k * N + i) * 3, b = (k * N + (i + 1) % N) * 3;
+      cp.push(hl.pos[a], hl.pos[a + 1], hl.pos[a + 2], hl.pos[b], hl.pos[b + 1], hl.pos[b + 2]);
+    }
+    var cg = new T.BufferGeometry(); cg.setAttribute("position", new T.BufferAttribute(new Float32Array(cp), 3));
+    g.add(new T.LineSegments(cg, lineMat(E, ink, E.light ? 0.3 : 0.3)));
+    var outline = strip(T, N + 1), op = [];
+    for (i = 0; i <= N; i++) op.push([ol[i % N][0], ol[i % N][1], 0]);
+    outline.set(op, 0.026);
+    var om = new T.Mesh(outline.geo, new T.MeshBasicMaterial({ color: E.light ? 0x2a2622 : 0xe6f6ff, side: T.DoubleSide, transparent: true, opacity: 0.95, depthWrite: false })); om.frustumCulled = false; g.add(om);
+    var og = strip(T, N + 1); og.set(op, 0.1);
+    var ogm = new T.Mesh(og.geo, new T.MeshBasicMaterial({ color: E.acc2, side: T.DoubleSide, transparent: true, opacity: E.light ? 0.0 : 0.22, depthWrite: false, blending: T.AdditiveBlending })); ogm.frustumCulled = false; ogm.position.z = -0.01; g.add(ogm);
+    // Thoughts: a web of nodes in the skull, impulses running along it, and a few bright ideas wandering through.
+    var NN = 34, base = [], nodes = points(E, NN, 0.1, E.acc, E.light ? 0.95 : 1);
+    for (i = 0; i < NN; i++) {
+      var u = rnd() * 2 - 1, an = rnd() * 6.283, rr = Math.sqrt(1 - u * u), sh = Math.pow(rnd(), 0.5);
+      base.push([-0.1 + rr * Math.cos(an) * 0.74 * sh, 0.56 + u * 0.6 * sh, rr * Math.sin(an) * 0.4 * sh]);
+    }
+    var edges = [];
+    for (i = 0; i < NN; i++) {
+      var ds = [];
+      for (var j = 0; j < NN; j++) if (j !== i) { var dx = base[i][0] - base[j][0], dy = base[i][1] - base[j][1], dz = base[i][2] - base[j][2]; ds.push([dx * dx + dy * dy + dz * dz, j]); }
+      ds.sort(function (x, y) { return x[0] - y[0]; });
+      for (j = 0; j < 2; j++) edges.push([i, ds[j][1]]);
+    }
+    var eg = new T.BufferGeometry(); eg.setAttribute("position", new T.BufferAttribute(new Float32Array(edges.length * 6), 3));
+    var edgeObj = new T.LineSegments(eg, lineMat(E, E.light ? 0xb3341c : 0xffd8b0, E.light ? 0.55 : 0.5)); edgeObj.frustumCulled = false; g.add(edgeObj);
+    g.add(nodes);
+    var PN = 36, impulses = points(E, PN, 0.12, E.light ? 0xb3341c : 0xffffff, 1); g.add(impulses);
+    var ideas = [0, 1, 2].map(function (n) {
+      var o = new T.Group();
+      o.add(new T.Mesh(new T.SphereGeometry(0.09, 20, 14), new T.MeshBasicMaterial({ color: E.light ? E.acc : 0xffffff })));
+      o.add(sprite(E, E.acc, E.light ? 0.8 : 1.5, E.light ? 0.4 : 0.9));
+      g.add(o); return { o: o, w: [0.5 + n * 0.17, 0.7 + n * 0.11, 0.9 + n * 0.07], ph: n * 2.1 };
+    });
+    var scan = new T.Mesh(new T.PlaneGeometry(0.035, 3.3), new T.MeshBasicMaterial({ color: E.acc2, transparent: true, opacity: E.light ? 0.0 : 0.5, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide }));
+    scan.geometry.clearGroups(); g.add(scan);
+    var halo = sprite(E, E.acc, 4.6, E.light ? 0.0 : 0.18); halo.position.set(0, 0.5, -0.9); g.add(halo);
+    var dust = points(E, 70, 0.04, E.light ? 0x8a7a68 : E.acc2, E.light ? 0.4 : 0.5), dd = [];
+    for (i = 0; i < 70; i++) dd.push([rnd() * 5 - 2.5, rnd() * 4.4 - 2.2, rnd() * 3 - 1.8, rnd()]);
+    g.add(dust);
+    g.add(contactShadow(E, 3.2, -1.62));
+    var pos = base.map(function () { return [0, 0, 0]; });
+    return {
+      group: g,
+      update: function (t, p) {
+        var q;
+        for (q = 0; q < NN; q++) {
+          var w = 0.045, b = base[q];
+          pos[q] = [b[0] + Math.sin(t * 0.7 + q) * w, b[1] + Math.cos(t * 0.6 + q * 1.3) * w, b[2] + Math.sin(t * 0.5 + q * 2) * w];
+        }
+        var nattr = nodes.geometry.attributes.position, ep = eg.attributes.position;
+        for (q = 0; q < NN; q++) nattr.setXYZ(q, pos[q][0], pos[q][1], pos[q][2]);
+        nattr.needsUpdate = true;
+        edges.forEach(function (e, n) { ep.setXYZ(n * 2, pos[e[0]][0], pos[e[0]][1], pos[e[0]][2]); ep.setXYZ(n * 2 + 1, pos[e[1]][0], pos[e[1]][1], pos[e[1]][2]); });
+        ep.needsUpdate = true;
+        var ip = impulses.geometry.attributes.position;
+        for (q = 0; q < PN; q++) {
+          var e2 = edges[(q * 5) % edges.length], f = fract(t * 0.5 + q * 0.31), a2 = pos[e2[0]], b2 = pos[e2[1]];
+          ip.setXYZ(q, lerp(a2[0], b2[0], f), lerp(a2[1], b2[1], f), lerp(a2[2], b2[2], f));
+        }
+        ip.needsUpdate = true;
+        ideas.forEach(function (d) {
+          d.o.position.set(-0.1 + Math.sin(t * d.w[0] + d.ph) * 0.58, 0.56 + Math.sin(t * d.w[1] + d.ph * 1.3) * 0.46, Math.sin(t * d.w[2] + d.ph) * 0.3);
+        });
+        scan.position.set(lerp(-1.2, 1.35, fract(t * 0.16 + 0.2)), 0.0, 0.0);
+        halo.material.opacity = (E.light ? 0 : 0.14) + (E.light ? 0 : 0.05) * Math.sin(t * 1.8);
+        var dpp = dust.geometry.attributes.position;
+        for (q = 0; q < 70; q++) { var d3 = dd[q]; dpp.setXYZ(q, d3[0] + Math.sin(t * 0.3 + d3[3] * 6) * 0.2, d3[1] + ((t * 0.09 * (0.4 + d3[3]) + d3[3] * 4.4) % 4.4) - 2.2, d3[2]); }
+        dpp.needsUpdate = true;
+      },
+      cam: function (t, p, cam) { var a = lerp(0.62, 0.12, ease(p)), d = lerp(11.2, 9.4, ease(p)); cam.position.set(Math.sin(a) * d, 0.35, Math.cos(a) * d); cam.lookAt(0, -0.05, 0); },
+    };
+  };
+
   /* ------------------------------------------------------------------ engine */
 
   function create(o) {
@@ -964,6 +1643,8 @@
       spark: { z: 0.66, dy: 80 }, staircase: { z: 0.78, dy: 40 }, scales: { z: 0.78, dy: 60 }, growth: { z: 0.72, dy: 70 },
       network: { z: 0.8, dy: 60 }, orb: { z: 0.72, dy: 70 }, orbit: { z: 0.9, dy: 70 }, path: { z: 1.0, dy: 30 },
       mountain: { z: 0.88, dy: 110 }, pulse: { z: 0.95, dy: 50 }, focus: { z: 0.92, dy: 30 },
+      mind: { z: 0.74, dy: 80 }, storm: { z: 0.7, dy: 140 }, rest: { z: 0.9, dy: 80 }, dialogue: { z: 0.78, dy: 70 },
+      wall: { z: 0.66, dy: 90 }, heart: { z: 0.62, dy: 60 }, loop: { z: 0.84, dy: 90 },
     };
     return {
       canvas: canvas,

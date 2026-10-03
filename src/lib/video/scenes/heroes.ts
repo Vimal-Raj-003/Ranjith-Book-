@@ -34,6 +34,13 @@ export const HERO_IDS = [
   "pulse",
   "focus",
   "growth",
+  "mind",
+  "storm",
+  "rest",
+  "dialogue",
+  "wall",
+  "heart",
+  "loop",
   "orb",
 ] as const;
 
@@ -115,6 +122,41 @@ export const HERO_GUIDE: Record<HeroId, { shows: string; use: string; words: str
     use: "compounding, accumulation, small gains piling up, investing, a snowball effect",
     words: ["grow", "growth", "compound", "compounding", "accumulate", "snowball", "invest", "investment", "savings", "interest", "exponential", "multiply", "expand", "increase", "rise", "gains", "momentum", "wealth", "money"],
   },
+  mind: {
+    shows: "a glass head in profile, scanned in slices, with a web of thoughts firing inside it",
+    use: "memory and the mind: remembering, forgetting, thoughts, what goes on inside your head",
+    words: ["mind", "brain", "head", "skull", "memory", "remember", "forget", "forgot", "recall", "thought", "thinking", "mental", "imagination", "consciousness", "inner"],
+  },
+  storm: {
+    shows: "a dark churning storm cloud lit from inside by flashes of lightning",
+    use: "a storm of fear, anger and stress: panic, dread, turmoil, everything falling apart",
+    words: ["fear", "afraid", "anger", "angry", "rage", "stress", "anxiety", "panic", "turmoil", "storm", "chaos", "worry", "dread", "fury", "terror"],
+  },
+  rest: {
+    shows: "a still lake under a slowly rising moon, everything at rest",
+    use: "sleep, rest, recovery, stillness: a good night's sleep, switching off, doing nothing on purpose while the body repairs itself",
+    words: ["sleep", "rest", "recover", "recovery", "still", "stillness", "calm", "quiet", "pause", "night", "slow", "breathe", "relax", "peace", "repair"],
+  },
+  dialogue: {
+    shows: "two glowing forms facing each other, trading light back and forth",
+    use: "a conversation between two people: talking, listening, asking, answering, understanding each other",
+    words: ["conversation", "talk", "talking", "speak", "listen", "listening", "dialogue", "discuss", "argue", "ask", "tell", "communicate", "communication", "question", "heard", "reply"],
+  },
+  wall: {
+    shows: "a tall brick wall that cracks and gives way under pressure, light breaking through",
+    use: "an obstacle in your way: a wall, a locked door, resistance that pushes back and will not give",
+    words: ["wall", "barrier", "obstacle", "block", "blocked", "resistance", "resist", "stand", "boundary", "refuse", "closed", "impossible", "impediment", "stop"],
+  },
+  heart: {
+    shows: "a glowing beating heart with a pulse line running through it",
+    use: "health, the body, vitality, the heartbeat: exercise, eating well, medicine, looking after the body that carries you through life",
+    words: ["heart", "heartbeat", "body", "health", "healthy", "exercise", "fitness", "diet", "vitality", "alive", "blood", "disease", "medicine", "doctor", "physical", "lungs"],
+  },
+  loop: {
+    shows: "a closed ring of glowing spheres chasing each other around the same circuit forever",
+    use: "habit, routine, repetition: doing the same thing on autopilot, the cycle you repeat without noticing, stuck going round and round",
+    words: ["habit", "habits", "routine", "repeat", "repetition", "repeating", "cycle", "loop", "autopilot", "automatic", "unconscious", "mindless", "rut", "ritual", "pattern", "trigger"],
+  },
   orb: {
     shows: "a glowing orb with rings and a swirl of light",
     use: "ONLY when no other object fits — a generic cinematic backdrop",
@@ -164,7 +206,8 @@ export function heroMatch(text: string): number {
  *
  * Measured on 82 real scenes this scored 0 on 12% (the generic orb) and 1, a
  * single incidental word, on 67%. It is the floor under `heroRanker`, not the
- * first choice: used only where no ranker was supplied.
+ * first choice: it is used where no ranker was supplied, and it IS what a
+ * degraded `heroRanker` becomes (see there).
  */
 export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): HeroId {
   const scores = heroScores(text);
@@ -181,25 +224,36 @@ export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): He
  * is FOR (`use`) and the words that go with it (`words`), the prose the catalogue
  * already states its ideas in. `shows` (the picture) is deliberately left out.
  *
+ * Write `use` and `words` for a sentence-similarity model, not for a reader: the
+ * kind of idea the object stands for, in the vocabulary a narrator really uses.
+ * A broad list attracts sentences that belong to a neighbour (an early habit list
+ * took "Procrastination steals what you cannot earn back" from the hourglass), and
+ * one word can do it ("circle" took "Your circle quietly shapes who you turn into"
+ * from the network, and was dropped).
+ *
  * How this was chosen, and what that does and does not show. `scripts/hero-bench.mjs`
  * over `tests/fixtures/hero-labels.json` compared descriptions of a hero. The
- * sentences were written and labelled by this code's author, deliberately without
- * the catalogue's keywords (so the keyword matcher is handicapped by construction),
- * and the formula was picked on the same set (so any gain between formulas is
- * in-sample). It supports the direction (embedding ranks a paraphrase the keyword
- * list cannot see) and nothing about magnitude: it is not an accuracy figure and
- * not evidence of a real-world improvement.
+ * sentences were written and labelled by this code's author, the first 56
+ * deliberately without the catalogue's keywords (so the keyword matcher is
+ * handicapped by construction), and the formula was picked, and the seven newest
+ * heroes' descriptions tuned, on the same set (so any gain is in-sample). It
+ * supports the direction (embedding ranks a paraphrase the keyword list cannot
+ * see) and nothing about magnitude: it is not an accuracy figure and not evidence
+ * of a real-world improvement. The `heldOut` sentences are the one figure that
+ * is not in-sample, and the same author wrote them.
  *
  * Within that, this single vector measured better than a blend of all three texts
  * and better than the best of two vectors (`shows`, and `use`+`words`), which was
  * shipped first. The earlier comparison favoured the two-vector form only because
  * it embedded every sentence in ONE batch. The ranker embeds ONE text at a time,
- * and the q8-quantised model's vectors move with batch composition (up to 3 of the
- * 56 sentences changed their top-1 between the two). Measure the way the ranker is
- * called, one text per `embed`, or the comparison is of something else. The cost of
- * leaving `shows` out is a director's picture-style `concept` ("a barrier blocking
- * a path") matches a hero less directly, which that set does not contain. Re-run
- * the bench when the catalogue changes.
+ * and the q8-quantised model's vectors move with batch composition. The hero
+ * descriptions are one batch too, so rewording ONE hero shifts the others' vectors
+ * a little: changing a few words of one description moved the top-1 total by up
+ * to two of 84. Measure the way the ranker is called, one text per `embed`, or the
+ * comparison is of something else, and read a difference of a point or two as
+ * noise. The cost of leaving `shows` out is a director's picture-style `concept`
+ * ("a barrier blocking a path") matches a hero less directly, which that set does
+ * not contain. Re-run the bench when the catalogue changes.
  */
 function heroDescription(id: HeroId): string {
   const g = HERO_GUIDE[id];
@@ -215,15 +269,19 @@ const MAX_TEXT_CHARS = 1000;
  * but already-used hero in a variety repair. Applies to the embedding source only:
  * a degraded ranker is the keyword matcher, whose own rule is "no keyword, no hero".
  *
- * PROVISIONAL. Set against the author-labelled sample in
+ * Retuned for the 21-hero catalogue against the author-labelled sample in
  * `tests/fixtures/hero-labels.json` (`node --import tsx scripts/hero-bench.mjs`
- * prints the sweep): at 0.20 the embedder keeps 34 of the 38 sentences it ranks
- * right and drops 8 of its 18 wrong ones and all 8 off-topic ones to the orb (the
- * best off-topic score is 0.19, so the floor sits just above it; eight sentences
- * is a thin sample). Genuine fits and misses overlap heavily (right answers score
- * 0.15 to 0.39, wrong 0.14 to 0.38), so this is a blunt floor that removes the
- * weakest matches, not a classifier. Task 2 grows the catalogue, which moves every
- * score: retune with the bench then.
+ * prints the sweep). At 0.20 the embedder keeps 51 of the 55 sentences it ranks
+ * right and sends 6 of its 29 wrong ones and 10 of 16 off-topic ones to the orb.
+ * 0.20 is the knee: each step up to it removes at least two bad picks (wrong or
+ * off-topic) per right one it costs (0.18 to 0.20: 5 for 2), and the next step
+ * does not (0.20 to 0.22: 2 for 4). It is not distinguishable from 0.18, a
+ * difference of two sentences. Genuine fits and misses overlap heavily (right
+ * answers score 0.16 to 0.56, wrong 0.16 to 0.50), so this is a blunt floor that
+ * removes the weakest matches, not a classifier. It cannot remove off-topic text
+ * that shares a word with a hero: "Follow for more" scores 0.28 on the staircase
+ * and "Link in the description" 0.25 on the network, above any floor that still
+ * keeps real matches. A new hero moves every score: re-run the sweep.
  */
 export const MIN_HERO_SCORE = 0.2;
 
@@ -289,9 +347,9 @@ interface RankedHeroes {
  * ranker existed. With no cached model and no network, or when the lexical
  * embedder is asked for, or if the model dies after loading, the ranker IS the
  * keyword matcher (`heroForTextSync`) from then on: no embedding at all. The
- * bag-of-words embedder was tried as the fallback and ranked about at chance on
- * the labelled sample (3 of 56 first-place hits against 6 for the keyword matcher
- * that it replaced), so it is not used for ranking. `source` and `degradedBecause`
+ * bag-of-words embedder was tried as the fallback and ranked below the keyword
+ * matcher it replaced on the labelled sample (`scripts/hero-bench.mjs` prints
+ * both), so it is not used for ranking. `source` and `degradedBecause`
  * say what happened, so the plan can record it; answers already given before a
  * mid-plan failure stay as they were.
  */

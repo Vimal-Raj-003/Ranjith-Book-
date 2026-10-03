@@ -1,11 +1,12 @@
 {
  "_readme": [
-  "Author-labelled benchmark for the hero ranker (src/lib/video/scenes/heroes.ts). Regenerate the table with: node --import tsx scripts/hero-bench.mjs",
-  "`labelled`: 56 narration-style sentences, four per hero in the catalogue as it stood when Task 1 shipped (15 heroes; orb is the fallback and has none). Each was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
-  "Written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison.",
-  "Four description formulas were compared on this one set and the shipped one chosen from it: the differences between formulas are in-sample. The set shows DIRECTION (embedding ranks paraphrase far better than keyword counting), not magnitude.",
-  "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floor in heroes.ts was set against (provisional; Task 2's larger catalogue may retune them).",
-  "When the catalogue grows (Task 2), a label here can become wrong because a NEW hero fits better than the labelled one; relabel it rather than bending the ranker."
+  "Author-labelled benchmark for the hero ranker (src/lib/video/scenes/heroes.ts). Regenerate the table with: node --import tsx scripts/hero-bench.mjs (add --detail to list every sentence it gets wrong).",
+  "`labelled`: 84 narration-style sentences, four per specific hero (orb is the fallback and has none). The first 56 cover the 14 heroes of the catalogue as it stood when the semantic ranker shipped; the last 28 were added with the seven heroes of the second task (mind, storm, rest, dialogue, wall, heart, loop). Each was written by the author of the ranker and labelled with the hero that author judged it was about. No second labeller, no real narration.",
+  "The first 56 were written to avoid the words on each hero's keyword list, so the keyword matcher scores 0 on many of them BY CONSTRUCTION (the bench prints how many still match one). That is the keyword matcher's blind spot, so its row is a handicapped baseline, not a real-world comparison. The last 28 were written as plain narration without avoiding or seeking any list word, and several use one.",
+  "Four description formulas were compared on this one set and the shipped one chosen from it, and the wording and word lists of the seven new heroes were tuned against all 84: the differences between formulas are in-sample, and so is every figure on `labelled`. The set shows DIRECTION (embedding ranks paraphrase far better than keyword counting), not magnitude.",
+  "The first 56 were NOT relabelled when the seven heroes arrived, so some labels are now arguable: a sentence about rage or dread that was labelled pulse is at least as much about a storm, and \"Ink on paper carries a mind across centuries\" is about a book and a mind. Relabel such a sentence rather than bending the ranker; the bench shows where each one goes.",
+  "`heldOut`: 14 sentences, two per new hero, written BEFORE the new descriptions were tuned and scored once afterwards: the only figure here that is not in-sample. Once anyone tunes against it, it stops being held out.",
+  "`offTopic`: sentences with no honest hero in the catalogue. They are the sample the similarity floor in heroes.ts is set against. The first 8 are unrelated text. The last 8 were added with the second task: the call-to-action and sign-off lines a real narration contains. Some of them score high against a hero anyway (\"Follow for more\" against staircase, \"Link in the description\" against network, \"See you tomorrow\" against clock), so no floor that keeps real matches removes them all."
  ],
  "labelled": [
   {
@@ -231,6 +232,118 @@
   {
    "hero": "orbit",
    "text": "Everything is held in place by something larger"
+  },
+  {
+   "hero": "mind",
+   "text": "Everything you experience is assembled somewhere behind your eyes"
+  },
+  {
+   "hero": "mind",
+   "text": "The thoughts you never chose keep running in the background"
+  },
+  {
+   "hero": "mind",
+   "text": "Memory is a story the brain rewrites every time you tell it"
+  },
+  {
+   "hero": "mind",
+   "text": "That inner voice narrates your whole life, whether you asked it to or not"
+  },
+  {
+   "hero": "storm",
+   "text": "Panic arrives all at once and drowns out every sensible thought"
+  },
+  {
+   "hero": "storm",
+   "text": "When rage takes the wheel, reason leaves the car"
+  },
+  {
+   "hero": "storm",
+   "text": "Anxiety circles the same worst case until you can't breathe"
+  },
+  {
+   "hero": "storm",
+   "text": "It feels like everything is falling apart at the same time"
+  },
+  {
+   "hero": "rest",
+   "text": "The body does its best repair work while you lie still in the dark"
+  },
+  {
+   "hero": "rest",
+   "text": "Let the day go quiet and do nothing for a while"
+  },
+  {
+   "hero": "rest",
+   "text": "Rest is not the opposite of work, it is what makes the work possible"
+  },
+  {
+   "hero": "rest",
+   "text": "A full night's sleep makes the problem look smaller by morning"
+  },
+  {
+   "hero": "dialogue",
+   "text": "A real conversation starts when you stop waiting for your turn to talk"
+  },
+  {
+   "hero": "dialogue",
+   "text": "Two people can live through the same moment and describe different worlds"
+  },
+  {
+   "hero": "dialogue",
+   "text": "Listening is the rarest way of respecting someone"
+  },
+  {
+   "hero": "dialogue",
+   "text": "Say what you mean to them, then actually hear the answer"
+  },
+  {
+   "hero": "wall",
+   "text": "Some doors stay shut no matter how hard you push"
+  },
+  {
+   "hero": "wall",
+   "text": "What stands in the way becomes the way"
+  },
+  {
+   "hero": "wall",
+   "text": "The harder you push against it, the harder it pushes back"
+  },
+  {
+   "hero": "wall",
+   "text": "Every plan eventually meets something that simply will not move"
+  },
+  {
+   "hero": "heart",
+   "text": "Your body keeps a steady beat for decades without once being asked"
+  },
+  {
+   "hero": "heart",
+   "text": "A brisk walk does more for you than most pills"
+  },
+  {
+   "hero": "heart",
+   "text": "Treat your body like the only home you will ever have"
+  },
+  {
+   "hero": "heart",
+   "text": "Eat well, move often, and the machine will carry you for decades"
+  },
+  {
+   "hero": "loop",
+   "text": "You do it without thinking, exactly the way you always have"
+  },
+  {
+   "hero": "loop",
+   "text": "Same trigger, same reaction, same result, around and around"
+  },
+  {
+   "hero": "loop",
+   "text": "Most of what you did today you did on autopilot"
+  },
+  {
+   "hero": "loop",
+   "text": "You keep circling back to the same mistake and wondering why"
   }
  ],
  "offTopic": [
@@ -241,6 +354,72 @@
   "Thanks for watching, see you in the next one",
   "Press the green button and wait for the beep",
   "The invoice was sent to the wrong address",
-  "Cats sleep on warm windowsills"
+  "Cats sleep on warm windowsills",
+  "Follow for more",
+  "Link in the description",
+  "Like and subscribe if this helped",
+  "Let’s get into it",
+  "Quick recap before we move on",
+  "That’s all for today",
+  "See you tomorrow",
+  "Part two is coming soon"
+ ],
+ "heldOut": [
+  {
+   "hero": "mind",
+   "text": "You can only hold a handful of things in your head at once"
+  },
+  {
+   "hero": "mind",
+   "text": "Forgetting is as much a skill of the brain as remembering"
+  },
+  {
+   "hero": "storm",
+   "text": "Dread builds until you cannot think straight"
+  },
+  {
+   "hero": "storm",
+   "text": "You are shouting before you notice you are furious"
+  },
+  {
+   "hero": "rest",
+   "text": "Turn off the lights and let your body switch off"
+  },
+  {
+   "hero": "rest",
+   "text": "A quiet weekend with nothing planned"
+  },
+  {
+   "hero": "dialogue",
+   "text": "She asked a question and he finally told her the truth"
+  },
+  {
+   "hero": "dialogue",
+   "text": "Disagreements go better when each side repeats what the other said"
+  },
+  {
+   "hero": "wall",
+   "text": "The door was locked and the only key was on the other side"
+  },
+  {
+   "hero": "wall",
+   "text": "Hit the same barrier often enough and you start to believe it is permanent"
+  },
+  {
+   "hero": "heart",
+   "text": "Your arteries clog slowly, then all at once"
+  },
+  {
+   "hero": "heart",
+   "text": "Sit all day and your body pays for it"
+  },
+  {
+   "hero": "loop",
+   "text": "Another Monday, another identical lap around the same routine"
+  },
+  {
+   "hero": "loop",
+   "text": "The cycle repeats until someone breaks it"
+  }
  ]
 }

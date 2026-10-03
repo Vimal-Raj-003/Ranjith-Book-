@@ -15,9 +15,10 @@ import type { TimedWord } from "../src/lib/media/word-timing";
 /**
  * An embedder whose vectors are chosen by the test, so ranking can be proved to
  * come from the embedder and not from the keyword matcher. A text that contains
- * a hero's own `shows` or `use` text is that hero's one-hot vector (these are what
- * the ranker's descriptions of the hero are made of); a text of the form `want:<id> ...`
- * is the same vector, whatever else it says. Everything else is a vector
+ * a hero's own `use` text is that hero's one-hot vector (the ranker describes a hero
+ * by its `use` and `words`, so its description contains it; `shows`, the picture, is
+ * not part of the description); a text of the form `want:<id> ...` is the same vector,
+ * whatever else it says. Everything else is a vector
  * orthogonal to every hero.
  *
  * A text starting `mix:chain=0.6,path=0.1` has exactly those cosines with those
@@ -46,7 +47,7 @@ function stubEmbedder(opts: { failAfter?: number; failMessage?: string; id?: str
           return v;
         }
         const want = /^want:(\w+)/.exec(t)?.[1];
-        const idx = HERO_IDS.findIndex((id) => id === want || t.includes(HERO_GUIDE[id].shows) || t.includes(HERO_GUIDE[id].use));
+        const idx = HERO_IDS.findIndex((id) => id === want || t.includes(HERO_GUIDE[id].use));
         v[idx >= 0 ? idx : DIM - 1] = 1;
         return v;
       });
@@ -71,14 +72,11 @@ test("a ranker built on the lexical fallback still returns a real hero for anyth
   }
 });
 
-// Task 2 adds the heroes these sentences are about (mind, rest, storm, dialogue).
-// Until then the catalogue has nothing honest to pick for them, so this cannot
-// pass. Task 2 removes the `todo`.
 test(
   "semantic ranking beats keyword counting on concepts the catalogue states but does not spell",
-  { todo: "Task 2 adds the mind / rest / storm / dialogue heroes" },
-  async () => {
+  async (t) => {
     const r = await heroRanker();
+    if (r.source !== "embedding") return t.skip("the semantic model is not available on this machine");
     // These are the exact sentences that scored 0 against the keyword matcher and fell to `orb`.
     const cases: [string, string[]][] = [
       ["Pleasure and pain happen inside the skull", ["mind"]],
@@ -95,17 +93,18 @@ test(
   },
 );
 
-test("the real embedder ranks paraphrases the keyword matcher cannot see, using heroes that exist today", async (t) => {
+test("the real embedder ranks paraphrases the keyword matcher cannot see", async (t) => {
   const r = await heroRanker();
   if (r.source !== "embedding") return t.skip("the semantic model is not available on this machine");
   // Regression guards on the catalogue as it stands, not a measure of accuracy: each says an idea a
-  // hero is FOR without using any word on its keyword list. (Measured over a wider hand-labelled
-  // set the embedder ranks the intended hero first about two times in three, the keyword matcher
-  // about one in ten; the report has the numbers.) A new hero added to the catalogue may
-  // legitimately take one of these, and then the sentence should change, not the ranker.
+  // hero is FOR without using any word on any hero's keyword list. (`node --import tsx
+  // scripts/hero-bench.mjs` prints the figures over the wider hand-labelled set.) A new hero added
+  // to the catalogue may legitimately take one of these, and then the sentence should change, not
+  // the ranker: "A thousand tiny repetitions turn into mastery" is no longer keyword-free, because
+  // the habit hero's own list says "repetition", so it became the one below.
   const cases: [string, HeroId][] = [
     ["Forgive them, or stay tied to the person who hurt you", "chain"],
-    ["A thousand tiny repetitions turn into mastery", "staircase"],
+    ["Skill is just a long line of small upgrades", "staircase"],
     ["Strangers become allies when you show up for them", "network"],
     ["The scale tips toward the heavier side", "scales"],
   ];
@@ -114,6 +113,18 @@ test("the real embedder ranks paraphrases the keyword matcher cannot see, using 
     assert.equal(heroForTextSync(text), "orb", "so the old matcher would have shown the generic orb");
     assert.equal(await r.pick(text), want, `"${text}"`);
   }
+});
+
+test("the obstacle and habit heroes win sentences that are about nothing else", async (t) => {
+  const r = await heroRanker();
+  if (r.source !== "embedding") return t.skip("the semantic model is not available on this machine");
+  // One sentence each, picked for a clear margin (0.30 and 0.15 over the runner-up). The heart hero has none: its
+  // best-fitting labelled sentence leads by 0.02, too thin to guard, and the bench shows it is the weakest of the seven.
+  const cases: [string, HeroId][] = [
+    ["Some doors stay shut no matter how hard you push", "wall"],
+    ["Most of what you did today you did on autopilot", "loop"],
+  ];
+  for (const [text, want] of cases) assert.equal(await r.pick(text), want, `"${text}"`);
 });
 
 test("the ranker respects `avoid`, and falls back to its best pick when everything is used", async () => {
