@@ -176,31 +176,33 @@ export function heroForTextSync(text: string, avoid: readonly HeroId[] = []): He
 }
 
 /**
- * What a hero means, as the two kinds of text it can be asked about. A hero is
- * compared on the better of them.
+ * What a hero means, as the one text its narration is compared against: what it
+ * is FOR (`use`) and the words that go with it (`words`), the prose the catalogue
+ * already states its ideas in. `shows` (the picture) is deliberately left out.
  *
- *   - what it SHOWS: the director's `concept` for a scene describes a picture
- *     ("a barrier blocking a path"), which is what `shows` is written in.
- *   - what it is FOR: narration states an idea, which is what `use` and `words`
- *     are written in.
- *
- * Why two descriptions and not one blended string: a single vector of all three
- * served neither kind of text well in a small check, `scripts/hero-bench.mjs`
- * over `tests/fixtures/hero-labels.json`. Read that check for what it is. The 56
+ * How this was chosen, and what that does and does not show. `scripts/hero-bench.mjs`
+ * over `tests/fixtures/hero-labels.json` compared descriptions of a hero. The
  * sentences were written and labelled by this code's author, deliberately without
- * the catalogue's keywords (so the keyword matcher is handicapped by
- * construction), and the formula was chosen on the same set (so any gain between
- * formulas is in-sample). `use`+`words` alone scored as well or better than the
- * form shipped here on that narration-only set. It supports the direction
- * (embedding ranks a paraphrase the keyword list cannot see) and nothing about
- * magnitude: it is not an accuracy figure and is not evidence of a real-world
- * improvement. The two-description form is kept, at some cost on narration, because
- * it also copes with picture-style text like a director's concept, which that set
- * does not contain. Re-run the bench when the catalogue changes.
+ * the catalogue's keywords (so the keyword matcher is handicapped by construction),
+ * and the formula was picked on the same set (so any gain between formulas is
+ * in-sample). It supports the direction (embedding ranks a paraphrase the keyword
+ * list cannot see) and nothing about magnitude: it is not an accuracy figure and
+ * not evidence of a real-world improvement.
+ *
+ * Within that, this single vector measured better than a blend of all three texts
+ * and better than the best of two vectors (`shows`, and `use`+`words`), which was
+ * shipped first. The earlier comparison favoured the two-vector form only because
+ * it embedded every sentence in ONE batch. The ranker embeds ONE text at a time,
+ * and the q8-quantised model's vectors move with batch composition (up to 3 of the
+ * 56 sentences changed their top-1 between the two). Measure the way the ranker is
+ * called, one text per `embed`, or the comparison is of something else. The cost of
+ * leaving `shows` out is a director's picture-style `concept` ("a barrier blocking
+ * a path") matches a hero less directly, which that set does not contain. Re-run
+ * the bench when the catalogue changes.
  */
-function heroDescriptions(id: HeroId): string[] {
+function heroDescription(id: HeroId): string {
   const g = HERO_GUIDE[id];
-  return [g.shows, `${g.use}. ${g.words.join(", ")}`];
+  return `${g.use}. ${g.words.join(", ")}`;
 }
 
 /** Longer than any scene's narration needs to be; bounds the work and the cache key. */
@@ -213,21 +215,24 @@ const MAX_TEXT_CHARS = 1000;
  *
  * PROVISIONAL. Set against the author-labelled sample in
  * `tests/fixtures/hero-labels.json` (`node --import tsx scripts/hero-bench.mjs`
- * prints the sweep): at 0.20 the embedder keeps 32 of the 33 sentences it ranks
- * right and drops 4 of its 23 wrong ones and 5 of 8 off-topic ones to the orb.
- * Genuine fits and misses overlap heavily (right answers score 0.19 to 0.75, wrong
- * 0.14 to 0.40), so this is a blunt floor that removes the weakest matches, not a
- * classifier. Task 2 grows the catalogue, which moves every score: retune with
- * the bench then.
+ * prints the sweep): at 0.20 the embedder keeps 34 of the 38 sentences it ranks
+ * right and drops 8 of its 18 wrong ones and all 8 off-topic ones to the orb (the
+ * best off-topic score is 0.19, so the floor sits just above it; eight sentences
+ * is a thin sample). Genuine fits and misses overlap heavily (right answers score
+ * 0.15 to 0.39, wrong 0.14 to 0.38), so this is a blunt floor that removes the
+ * weakest matches, not a classifier. Task 2 grows the catalogue, which moves every
+ * score: retune with the bench then.
  */
 export const MIN_HERO_SCORE = 0.2;
 /**
  * Lexical (hashed bag-of-words) cosines are on another scale and noisier, so they
  * get their own floor, as `icons.ts` does (`MIN_SCORE_LEXICAL`). Same value as the
  * icon one for the same reason: it only removes the weakest hash collisions. On the
- * sample no floor separates off-topic text from a weak lexical match (best
- * off-topic 0.27 against right answers at 0.08 to 0.60), and a higher one sends
- * most degraded-mode scenes to the orb. PROVISIONAL, retune with Task 2.
+ * sample the lexical ranking is about chance (3 of 56 first-place hits) and no
+ * floor separates right answers from wrong ones or from off-topic text (off-topic
+ * best 0.27, wrong up to 0.38, the few right ones 0.08 to 0.22); this value already
+ * sends over half of degraded-mode scenes to the orb, and a higher one most.
+ * PROVISIONAL, retune with Task 2.
  */
 export const MIN_HERO_SCORE_LEXICAL = 0.18;
 
@@ -286,8 +291,7 @@ interface RankedHeroes {
  * way `source` and `degradedBecause` say so, so the plan can record it.
  */
 export async function heroRanker(embedder: Embedder = transformersEmbedder): Promise<HeroRanker> {
-  const descriptions = SPECIFIC.flatMap(heroDescriptions);
-  const perHero = descriptions.length / SPECIFIC.length;
+  const descriptions = SPECIFIC.map(heroDescription);
 
   async function embedAll(e: Embedder, texts: string[]): Promise<Float32Array[]> {
     const vectors = await e.embed(texts);
@@ -300,7 +304,7 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
   // already in flight can never mix vectors from two different embedders.
   interface State {
     embedder: Embedder;
-    /** `perHero` consecutive vectors per specific hero, in catalogue order. */
+    /** One vector per specific hero, in catalogue order. */
     vectors: Float32Array[];
     cache: Map<string, RankedHeroes>;
   }
@@ -335,11 +339,7 @@ export async function heroRanker(embedder: Embedder = transformersEmbedder): Pro
       st = await degrade(st, err);
       query = (await lexicalEmbedder.embed([key]))[0];
     }
-    const scored = SPECIFIC.map((id, order) => ({
-      id,
-      order,
-      s: Math.max(...st.vectors.slice(order * perHero, (order + 1) * perHero).map((v) => cosine(query, v))),
-    })).sort((a, b) => b.s - a.s || a.order - b.order);
+    const scored = SPECIFIC.map((id, order) => ({ id, order, s: cosine(query, st.vectors[order]) })).sort((a, b) => b.s - a.s || a.order - b.order);
     const out: RankedHeroes = {
       ranked: scored.map(({ id, s }) => ({ id, s })),
       best: Math.max(0, scored[0]?.s ?? 0),

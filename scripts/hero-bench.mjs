@@ -29,11 +29,11 @@ const useWords = (id) => `${G[id].use}. ${G[id].words.join(", ")}`;
 /** Each formula describes a hero as one or more texts; a hero scores as the best of them. */
 const FORMULAS = {
   "blended: shows + use + words, one text": (id) => [`${G[id].shows}. Use for: ${G[id].use}. ${G[id].words.join(", ")}`],
-  "use + words only": (id) => [useWords(id)],
+  "SHIPPED: use + words only": (id) => [useWords(id)],
   "shows only": (id) => [G[id].shows],
-  "SHIPPED: best of [shows, use + words]": (id) => [G[id].shows, useWords(id)],
+  "best of [shows, use + words] (shipped first)": (id) => [G[id].shows, useWords(id)],
 };
-const SHIPPED = "SHIPPED: best of [shows, use + words]";
+const SHIPPED = "SHIPPED: use + words only";
 
 /** Per sentence: the heroes with their score, best first, under one formula and embedder. */
 async function rankAll(embedder, formula, texts) {
