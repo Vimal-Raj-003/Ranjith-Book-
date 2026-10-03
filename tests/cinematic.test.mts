@@ -4,7 +4,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import path from "node:path";
 import { chromium } from "playwright-core";
-import { HERO_IDS, HERO_GUIDE, heroForText, heroMatch, heroCatalogue, isHeroId } from "../src/lib/video/scenes/heroes";
+import { HERO_IDS, HERO_GUIDE, heroForTextSync, heroMatch, heroCatalogue, isHeroId, type HeroId, type HeroRanker } from "../src/lib/video/scenes/heroes";
 import { sentencesOf, capOpening, HOOK_MAX_SEC, HOOK_MIN_SEC } from "../src/lib/video/scenes/plan";
 import { validateScenes, pickKeyword, pickLead, MAX_QUOTES, MAX_HERO_USES, CINEMATIC_SHARE, type ValidateContext } from "../src/lib/video/scenes/validate";
 import { renderScene, overlappingAnims, sceneCss, isLightPalette, FULL_FRAME, cineRuntimeSource, DRIFT_EL, DRIFT_SCALE } from "../src/lib/video/scenes/render";
@@ -68,23 +68,23 @@ const NARRATION = [
 test("every hero has a brief, and the matcher picks the object that fits the narration", () => {
   assert.equal(new Set(HERO_IDS).size, HERO_IDS.length);
   for (const id of HERO_IDS) assert.ok(HERO_GUIDE[id].shows.length > 5, id);
-  assert.equal(heroForText("Time is running out before the deadline"), "hourglass");
-  assert.equal(heroForText("Small steps and good habits build progress"), "staircase");
-  assert.equal(heroForText("Reading a book changes how you learn"), "bookletters");
-  assert.equal(heroForText("Your past is a burden that holds you back"), "chain");
-  assert.equal(heroForText("Every decision is a choice about direction"), "path");
-  assert.equal(heroForText("It compounds, and the gains pile up"), "growth");
-  assert.equal(heroForText("zzz qqq xyzzy"), "orb", "nothing matches: the generic fallback, never an error");
+  assert.equal(heroForTextSync("Time is running out before the deadline"), "hourglass");
+  assert.equal(heroForTextSync("Small steps and good habits build progress"), "staircase");
+  assert.equal(heroForTextSync("Reading a book changes how you learn"), "bookletters");
+  assert.equal(heroForTextSync("Your past is a burden that holds you back"), "chain");
+  assert.equal(heroForTextSync("Every decision is a choice about direction"), "path");
+  assert.equal(heroForTextSync("It compounds, and the gains pile up"), "growth");
+  assert.equal(heroForTextSync("zzz qqq xyzzy"), "orb", "nothing matches: the generic fallback, never an error");
   assert.equal(heroMatch("zzz qqq"), 0);
   assert.ok(heroMatch("time and deadline") >= 2);
 });
 
 test("a hero already used is skipped while a different one also matches", () => {
   const text = "Time passes and the past is a burden";
-  const first = heroForText(text);
-  const second = heroForText(text, [first]);
+  const first = heroForTextSync(text);
+  const second = heroForTextSync(text, [first]);
   assert.notEqual(first, second);
-  assert.equal(heroForText(text, [first, second]), first, "when every match is used, the best match repeats rather than failing");
+  assert.equal(heroForTextSync(text, [first, second]), first, "when every match is used, the best match repeats rather than failing");
   assert.ok(isHeroId("mountain") && !isHeroId("dragon") && !isHeroId(undefined));
 });
 
@@ -208,6 +208,86 @@ test("the narration's own concepts choose each scene's hero", async () => {
   assert.equal(hero(4), "path");
   assert.equal(hero(9), "mountain");
   assert.equal(hero(10), "network");
+});
+
+// --- the validator asks the ranker, at every place it chooses a hero ----------------
+
+/**
+ * A ranker that answers differently from the keyword matcher (it prefers the
+ * LAST catalogue entries), asynchronously, and remembers every question. If any
+ * choice in `validateScenes` still comes from `heroForTextSync` it shows up as a
+ * hero this ranker never returned.
+ */
+function recordingRanker(): HeroRanker & { asked: { text: string; avoid: readonly HeroId[] }[]; scored: string[]; answers: Set<HeroId> } {
+  const order = HERO_IDS.filter((h) => h !== "orb").reverse();
+  const asked: { text: string; avoid: readonly HeroId[] }[] = [];
+  const scored: string[] = [];
+  const answers = new Set<HeroId>();
+  return {
+    source: "embedding",
+    degradedBecause: null,
+    asked,
+    scored,
+    answers,
+    async pick(text, avoid = []) {
+      await Promise.resolve();
+      asked.push({ text, avoid: [...avoid] });
+      const hero = order.find((h) => !avoid.includes(h)) ?? order[0];
+      answers.add(hero);
+      return hero;
+    },
+    async score(text) {
+      await Promise.resolve();
+      scored.push(text);
+      return text.length / 100;
+    },
+  };
+}
+
+test("the opening hero comes from the ranker, asked about the hook and the opening narration", async () => {
+  const sentences = sentencesOf(NARRATION, timed(NARRATION));
+  const heroRanker = recordingRanker();
+  const specs = sentences.map((s) => spec(s.index, s.index, "kinetic-text"));
+  const r = await validateScenes(specs, ctx({ sentences, heroRanker, hook: { text: "Time is running out", keywords: ["time"] } }));
+  assert.equal(r.scenes[0].cine?.hero, "growth", "the keyword matcher would have said hourglass");
+  assert.ok(heroRanker.asked.some((a) => a.text.includes("Time is running out") && a.text.includes("Time is the one thing")), "it was asked about the hook AND the narration");
+});
+
+test("a director's own valid hero is kept without asking the ranker; an invalid one is repaired by it", async () => {
+  const sentences = sentencesOf(NARRATION, timed(NARRATION));
+  const rest = sentences.slice(1).map((s) => spec(s.index, s.index, "kinetic-text"));
+  const kept = recordingRanker();
+  const keep = await validateScenes([spec(0, 0, "cinematic", { hero: "mountain" }), ...rest], ctx({ sentences, heroRanker: kept }));
+  assert.equal(keep.scenes[0].cine?.hero, "mountain");
+  assert.ok(!kept.asked.some((a) => a.text.includes("Time is the one thing")), "scene 0 was not second-guessed");
+  const repaired = await validateScenes([spec(0, 0, "cinematic", { hero: "dragon" }), ...rest], ctx({ sentences, heroRanker: recordingRanker() }));
+  assert.equal(repaired.scenes[0].cine?.hero, "growth", "an invented hero is replaced by the ranker's pick, not the keyword matcher's");
+});
+
+test("every repair pass takes its hero from the ranker: variety repeats, the cinematic floor, and the candidate order", async () => {
+  const sentences = sentencesOf(NARRATION, timed(NARRATION));
+  const heroRanker = recordingRanker();
+  // Every scene cinematic with no hero named: all get the ranker's first choice, so the
+  // never-twice-in-a-row and use-cap passes must re-ask with the heroes already used.
+  const all = await validateScenes(sentences.map((s) => spec(s.index, s.index, "cinematic")), ctx({ sentences, heroRanker }));
+  const heroes = all.scenes.map((s) => s.cine?.hero);
+  assert.ok(heroes.every((h) => h && heroRanker.answers.has(h)), `a hero the ranker never returned: ${heroes.join(",")}`);
+  assert.ok(heroRanker.asked.some((a) => a.avoid.length > 0), "the repeat repair asked with `avoid`");
+  for (let i = 1; i < heroes.length; i++) assert.notEqual(heroes[i], heroes[i - 1], `scenes ${i - 1},${i}`);
+
+  // All plain text: the floor turns some into hero scenes, and ranks WHICH ones by the ranker's score.
+  const floorRanker = recordingRanker();
+  const plain = await validateScenes(sentences.map((s) => spec(s.index, s.index, "kinetic-text")), ctx({ sentences, heroRanker: floorRanker }));
+  const converted = plain.scenes.filter((s) => s.kind === "cinematic");
+  assert.ok(converted.length >= Math.ceil(plain.scenes.length * CINEMATIC_SHARE));
+  assert.ok(converted.every((s) => floorRanker.answers.has(s.cine!.hero)), "floor-pass heroes are the ranker's");
+  assert.ok(floorRanker.scored.length > 0, "candidates were ordered by the ranker's score, not by keyword hits");
+});
+
+test("a validator given no ranker still plans, on the keyword floor", async () => {
+  const sentences = sentencesOf(NARRATION, timed(NARRATION));
+  const r = await validateScenes(sentences.map((s) => spec(s.index, s.index, "cinematic")), ctx({ sentences }));
+  assert.ok(r.scenes.every((s) => s.cine && isHeroId(s.cine.hero)));
 });
 
 // --- rendering --------------------------------------------------------------------

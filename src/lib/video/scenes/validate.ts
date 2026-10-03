@@ -28,7 +28,7 @@ import type { Box } from "../../ingest/ocr";
 import type { Embedder } from "../../analysis/embed";
 import { resolveIcon, MIN_SCORE } from "./icons";
 import { emphasizeWords } from "./emphasis";
-import { heroForText, heroMatch, isHeroId, type HeroId } from "./heroes";
+import { heroForTextSync, heroMatch, isHeroId, type HeroId, type HeroRanker } from "./heroes";
 import { BOOK_KINDS, PAGE_KINDS, SHOT_SCALE } from "./types";
 import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, ShotSize, VisualKind } from "./types";
 
@@ -152,6 +152,12 @@ export interface ValidateContext {
   /** Locate a quote in a page's words. Returns the book's own words and where. */
   locate(page: number, quote: string): { text: string; startWord: number; endWord: number } | null;
   embedder?: Embedder;
+  /**
+   * Chooses heroes by meaning (built once per plan, see `heroRanker`). Absent, every
+   * hero choice falls back to keyword counting, which is the floor, not the intent:
+   * the scene planner always supplies one.
+   */
+  heroRanker?: HeroRanker;
   /** The script's hook line and its accent words: what the opening scene is about. */
   hook?: { text: string; keywords: string[] };
   /**
@@ -161,6 +167,21 @@ export interface ValidateContext {
    * scenes layer deliberately does not import the composition's geometry.
    */
   cardHeightInColumnPx?: number;
+}
+
+/**
+ * The one place a hero is chosen from text. With a ranker every choice is a real
+ * semantic answer (it embeds whatever it is asked about); without one it is the
+ * keyword floor, and that is the caller's explicit decision, not something a
+ * repair pass can drift into.
+ */
+async function heroFor(ctx: ValidateContext, text: string, avoid: readonly HeroId[] = []): Promise<HeroId> {
+  return ctx.heroRanker ? ctx.heroRanker.pick(text, avoid) : heroForTextSync(text, avoid);
+}
+
+/** How well the catalogue fits a text, for ordering candidates. */
+async function heroFit(ctx: ValidateContext, text: string): Promise<number> {
+  return ctx.heroRanker ? ctx.heroRanker.score(text) : heroMatch(text);
 }
 
 /** The narration and the book words a scene may draw its labels from. */
@@ -395,7 +416,7 @@ async function resolveScene(
     case "cinematic": {
       const words = sentenceWords(spec.from, spec.to, ctx);
       const text = words.map((w) => w.word).join(" ");
-      const hero: HeroId = isHeroId(spec.hero) ? spec.hero : heroForText(`${concept} ${text}`);
+      const hero: HeroId = isHeroId(spec.hero) ? spec.hero : await heroFor(ctx, `${concept} ${text}`);
       const keyword = pickKeyword(spec.keyword, words);
       return { scene: withKind("cinematic", { words, cine: { hero, keyword, lead: pickLead(spec.lead, keyword, words) } }) };
     }
@@ -513,7 +534,7 @@ export async function validateScenes(
   if (scenes.length > 0) {
     const first = scenes[0];
     const want: HeroId =
-      first.kind === "cinematic" && first.cine ? first.cine.hero : heroForText(`${ctx.hook?.text ?? ""} ${narrationOf(first, ctx)}`);
+      first.kind === "cinematic" && first.cine ? first.cine.hero : await heroFor(ctx, `${ctx.hook?.text ?? ""} ${narrationOf(first, ctx)}`);
     scenes[0] = toCinematic(first, ctx, want, true);
     if (first.kind !== "cinematic") notes.push(`Scene 1: opened with a cinematic hook instead of ${first.kind}.`);
   }
@@ -530,7 +551,7 @@ export async function validateScenes(
     const prev = heroOf(scenes[i - 1]);
     if (h !== prev && (h === "orb" ? heroUses(h) <= 1 : heroUses(h) <= MAX_HERO_USES)) continue;
     const used = scenes.flatMap((s) => (heroOf(s) ? [heroOf(s)!] : []));
-    const next = heroForText(`${scenes[i].concept} ${narrationOf(scenes[i], ctx)}`, [...used, ...(prev ? [prev] : [])]);
+    const next = await heroFor(ctx, `${scenes[i].concept} ${narrationOf(scenes[i], ctx)}`, [...used, ...(prev ? [prev] : [])]);
     if (next !== h && next !== "orb") scenes[i] = toCinematic(scenes[i], ctx, next, scenes[i].cine?.hook);
   }
 
@@ -561,11 +582,13 @@ export async function validateScenes(
   const cineCount = () => scenes.filter((s) => s.kind === "cinematic").length;
   if (cineCount() < floor) {
     let icons = 0;
-    const cands = scenes
+    const eligible = scenes
       .map((s, i) => ({ s, i }))
-      .filter(({ s }) => s.kind === "kinetic-text" || (s.kind === "icon-concept" && ++icons > MAX_ICON_SCENES))
-      .map(({ s, i }) => ({ i, match: heroMatch(`${s.concept} ${narrationOf(s, ctx)}`) }))
-      .sort((a, b) => b.match - a.match || a.i - b.i);
+      .filter(({ s }) => s.kind === "kinetic-text" || (s.kind === "icon-concept" && ++icons > MAX_ICON_SCENES));
+    // One at a time: each is a small embedding, and a model that fails partway should fail in a deterministic place.
+    const cands: { i: number; match: number }[] = [];
+    for (const { s, i } of eligible) cands.push({ i, match: await heroFit(ctx, `${s.concept} ${narrationOf(s, ctx)}`) });
+    cands.sort((a, b) => b.match - a.match || a.i - b.i);
     for (const pass of [0, 1]) {
       for (const c of cands) {
         if (cineCount() >= floor) break;
@@ -573,7 +596,7 @@ export async function validateScenes(
         const adjacent = scenes[c.i - 1]?.kind === "cinematic" || scenes[c.i + 1]?.kind === "cinematic";
         if (pass === 0 && adjacent) continue;
         const used = scenes.flatMap((s) => (heroOf(s) ? [heroOf(s)!] : []));
-        const hero = heroForText(`${scenes[c.i].concept} ${narrationOf(scenes[c.i], ctx)}`, used);
+        const hero = await heroFor(ctx, `${scenes[c.i].concept} ${narrationOf(scenes[c.i], ctx)}`, used);
         if (hero === "orb" && used.includes("orb")) continue;
         scenes[c.i] = toCinematic(scenes[c.i], ctx, hero);
         notes.push(`Scene ${c.i + 1}: shown as a cinematic ${hero} scene for variety.`);

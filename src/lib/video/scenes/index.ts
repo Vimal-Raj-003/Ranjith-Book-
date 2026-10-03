@@ -17,9 +17,11 @@ import type { TimedWord } from "../../media/word-timing";
 import type { Box } from "../../ingest/ocr";
 import { locateQuote, tokenStream } from "../../analysis/quotes";
 import type { StructuredPage } from "../../analysis/types";
+import type { Embedder } from "../../analysis/embed";
 import { DIRECTOR_SCHEMA, DIRECTOR_SYSTEM, buildDirectorPrompt } from "./director";
 import { takeIconTrouble } from "./icons";
 import { capOpening, enforceDurations, normalizeRanges, sentencesOf, slotSentences, MAX_SCENES, MIN_SCENES, SCENE_SECONDS } from "./plan";
+import { heroRanker } from "./heroes";
 import { validateScenes, type ValidateContext } from "./validate";
 import type { Scene, SceneSpec, ScenePlanReport } from "./types";
 
@@ -42,6 +44,8 @@ export interface PlanScenesOptions {
   skipDirector?: boolean;
   /** The script's hook line and accent words: what the opening scene is about. */
   hook?: { text: string; keywords: string[] };
+  /** The embedder that chooses each scene's hero by meaning. Defaults to the local sentence model; tests inject one. */
+  heroEmbedder?: Embedder;
 }
 
 /** How many scenes to aim for, from the video's length. */
@@ -135,6 +139,9 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
     };
   });
 
+  // Built once for the whole plan: it embeds the catalogue here and each scene's
+  // narration as it is asked about. Planning time only; the render never sees it.
+  const ranker = await heroRanker(opts.heroEmbedder);
   const ctx: ValidateContext = {
     sentences,
     pageWords: opts.pageWords,
@@ -142,8 +149,18 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
     hasPage: opts.hasPage,
     locate: quoteLocator(opts.pageWords),
     hook: opts.hook,
+    heroRanker: ranker,
   };
   const report = await validateScenes(resolved, ctx);
+
+  // A degraded run is visible rather than silent: without the model, heroes are
+  // matched on shared words, which misses a sentence that says the idea in other words.
+  // Read AFTER validation, because the model can also fail partway through it.
+  if (ranker.source === "lexical") {
+    notes.push(
+      `Hero objects were chosen by word overlap, not meaning${ranker.degradedBecause ? ` (the semantic model was unavailable: ${ranker.degradedBecause})` : ""} — a scene that says an idea in other words may have got a generic hero.`,
+    );
+  }
 
   // Icons are optional by design — a phrase with no good picture simply gets
   // none — so a lookup that FAILED is indistinguishable from one that found
