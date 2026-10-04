@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 import { strings } from "@/lib/strings";
-import { pickPoster } from "@/lib/thumbnails/choose";
+import { canRetitle, pickPoster } from "@/lib/thumbnails/choose";
 import { thumbUrl } from "@/lib/thumbnails/url";
 import { EmptyState, Hint } from "./ui";
 import { useToast } from "./Toast";
@@ -13,10 +13,9 @@ interface Edited {
   thumbnails: ThumbnailRef[];
   thumbChoice: string | null;
   thumbHeadline: string | null;
+  /** How many posters the last retitle could not redraw, and so dropped. */
+  failed: number;
 }
-
-/** `failed` is how many posters a retitle could not redraw (and so dropped). */
-type Answer = Edited & { failed?: number };
 
 /**
  * The generated thumbnails, grouped by aspect ratio, with the two edits an
@@ -51,6 +50,7 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
   // `||`: an empty string is "nothing set", exactly as null is.
   const choice = (mine ? mine.thumbChoice : episode.thumbChoice) || null;
   const saved = (mine ? mine.thumbHeadline : episode.thumbHeadline) || "";
+  const failed = mine?.failed ?? 0;
   const draft = drafts[id] ?? saved;
 
   // Broken images are remembered by URL, so a redone poster (new revision, new
@@ -59,7 +59,7 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
   const selected = pickPoster(list, choice)?.key ?? null;
 
   /** POST one edit. Resolves to the server's view of the episode, or throws a message to show. */
-  async function send(payload: { choice: string } | { headline: string }, fallback: string): Promise<Answer> {
+  async function send(payload: { choice: string } | { headline: string }, fallback: string): Promise<Edited> {
     let res: Response;
     try {
       res = await fetch(`/api/episodes/${id}/thumbnail`, {
@@ -72,17 +72,19 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(typeof data.error === "string" && data.error ? data.error : fallback);
-    return data as Answer;
+    return { thumbnails: data.thumbnails, thumbChoice: data.thumbChoice, thumbHeadline: data.thumbHeadline, failed: data.failed ?? 0 };
   }
 
   async function choose(key: string) {
     if (pending || key === selected) return;
-    const before: Edited = { thumbnails, thumbChoice: choice, thumbHeadline: saved || null };
+    const before: Edited = { thumbnails, thumbChoice: choice, thumbHeadline: saved || null, failed };
     setEdited((all) => ({ ...all, [id]: { ...before, thumbChoice: key } })); // optimistic: the tile highlights at once
     setPending("choice");
     try {
       const answer = await send({ choice: key }, strings.thumbnails.choiceFailed);
-      setEdited((all) => ({ ...all, [id]: answer }));
+      // A choice redraws nothing, so the server reports no failures -- which
+      // must not erase the record of an earlier retitle that did lose posters.
+      setEdited((all) => ({ ...all, [id]: { ...answer, failed } }));
     } catch (err) {
       setEdited((all) => ({ ...all, [id]: before })); // roll back rather than lie about it
       toast.show((err as Error).message, "error");
@@ -120,7 +122,7 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
     byAspect.set(t.aspect, group);
   }
 
-  const changed = draft.trim() !== saved;
+  const canSubmit = canRetitle(draft, saved, failed);
 
   return (
     <div className="flex flex-col gap-3">
@@ -196,12 +198,20 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
             type="submit"
             className="rounded-lg border px-3.5 py-1.5 text-[13px] font-semibold"
             style={{ borderColor: "var(--line)", color: "var(--ink)", background: "var(--slab-2)" }}
-            disabled={pending !== null || !changed}
+            disabled={pending !== null || !canSubmit}
           >
             {pending === "retitle" ? strings.thumbnails.retitling : strings.thumbnails.retitle}
           </button>
         </div>
         <Hint id={hintId}>{strings.thumbnails.headlineHint}</Hint>
+        {/* A toast is gone in under three seconds, and this stays true until the
+            operator acts: some posters are missing, and submitting the same
+            headline again is how they ask for them back. */}
+        {failed > 0 && (
+          <p role="status" className="hint" style={{ color: "var(--amber)" }}>
+            {strings.thumbnails.retitledPartial(failed)}
+          </p>
+        )}
       </form>
     </div>
   );

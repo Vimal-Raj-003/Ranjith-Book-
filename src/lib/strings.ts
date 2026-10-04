@@ -256,7 +256,9 @@ export const strings = {
     headlineHint: "Redraws all six posters with these words. Clear the field to go back to the generated headline.",
     retitled: "Posters redrawn.",
     retitledPartial: (n: number) =>
-      n === 1 ? "1 poster could not be redrawn and was removed." : `${n} posters could not be redrawn and were removed.`,
+      n === 1
+        ? "1 poster could not be redrawn and was removed. Retitle again to try for it."
+        : `${n} posters could not be redrawn and were removed. Retitle again to try for them.`,
     choiceFailed: "Could not save that choice.",
     retitleFailed: "Could not redraw the posters.",
   },

@@ -55,7 +55,7 @@ export async function editPoster(
     return refuse(400, "bad_choice", "That is not a poster on this episode.");
   }
 
-  const data: { thumbChoice?: string; thumbnails?: string; thumbHeadline?: string | null } = {};
+  const data: { thumbChoice?: string | null; thumbnails?: string; thumbHeadline?: string | null } = {};
   if (typeof choice === "string") data.thumbChoice = choice;
 
   let failed = 0;
@@ -96,18 +96,35 @@ export async function editPoster(
       return refuse(500, "render_failed", "The posters could not be redrawn, so nothing was changed.");
     }
 
+    // A revision must move forward for a key that already has one. It is a file
+    // mtime, and on a coarse-grained or network file system two writes inside
+    // one tick report the same value; reused, the URL would not change and the
+    // browser would keep the first headline, `immutable`, for a year -- the
+    // full-resolution download included. The previous revision comes from the
+    // row, not the disk, so this holds however the clock behaves.
+    const was = new Map(specs.map((s) => [s.key, s.rev]));
+    const kept = rendered.map((r) => ({ ...r, rev: Math.max(r.rev, (was.get(r.key) ?? -1) + 1) }));
+
     // Only posters that carry the new headline are kept. A poster that failed
     // to redraw would still show the old words, contradicting the stored
     // headline, so it is dropped rather than left stale. `failed` tells the
     // operator how many that was.
-    failed = Math.max(0, THUMB_KEYS.length - rendered.length);
-    data.thumbnails = serializeThumbnails(rendered);
+    failed = Math.max(0, THUMB_KEYS.length - kept.length);
+    data.thumbnails = serializeThumbnails(kept);
     data.thumbHeadline = override;
+
+    // The same reasoning for the choice: one that names a poster that was just
+    // dropped would disagree with the tile marked "In use". `pickPoster`
+    // already degrades to the default silently, so nothing breaks either way;
+    // this keeps the column telling the truth. It covers a choice sent in this
+    // very request as well as an earlier one.
+    const chosen = typeof choice === "string" ? choice : episode.thumbChoice;
+    if (chosen && !kept.some((k) => k.key === chosen)) data.thumbChoice = null;
 
     // The grid derivative is a pure function of the poster it came from and
     // `deriveGrid` would notice the newer original on its own; removing it is
     // belt and braces against a filesystem whose timestamps are too coarse to.
-    await Promise.all(rendered.map((r) => fs.rm(path.join(gridDir(episodeId), `${r.key}.webp`), { force: true }).catch(() => {})));
+    await Promise.all(kept.map((r) => fs.rm(path.join(gridDir(episodeId), `${r.key}.webp`), { force: true }).catch(() => {})));
   }
 
   const after = Object.keys(data).length > 0 ? await prisma.episode.update({ where: { id: episodeId }, data }) : episode;

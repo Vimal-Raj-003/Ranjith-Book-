@@ -25,6 +25,10 @@ export interface ThumbSpec {
    * operator downloads and uploads to YouTube. `Episode.updatedAt` cannot
    * stand in: it moves on any update to the row. 0 on rows stored before this
    * field existed (see `parseThumbnails`).
+   *
+   * The renderer stamps the mtime; a redo of an existing poster then raises it
+   * to at least the previous revision plus one (`editPoster`), because a
+   * coarse-grained file system can report the same mtime for two writes.
    */
   rev: number;
 }

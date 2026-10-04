@@ -30,6 +30,22 @@ export function normaliseHeadline(raw: unknown): string | null {
 }
 
 /**
+ * Whether the Retitle button should be live.
+ *
+ * Normally only when the field differs from what is saved: there is nothing to
+ * redraw otherwise. The exception is the aftermath of a partial redraw. By then
+ * the server has already stored the headline, so the field equals the saved
+ * text, yet some posters were dropped -- and submitting that same text again is
+ * the only way the operator can ask for them back. `failed` is how many posters
+ * the last redraw could not draw; while it is above zero the button stays live.
+ * Disabling it there left a dead end whose only exit was clearing the field,
+ * paying for a full redraw to the generated headline, and retyping the words.
+ */
+export function canRetitle(draft: string, saved: string, failed: number): boolean {
+  return draft.trim() !== saved || failed > 0;
+}
+
+/**
  * The poster to show for an episode: the operator's choice when it still
  * exists, otherwise the first 9:16, otherwise the first of anything.
  *

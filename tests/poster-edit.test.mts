@@ -88,11 +88,13 @@ async function seed(opts: { withPages?: boolean; real?: boolean; row?: Record<st
   let specs: ThumbSpec[];
   if (real) {
     // Built from the same inputs a redo reassembles from the row (same
-    // photograph, same focus, same theme, no keywords or takeaway), so that a
-    // redo with no override reproduces these bytes exactly.
+    // photograph, same focus, same theme, same supporting line, no keywords), so
+    // that a redo with no override reproduces these bytes exactly. The line is the
+    // one `takeawayFromBeats` rebuilds from BEATS; the CTA is what a poster shows
+    // without one, so a redo that lost it would no longer match.
     specs = await generateThumbnails({
       episodeId: episode.id,
-      pkg: { title: "Deep Work", hook: "Most people are busy. Almost nobody is focused.", cta: "Follow for one page a day", beats: BEATS },
+      pkg: { title: "Deep Work", hook: "Most people are busy. Almost nobody is focused.", cta: "Follow for one page a day", beats: BEATS, takeaway: ["Depth is rare"] },
       pages: [0, 1].map((i) => ({ src: path.join(pagesDir, `page-${i}.jpg`), width: 800, height: 1200 })),
       focus: { pageIndex: 0, x0: 40, y0: 100, x1: 700, y1: 160 },
       theme: "marginalia",
@@ -126,6 +128,20 @@ async function seed(opts: { withPages?: boolean; real?: boolean; row?: Record<st
 }
 
 const row = (id: string) => prisma.episode.findUniqueOrThrow({ where: { id } });
+
+/** What a render that managed to draw only `keys` returns, each stamped `rev`. */
+const drew =
+  (keys: string[], rev: number) =>
+  async ({ outDir }: { outDir: string }): Promise<ThumbSpec[]> =>
+    keys.map((key) => ({
+      key,
+      aspect: key.startsWith("9x16") ? ("9:16" as const) : ("16:9" as const),
+      variant: key.split("-")[1] as ThumbSpec["variant"],
+      path: path.join(outDir, `${key}.jpg`),
+      width: key.startsWith("9x16") ? 1080 : 1280,
+      height: key.startsWith("9x16") ? 1920 : 720,
+      rev,
+    }));
 
 test("choosing a poster records the choice and renders nothing", async () => {
   const s = await seed();
@@ -270,29 +286,140 @@ test("a partial render keeps only posters that carry the new headline", async ()
   // retitle would contradict it, so it is dropped rather than kept stale.
   const s = await seed();
   try {
-    const res = await editPoster(
-      s.userId,
-      s.episodeId,
-      { headline: "Compounding beats talent" },
-      {
-        render: async ({ outDir }) =>
-          THUMB_KEYS.slice(0, 4).map((key) => ({
-            key,
-            aspect: key.startsWith("9x16") ? ("9:16" as const) : ("16:9" as const),
-            variant: key.split("-")[1] as ThumbSpec["variant"],
-            path: path.join(outDir, `${key}.jpg`),
-            width: 1080,
-            height: 1920,
-            rev: 222,
-          })),
-      },
-    );
+    const res = await editPoster(s.userId, s.episodeId, { headline: "Compounding beats talent" }, { render: drew(THUMB_KEYS.slice(0, 4), 222) });
     assert.equal(res.status, 200);
     assert.equal(res.body.failed, 2);
     const stored = parseThumbnails(await row(s.episodeId));
     assert.deepEqual(stored.map((t) => t.key), THUMB_KEYS.slice(0, 4));
     assert.ok(stored.every((t) => t.rev === 222));
     assert.equal((await row(s.episodeId)).thumbHeadline, "Compounding beats talent");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("after a partial redraw the same headline can be submitted again, and restores all six", async () => {
+  // The server has stored the headline by then, so the field equals the saved
+  // text; the operator's only recourse is to submit it unchanged. Nothing may
+  // treat an unchanged headline as nothing to do.
+  const s = await seed();
+  try {
+    const partial = await editPoster(s.userId, s.episodeId, { headline: "Compounding beats talent" }, { render: drew(THUMB_KEYS.slice(0, 4), 300) });
+    assert.equal(partial.body.failed, 2);
+    assert.equal(parseThumbnails(await row(s.episodeId)).length, 4);
+
+    let renders = 0;
+    const full = drew(THUMB_KEYS, 400);
+    const retry = await editPoster(
+      s.userId,
+      s.episodeId,
+      { headline: "Compounding beats talent" },
+      {
+        render: async (opts) => {
+          renders++;
+          assert.equal(opts.headline, "Compounding beats talent", "the retry redraws with the stored words");
+          return full(opts);
+        },
+      },
+    );
+    assert.equal(retry.status, 200);
+    assert.equal(renders, 1, "an unchanged headline is redrawn, not short-circuited");
+    assert.equal(retry.body.failed, 0);
+    const stored = parseThumbnails(await row(s.episodeId));
+    assert.deepEqual(stored.map((t) => t.key), THUMB_KEYS, "all six posters are back");
+    assert.ok(stored.every((t) => t.rev === 400));
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a revision only ever moves forward, even when the file system's clock does not", async () => {
+  // `rev` is a file mtime, and a coarse-grained or network file system hands
+  // two writes inside one tick the same value. Reused, it would leave the
+  // browser holding the first headline under an `immutable` URL for a year,
+  // download included. Stored revisions are 111 here.
+  const s = await seed();
+  try {
+    const sameTick = drew(THUMB_KEYS, 111);
+
+    const first = await editPoster(s.userId, s.episodeId, { headline: "One" }, { render: sameTick });
+    assert.deepEqual((first.body.thumbnails as { rev: number }[]).map((t) => t.rev), THUMB_KEYS.map(() => 112));
+
+    const second = await editPoster(s.userId, s.episodeId, { headline: "Two" }, { render: sameTick });
+    assert.deepEqual((second.body.thumbnails as { rev: number }[]).map((t) => t.rev), THUMB_KEYS.map(() => 113));
+
+    // A clock that did move is left alone: the mtime is already newer.
+    const moved = await editPoster(s.userId, s.episodeId, { headline: "Three" }, { render: drew(THUMB_KEYS, 5000) });
+    assert.ok((moved.body.thumbnails as { rev: number }[]).every((t) => t.rev === 5000));
+    assert.ok(parseThumbnails(await row(s.episodeId)).every((t) => t.rev === 5000), "and it is what was stored");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a revision is forced forward per key, not just overall", async () => {
+  const s = await seed();
+  try {
+    // Only some keys are redrawn and stamped low; each is measured against its own previous value.
+    await prisma.episode.update({
+      where: { id: s.episodeId },
+      data: {
+        thumbnails: serializeThumbnails(
+          (await drew(THUMB_KEYS, 0)({ outDir: thumbsDir(s.episodeId) })).map((t, i) => ({ ...t, rev: i < 3 ? 900 : 10 })),
+        ),
+      },
+    });
+    const res = await editPoster(s.userId, s.episodeId, { headline: "One" }, { render: drew(THUMB_KEYS, 50) });
+    assert.deepEqual((res.body.thumbnails as { rev: number }[]).map((t) => t.rev), [901, 901, 901, 50, 50, 50]);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a partial redraw clears a choice that named a poster it dropped", async () => {
+  // `pickPoster` would degrade silently, but the column would then disagree
+  // with which tile reads "In use".
+  const s = await seed({ row: { thumbChoice: "16x9-bold" } });
+  try {
+    const res = await editPoster(s.userId, s.episodeId, { headline: "Compounding beats talent" }, { render: drew(THUMB_KEYS.slice(0, 4), 222) });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.thumbChoice, null);
+    assert.equal((await row(s.episodeId)).thumbChoice, null);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a choice that survived the redraw is kept", async () => {
+  const s = await seed({ row: { thumbChoice: "9x16-bold" } });
+  try {
+    const res = await editPoster(s.userId, s.episodeId, { headline: "Compounding beats talent" }, { render: drew(THUMB_KEYS.slice(0, 4), 222) });
+    assert.equal(res.body.thumbChoice, "9x16-bold");
+    assert.equal((await row(s.episodeId)).thumbChoice, "9x16-bold");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a choice sent with the headline is judged against what was actually redrawn", async () => {
+  const s = await seed();
+  try {
+    const dropped = await editPoster(s.userId, s.episodeId, { choice: "16x9-split", headline: "One" }, { render: drew(THUMB_KEYS.slice(0, 4), 222) });
+    assert.equal(dropped.status, 200);
+    assert.equal(dropped.body.thumbChoice, null, "chosen, then lost in the same request: no choice");
+
+    const kept = await editPoster(s.userId, s.episodeId, { choice: "9x16-split", headline: "Two" }, { render: drew(THUMB_KEYS, 333) });
+    assert.equal(kept.body.thumbChoice, "9x16-split");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a choice alone is never cleared, whatever the renderer might do", async () => {
+  const s = await seed({ row: { thumbChoice: "16x9-bold" } });
+  try {
+    const res = await editPoster(s.userId, s.episodeId, { choice: "9x16-split" }, { render: drew([], 1) });
+    assert.equal(res.body.thumbChoice, "9x16-split");
   } finally {
     await s.cleanup();
   }

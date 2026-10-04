@@ -7,9 +7,9 @@ import sharp from "sharp";
 import { chromium } from "playwright-core";
 import { cacheControlFor, deriveGrid, parseSize } from "../src/lib/thumbnails/derive";
 import { ASPECTS, gridDir, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails/types";
-import { normaliseHeadline, pickPoster } from "../src/lib/thumbnails/choose";
+import { canRetitle, normaliseHeadline, pickPoster } from "../src/lib/thumbnails/choose";
 import { thumbUrl } from "../src/lib/thumbnails/url";
-import { focusFromPlan, loadPosterSource } from "../src/lib/thumbnails/source";
+import { focusFromPlan, loadPosterSource, takeawayFromBeats } from "../src/lib/thumbnails/source";
 import { generateThumbnails, parseThumbnails, serializeThumbnails } from "../src/lib/thumbnails";
 import { buildThumbHtml } from "../src/lib/thumbnails/render";
 import { publicThumbs } from "../src/lib/episode-view";
@@ -362,6 +362,7 @@ test("a poster source is rebuilt from the row: package, in-range pages, measured
     assert.equal(source.pkg.hook, "Most people are busy.");
     assert.equal(source.pkg.cta, "Follow for one page a day");
     assert.equal(source.pkg.beats?.[0].onScreen, "Busy is not focused");
+    assert.deepEqual(source.pkg.takeaway, ["Depth is rare"], "the supporting line is rebuilt from the script");
     assert.equal(source.theme, "spotlight");
     assert.deepEqual(source.focus, { pageIndex: 0, x0: 10, y0: 10, x1: 100, y1: 30 });
   } finally {
@@ -410,6 +411,81 @@ test("a missing or unreadable plan still yields a source, cropped without a mark
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+// ------------------------------------------------ the supporting line, from the script
+
+const labelled = (...pairs: [string, string][]) =>
+  pairs.map(([id, onScreen]) => ({ id, voiceover: "v", onScreen, sourcePage: 0, startWord: 0, endWord: 1 }));
+
+test("the supporting line is the beat named 'takeaway' when the script has one", () => {
+  const beats = labelled(["hook", "Busy is not focused"], ["takeaway", "Teach once, keep forever"], ["cta", "Follow for more"]);
+  assert.equal(takeawayFromBeats(beats, "Follow for more from this book."), "Teach once, keep forever");
+  // Not necessarily the last beat: the id is what counts.
+  const earlier = labelled(["takeaway", "Teach once"], ["rollback", "Undo any lesson"], ["cta", "Follow for more"]);
+  assert.equal(takeawayFromBeats(earlier, "Follow for more"), "Teach once");
+});
+
+test("without a 'takeaway' beat it is the last beat that is not a call to action", () => {
+  // The id convention is mostly ignored by real scripts: of the 111 in the
+  // library, 4 have a 'takeaway' beat. Most use positional ids, and their final
+  // beat IS the call to action. Taking merely the last beat would put "Follow
+  // for more" on the poster, which is the boilerplate this exists to replace.
+  const stem = labelled(["b1", "The snap at the table"], ["b2", "What anger achieves"], ["b3", "Follow for more"]);
+  assert.equal(takeawayFromBeats(stem, "Follow for more quiet upgrades to how you move."), "What anger achieves");
+
+  // A CTA label that is not a stem of the CTA sentence, but opens with a CTA verb.
+  const verb = labelled(["b1", "The pivot"], ["b2", "Change of subject"], ["b3", "Save it. Use it."]);
+  assert.equal(takeawayFromBeats(verb, "Pick one thing you have been dragging."), "Change of subject");
+
+  // A CTA label that opens with no CTA verb, but is a fragment of the sentence.
+  const fragment = labelled(["b1", "Temple at dawn"], ["b2", "Try one hour"]);
+  assert.equal(takeawayFromBeats(fragment, "Pick a block. Try one hour tonight, then follow for more."), "Temple at dawn");
+
+  // The id said so, whatever the label looks like.
+  const tagged = labelled(["b1", "Depth is rare"], ["cta", "One more thing"]);
+  assert.equal(takeawayFromBeats(tagged, "Unrelated."), "Depth is rare");
+});
+
+test("a script with no call to action ends on its last beat", () => {
+  // A photographed-page episode has no CTA beat; its final beat is the point.
+  const photo = labelled(["b1", "The mood-check trap"], ["b2", "Own the slot"], ["b3", "Your first three steps"]);
+  assert.equal(takeawayFromBeats(photo, "Pick one task, write its three steps today, and follow for more."), "Your first three steps");
+});
+
+test("with nothing usable in the script there is no supporting line, and the CTA stands", () => {
+  assert.equal(takeawayFromBeats(null, "Follow for more"), null);
+  assert.equal(takeawayFromBeats([], "Follow for more"), null);
+  assert.equal(takeawayFromBeats([null, 7, "x", { id: "b1" }, { id: "b2", onScreen: "   " }], "x"), null);
+  assert.equal(takeawayFromBeats(labelled(["b1", "Follow for more"], ["cta", "Save this"]), "Follow for more."), null);
+});
+
+test("a source carries no takeaway when the script has none to offer", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-src-"));
+  try {
+    const rows = await pageRows(dir, [2, 3, 4]);
+    const script = JSON.stringify(labelled(["b1", "Follow for more"]));
+    const source = await loadPosterSource({ ...ROW, script }, rows);
+    assert.ok(source);
+    assert.equal(source.pkg.takeaway, undefined, "the renderer then falls back to the CTA, as it always has");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ----------------------------------------------- when the retitle button is live
+
+test("Retitle is live for a changed headline, and for the same one after a partial redraw", () => {
+  assert.equal(canRetitle("Compounding beats talent", "", 0), true, "a new headline");
+  assert.equal(canRetitle("", "Compounding beats talent", 0), true, "clearing it, to go back to the generated one");
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 0), false, "nothing to do");
+  assert.equal(canRetitle("  Compounding beats talent ", "Compounding beats talent", 0), false, "whitespace is not a change");
+  assert.equal(canRetitle("", "", 0), false);
+  // After "2 posters could not be redrawn" the server HAS stored this headline,
+  // so the draft equals the saved text. The operator's only way to ask again is
+  // to submit it unchanged; a button that disables itself here is a dead end.
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 2), true);
+  assert.equal(canRetitle("", "", 1), true, "a failed reset can be retried too");
 });
 
 // ------------------------------------------------------------------ full render

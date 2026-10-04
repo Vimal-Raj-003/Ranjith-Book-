@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import sharp from "sharp";
 import type { Beat, ContentPackage } from "../content/schema";
 import type { ThumbFocus, ThumbPage } from "./types";
+import { clean } from "./text";
 
 /**
  * Everything a poster is made from, rebuilt from an episode ROW.
@@ -14,8 +15,10 @@ import type { ThumbFocus, ThumbPage } from "./types";
  *
  * What the row does NOT keep: `hookKeywords` and the `takeaway` bullets are
  * never written to it. A redone poster therefore has no accent-coloured
- * keywords, and its supporting line falls back to the CTA. The headline is the
- * operator's own words, so this costs the redo nothing it was going to show.
+ * keywords -- the headline is the operator's own words, so that costs nothing
+ * it was going to show. The supporting line is rebuilt from the script instead
+ * (`takeawayFromBeats`), because its fallback, the CTA, is the same sentence on
+ * every episode and would make every retitled poster read alike.
  */
 
 /** The columns of `Episode` this reads. Structural, so tests need no database. */
@@ -104,6 +107,49 @@ export function focusFromPlan(plan: unknown, beats: unknown, pages: { pageIndex:
   return focus;
 }
 
+/** A beat label that is a call to action, whatever its id says. */
+const CTA_LABEL = /^(follow|save|share|comment|subscribe|like|bookmark|tag|send)\b/i;
+
+/** Lowercase letters and digits only, for comparing a label against the CTA. */
+const squash = (s: string) => clean(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * The poster's supporting line, rebuilt from the script, or null for none.
+ *
+ * `takeaway[0]` is what the pipeline used and it is not stored. Without
+ * something in its place the line falls back to the CTA, which is the same
+ * sentence on every episode.
+ *
+ * The convention is a beat whose id is "takeaway", and it is used when present
+ * -- but it is a convention, not a constraint, and the stored scripts mostly
+ * ignore it: measured on 2026-10-04 across the 111 scripts in the library, 4
+ * have such a beat. The rest use positional ids ("b1".."b7") or the writer's own
+ * ("payoff", "rollback"), and in those the final beat is the call to action
+ * whatever it is called ("Follow for more" ends 25 of them). So the fallback is
+ * the last beat that is NOT a call to action, and a beat is one when its id is
+ * "cta", or its label is a stem of the episode's own CTA sentence ("Follow for
+ * more" against "Follow for more book ideas..."), or it opens with a CTA verb.
+ * Taking merely the last beat would reproduce the boilerplate this exists to
+ * avoid.
+ */
+export function takeawayFromBeats(beats: unknown, cta: string | null): string | null {
+  const labelled = (Array.isArray(beats) ? beats : [])
+    .filter(isRecord)
+    .map((b) => ({ id: b.id, label: typeof b.onScreen === "string" ? clean(b.onScreen) : "" }))
+    .filter((b) => b.label !== "");
+
+  const named = labelled.find((b) => b.id === "takeaway");
+  if (named) return named.label;
+
+  const ctaText = squash(cta ?? "");
+  const isCta = (b: { id: unknown; label: string }) => {
+    if (b.id === "cta" || CTA_LABEL.test(b.label)) return true;
+    const stem = squash(b.label);
+    return stem !== "" && ctaText.includes(stem);
+  };
+  return labelled.filter((b) => !isCta(b)).at(-1)?.label ?? null;
+}
+
 /**
  * Reassemble what `generateThumbnails` needs, or null when the episode can no
  * longer be redone.
@@ -155,12 +201,15 @@ export async function loadPosterSource(row: PosterSourceRow, pageRows: PosterPag
   const pages: ThumbPage[] = covered.map((p) => ({ src: p.derivedPath ?? p.filePath, width: p.width, height: p.height }));
   pages[at] = { src: photoSrc, width, height };
 
+  const takeaway = takeawayFromBeats(beats, row.cta);
+
   return {
     pkg: {
       title: row.title ?? "",
       hook: row.hook ?? "",
       cta: row.cta ?? "",
       beats: beats as Beat[],
+      ...(takeaway ? { takeaway: [takeaway] } : {}),
     },
     pages,
     focus,
