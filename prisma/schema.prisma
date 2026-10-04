@@ -290,6 +290,18 @@ model Episode {
   /// before thumbnails existed is not invalid, it simply has none, and the
   /// delivery route treats absent and empty identically.
   thumbnails  String?
+  /// The voice the narration actually used, resolved at render time. Null on
+  /// rows written before the picker existed — the library says "not recorded"
+  /// rather than guessing, because the setting may since have changed.
+  voiceId       String?
+  /// Which engine resolved it: pocket | elevenlabs | openai | system.
+  voiceProvider String?
+  /// The poster the operator chose for this episode. Null means "no choice
+  /// made", and every reader falls back to the first 9:16 poster.
+  thumbChoice   String?
+  /// An operator-edited headline, already applied to the rendered poster.
+  /// Kept so the edit survives a re-render and can be shown back in the field.
+  thumbHeadline String?
 
   startedAt  DateTime?
   finishedAt DateTime?
