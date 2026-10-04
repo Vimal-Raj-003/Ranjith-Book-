@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs";
+import type { Stats } from "node:fs";
 import fsp from "node:fs/promises";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { prisma } from "@/lib/db";
 import { currentUser } from "@/lib/auth/session";
 import { parseThumbnails, selectThumb } from "@/lib/thumbnails";
+import { deriveGrid, parseSize } from "@/lib/thumbnails/derive";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +26,7 @@ export const dynamic = "force-dynamic";
  * directory. A crafted `../../etc/passwd` matches nothing and 404s before the
  * filesystem is touched at all.
  */
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string; key: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string; key: string }> }) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Sign in to continue." }, { status: 401 });
 
@@ -39,23 +41,54 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string; ke
   const spec = selectThumb(parseThumbnails(episode), key, episode.id);
   if (!spec) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let size: number;
+  // The grid derivative when one was asked for and could be made; the
+  // full-resolution original otherwise. A derivation that fails degrades to
+  // the original rather than to an error — slow beats broken.
+  const size = parseSize(new URL(req.url).searchParams.get("size"));
+  const derived = size === "grid" ? await deriveGrid(spec, episode.id) : null;
+  const file = derived ?? spec.path;
+  const type = derived ? "image/webp" : "image/jpeg";
+
+  let stat: Stats;
   try {
-    size = (await fsp.stat(spec.path)).size;
+    stat = await fsp.stat(file);
   } catch {
     return NextResponse.json({ error: "That thumbnail is no longer on disk." }, { status: 404 });
   }
 
-  const stream = Readable.toWeb(fs.createReadStream(spec.path)) as WebReadableStream<Uint8Array>;
+  // A poster changes only when something explicitly re-renders it, so the
+  // browser may keep these bytes for good. The previous
+  // `max-age=0, must-revalidate` meant a 100-episode library re-downloaded
+  // roughly 27 MB on every single visit.
+  //
+  // The catch is that `immutable` is a promise about this URL. A re-render
+  // writes the same key to the same path, so anything that redoes a poster must
+  // also change the URL it is requested by; this route cannot do that for it.
+  // The ETag below (size + mtime) is what a revalidation would be answered
+  // with, and it does change on a re-render, but only a request that bypasses
+  // the cache will ask.
+  //
+  // `private` is retained deliberately. A shared proxy must never hold one
+  // operator's photograph of their own book where another could be handed it;
+  // only the browser that asked for it caches this.
+  const etag = `"${stat.size.toString(16)}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
+  if (req.headers.get("if-none-match") === etag) {
+    return new NextResponse(null, {
+      status: 304,
+      headers: { ETag: etag, "Cache-Control": "private, max-age=31536000, immutable" },
+    });
+  }
+
+  const stream = Readable.toWeb(fs.createReadStream(file)) as WebReadableStream<Uint8Array>;
   return new NextResponse(stream as unknown as ReadableStream, {
     status: 200,
     headers: {
-      "Content-Type": "image/jpeg",
-      "Content-Length": String(size),
-      // Private: a shared proxy must never hand one user's page photo to another.
-      "Cache-Control": "private, max-age=0, must-revalidate",
+      "Content-Type": type,
+      "Content-Length": String(stat.size),
+      "Cache-Control": "private, max-age=31536000, immutable",
+      ETag: etag,
       // The filename is built from the validated key, never from the raw URL.
-      "Content-Disposition": `inline; filename="${spec.key}.jpg"`,
+      "Content-Disposition": `inline; filename="${spec.key}${derived ? ".webp" : ".jpg"}"`,
     },
   });
 }

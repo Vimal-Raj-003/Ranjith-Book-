@@ -47,7 +47,7 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
               >
                 {/* eslint-disable-next-line @next/next/no-img-element -- session-guarded API route, not a statically optimizable asset */}
                 <img
-                  src={`/api/episodes/${episode.id}/thumbnail/${t.key}`}
+                  src={`/api/episodes/${episode.id}/thumbnail/${t.key}?size=grid`}
                   alt={strings.thumbnails.alt(t.variant, t.aspect)}
                   loading="lazy"
                   onError={() => setBroken((b) => (b.includes(t.key) ? b : [...b, t.key]))}

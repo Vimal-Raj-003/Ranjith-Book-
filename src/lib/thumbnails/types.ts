@@ -54,3 +54,15 @@ export const THUMBS_ROOT = path.join(WORK_ROOT, "thumbs");
 export function thumbsDir(episodeId: string): string {
   return path.join(THUMBS_ROOT, episodeId);
 }
+
+/**
+ * Derived, grid-sized copies of an episode's posters.
+ *
+ * A cache, not a product: every file in here is reproducible from the
+ * full-resolution JPEG beside it, so deleting the directory costs one
+ * re-derivation and nothing else. Kept inside the episode's own folder so
+ * that removing an episode removes its derivatives with it.
+ */
+export function gridDir(episodeId: string): string {
+  return path.join(thumbsDir(episodeId), "grid");
+}

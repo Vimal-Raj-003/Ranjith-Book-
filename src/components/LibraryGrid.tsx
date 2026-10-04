@@ -30,7 +30,7 @@ function Poster({ episode }: { episode: EpisodeSummary }) {
     <div className="poster">
       {/* eslint-disable-next-line @next/next/no-img-element -- session-guarded API route, not a statically optimizable asset */}
       <img
-        src={`/api/episodes/${episode.id}/thumbnail/${poster.key}`}
+        src={`/api/episodes/${episode.id}/thumbnail/${poster.key}?size=grid`}
         alt=""
         loading="lazy"
         onError={() => setBroken(true)}
