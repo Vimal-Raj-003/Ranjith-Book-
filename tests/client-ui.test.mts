@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import * as inspectorModule from "../src/components/Inspector";
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../src/lib/media/pocket-tts";
-import { VOICES, DEFAULT_VOICE_ID, VIDEO_THEMES, strings } from "../src/lib/strings";
+import { VOICES, DEFAULT_VOICE_ID, VIDEO_THEMES, strings, recordedVoiceName } from "../src/lib/strings";
 
 const COMPONENTS = fileURLToPath(new URL("../src/components/", import.meta.url));
 
@@ -33,6 +36,71 @@ test("the UI default voice is the pipeline's default voice", () => {
     VOICES.some((v) => v.id === DEFAULT_VOICE_ID),
     "the default voice must be one of the offered voices",
   );
+});
+
+test("an episode's recorded voice is named from the provider that spoke it", () => {
+  assert.equal(recordedVoiceName("pocket", "vera"), "Vera", "a Pocket id is looked up in the catalogue");
+  assert.equal(recordedVoiceName("pocket", "caro_davy"), "Caro", "by id, not by what the id looks like");
+  // Another provider's voice id is not a POCKET_VOICES id and is never looked up
+  // as one: it is shown exactly as it was recorded, even when it is spelled like
+  // a Pocket voice.
+  assert.equal(recordedVoiceName("elevenlabs", "eve"), "eve", "a non-Pocket id is shown as it was recorded");
+  assert.equal(recordedVoiceName("openai", "onyx"), "onyx");
+  assert.equal(recordedVoiceName("pocket", "retired_voice"), "retired_voice", "a catalogue entry since removed keeps its id");
+  // Falsy, not just null, is "not recorded": `resolveVoice` returns "" for a
+  // provider with no stored voice, and a blank name reads as a rendering bug.
+  assert.equal(recordedVoiceName("pocket", null), null);
+  assert.equal(recordedVoiceName("pocket", ""), null);
+  assert.equal(recordedVoiceName(null, null), null, "an episode from before the columns existed");
+  assert.equal(recordedVoiceName(undefined, undefined), null, "and one the API did not carry them for");
+});
+
+// The component under test is a CJS/ESM default-export wrapper when loaded through tsx.
+const Inspector = ((inspectorModule as { default: unknown }).default as { default?: unknown }).default ??
+  (inspectorModule as { default: unknown }).default;
+
+/** The Inspector as the server first renders it: effects have not run, so no setting has been read yet. */
+function renderInspector(episode: Record<string, unknown> | null): string {
+  return renderToStaticMarkup(React.createElement(Inspector as React.ComponentType<{ episode: unknown }>, { episode }));
+}
+
+const FINISHED = {
+  id: "e1", bookTitle: "B", title: "T", status: "DONE", step: "DONE", error: null, notes: [],
+  partNumber: 1, seriesTotal: 1, hasVideo: false, startedAt: null, finishedAt: null, totalMs: null,
+};
+
+function voiceSummary(html: string): string {
+  const m = html.match(/<summary>(Voice[^<]*)<\/summary>/);
+  assert.ok(m, "the voice panel has a summary");
+  return m[1];
+}
+
+test("the voice picker is enabled and lists every voice, grouped by gender", () => {
+  const html = renderInspector(null);
+  const select = html.match(/<select[^>]*>[\s\S]*?<\/select>/)?.[0] ?? "";
+  assert.ok(select, "a voice <select> is rendered");
+  assert.doesNotMatch(select.match(/<select[^>]*>/)![0], /disabled/, "it used to be disabled; it must now write");
+  const groups = [...select.matchAll(/<optgroup label="([^"]+)">([\s\S]*?)<\/optgroup>/g)];
+  assert.deepEqual(groups.map((g) => g[1]), ["Female", "Male"]);
+  const offered = groups.flatMap((g) => [...g[2].matchAll(/<option value="([^"]+)"/g)].map((o) => o[1]));
+  assert.deepEqual(offered.sort(), VOICES.map((v) => v.id).sort(), "every voice, once, and nothing else");
+  for (const g of groups) {
+    const want = VOICES.filter((v) => v.gender === (g[1] === "Female" ? "female" : "male")).map((v) => v.id);
+    assert.deepEqual([...g[2].matchAll(/<option value="([^"]+)"/g)].map((o) => o[1]), want, `${g[1]} holds the ${g[1]} voices`);
+  }
+});
+
+test("a finished episode's voice summary says what narrated it, never a blank name", () => {
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED, voiceId: "vera", voiceProvider: "pocket" })), "Voice · Narrated by Vera");
+  // A non-Pocket id is shown as recorded, not looked up in the Pocket catalogue.
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED, voiceId: "eve", voiceProvider: "openai" })), "Voice · Narrated by eve");
+  // Not recorded: null (an episode from before the columns), and "" (a provider with no stored voice).
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED })), "Voice · not recorded");
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED, voiceId: null, voiceProvider: null })), "Voice · not recorded");
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED, voiceId: "", voiceProvider: "openai" })), "Voice · not recorded");
+  // An episode that is still being made has no narrator yet; the line is the setting (not read yet here).
+  assert.equal(voiceSummary(renderInspector({ ...FINISHED, status: "RUNNING" })), "Voice");
+  assert.equal(voiceSummary(renderInspector(null)), "Voice");
 });
 
 /**

@@ -28,6 +28,26 @@ export function posterFields(row: { thumbChoice?: string | null; thumbHeadline?:
 }
 
 /**
+ * Which voice narrated an episode, as it is stored and as every reader should
+ * see it.
+ *
+ * Both columns are NULL until a run records them, and NULL means "not
+ * recorded": an episode from before the columns existed, or one that has not
+ * reached its voice step. A falsy value means the same thing, and `||` rather
+ * than `??` is how that is enforced: `resolveVoice` returns `""` for a provider
+ * with no stored voice, and stored as-is it would reach the inspector -- which
+ * says "not recorded" only for null -- as "Narrated by " with no name. The
+ * pipeline writes through this and the routes read through it, so neither side
+ * has to remember.
+ */
+export function voiceFields(row: { voiceId?: string | null; voiceProvider?: string | null }): {
+  voiceId: string | null;
+  voiceProvider: string | null;
+} {
+  return { voiceId: row.voiceId || null, voiceProvider: row.voiceProvider || null };
+}
+
+/**
  * Strip `path` before a thumbnail crosses the wire.
  *
  * `ThumbSpec.path` is an absolute filesystem path under `WORK_ROOT`. The

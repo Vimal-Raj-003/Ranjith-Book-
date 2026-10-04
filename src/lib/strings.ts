@@ -37,6 +37,29 @@ export const VOICES: VoiceOption[] = [
 
 export const DEFAULT_VOICE_ID = "charles";
 
+/**
+ * What to call the voice an episode was narrated with, or null when none was
+ * recorded.
+ *
+ * The lookup is keyed off `provider`, not off the id: only a Pocket voice is in
+ * `VOICES`, and another provider's id is not a catalogue key. Looked up there
+ * anyway, an OpenAI voice that happened to be spelled like a Pocket one would be
+ * shown under Pocket's name. So only a Pocket id is turned into a name; any
+ * other is shown as it was recorded, which is also what a Pocket voice since
+ * dropped from the catalogue gets.
+ *
+ * Falsy, not just null, is "not recorded": `resolveVoice` hands back "" for a
+ * provider with no stored voice, and a blank name would read as a rendering bug.
+ */
+export function recordedVoiceName(
+  provider: string | null | undefined,
+  id: string | null | undefined,
+): string | null {
+  if (!id) return null;
+  if (provider !== "pocket") return id;
+  return VOICES.find((v) => v.id === id)?.label ?? id;
+}
+
 /** Visual themes. Only `marginalia` is built; the rest are announced, not offered. */
 export interface ThemeOption {
   id: string;
@@ -207,6 +230,7 @@ export const strings = {
     heading: "Settings",
     episodeLabel: "Selected episode",
     noEpisode: "Pick an episode to see its settings.",
+    saveFailed: "Could not save that setting.",
     displayOnly: "Display only — this cannot be changed yet.",
   },
   themePanel: {
@@ -223,8 +247,14 @@ export const strings = {
     heading: "Voice",
     /** The collapsed summary: the panel is not in use, so it says its answer. */
     summary: (label: string) => `Voice · ${label}`,
+    /** Before the setting has been read there is nothing true to name. */
+    summaryUnknown: "Voice",
+    /** A finished video: what narrated IT, not what the next one will use. */
+    summaryNarrated: (name: string) => `Voice · Narrated by ${name}`,
+    summaryNotRecorded: "Voice · not recorded",
     selectLabel: "Narrator",
-    hint: "Every render uses Charles. Choosing a different voice arrives with the voice settings release.",
+    placeholder: "Choose a narrator",
+    hint: "Applies to your next run. A finished video keeps the voice it was narrated with.",
     genderLabel: { female: "Female", male: "Male" } as Record<string, string>,
   },
   musicPanel: {
@@ -261,6 +291,9 @@ export const strings = {
         : `${n} posters could not be redrawn and were removed. Retitle again to try for them.`,
     choiceFailed: "Could not save that choice.",
     retitleFailed: "Could not redraw the posters.",
+    /** Said when an episode has fewer than the full set -- including after a reload, which forgets why. */
+    fewerPosters: (have: number, of: number) =>
+      `${have} of ${of} posters are here. Retitle to try for the rest.`,
   },
   download: {
     heading: "Download",

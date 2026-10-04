@@ -6,8 +6,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { chromium } from "playwright-core";
 import { cacheControlFor, deriveGrid, parseSize } from "../src/lib/thumbnails/derive";
-import { ASPECTS, gridDir, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails/types";
-import { canRetitle, normaliseHeadline, pickPoster } from "../src/lib/thumbnails/choose";
+import { ASPECTS, THUMB_KEYS, gridDir, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails/types";
+import { canRetitle, normaliseHeadline, pickPoster, POSTER_COUNT } from "../src/lib/thumbnails/choose";
 import { thumbUrl } from "../src/lib/thumbnails/url";
 import { focusFromPlan, loadPosterSource, takeawayFromBeats } from "../src/lib/thumbnails/source";
 import { generateThumbnails, parseThumbnails, serializeThumbnails } from "../src/lib/thumbnails";
@@ -476,16 +476,37 @@ test("a source carries no takeaway when the script has none to offer", async () 
 // ----------------------------------------------- when the retitle button is live
 
 test("Retitle is live for a changed headline, and for the same one after a partial redraw", () => {
-  assert.equal(canRetitle("Compounding beats talent", "", 0), true, "a new headline");
-  assert.equal(canRetitle("", "Compounding beats talent", 0), true, "clearing it, to go back to the generated one");
-  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 0), false, "nothing to do");
-  assert.equal(canRetitle("  Compounding beats talent ", "Compounding beats talent", 0), false, "whitespace is not a change");
-  assert.equal(canRetitle("", "", 0), false);
+  const whole = POSTER_COUNT;
+  assert.equal(canRetitle("Compounding beats talent", "", 0, whole), true, "a new headline");
+  assert.equal(canRetitle("", "Compounding beats talent", 0, whole), true, "clearing it, to go back to the generated one");
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 0, whole), false, "nothing to do");
+  assert.equal(canRetitle("  Compounding beats talent ", "Compounding beats talent", 0, whole), false, "whitespace is not a change");
+  assert.equal(canRetitle("", "", 0, whole), false);
   // After "2 posters could not be redrawn" the server HAS stored this headline,
   // so the draft equals the saved text. The operator's only way to ask again is
   // to submit it unchanged; a button that disables itself here is a dead end.
-  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 2), true);
-  assert.equal(canRetitle("", "", 1), true, "a failed reset can be retried too");
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 2, whole - 2), true);
+  assert.equal(canRetitle("", "", 1, whole - 1), true, "a failed reset can be retried too");
+});
+
+test("Retitle stays live for an episode that is short of posters, with no memory of why", () => {
+  // `failed` is client state: it is gone the moment the page reloads. An episode
+  // left with four posters by a partial redraw then arrives with failed = 0, the
+  // field equal to the saved headline, and a disabled button -- the same dead
+  // end, rediscovered. What survives a reload is how many posters there are.
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 0, POSTER_COUNT - 2), true);
+  assert.equal(canRetitle("", "", 0, 1), true, "any shortfall, including one poster of six");
+  // ...and a full set with nothing to change is still not retryable: the shortfall
+  // is the reason, not a blanket enabling of the button.
+  assert.equal(canRetitle("Compounding beats talent", "Compounding beats talent", 0, POSTER_COUNT), false);
+});
+
+test("the poster count the client checks against is the number the renderer produces", () => {
+  // `choose.ts` cannot import `THUMB_KEYS` (it is a client module and `types.ts`
+  // pulls in `path` and the work root), so the number is copied. A copy is only
+  // safe if something notices when it drifts: this is that.
+  assert.equal(POSTER_COUNT, THUMB_KEYS.length);
+  assert.equal(POSTER_COUNT, ASPECTS.length * 3);
 });
 
 // ------------------------------------------------------------------ full render

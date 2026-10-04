@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { strings } from "@/lib/strings";
-import { canRetitle, pickPoster } from "@/lib/thumbnails/choose";
+import { canRetitle, pickPoster, POSTER_COUNT } from "@/lib/thumbnails/choose";
 import { thumbUrl } from "@/lib/thumbnails/url";
 import { EmptyState, Hint } from "./ui";
 import { useToast } from "./Toast";
@@ -34,8 +34,18 @@ interface Edited {
  * new revisions; every URL here is built with them (`thumbUrl`), so the browser
  * fetches the redone poster instead of the year-old cached one -- for the
  * preview and for the download link alike.
+ *
+ * `onCount` tells the parent how many posters are showing, because the section
+ * summary above this component is the parent's and it only has the snapshot --
+ * which after a partial retitle still says six while the grid shows four.
  */
-export default function Thumbnails({ episode }: { episode: EpisodeState }) {
+export default function Thumbnails({
+  episode,
+  onCount,
+}: {
+  episode: EpisodeState;
+  onCount?: (episodeId: string, count: number) => void;
+}) {
   const toast = useToast();
   const headlineId = useId();
   const hintId = `${headlineId}-hint`;
@@ -57,6 +67,13 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
   // URL) gets a fresh chance, and one episode's failure never hides another's.
   const list = thumbnails.filter((t) => !broken.includes(thumbUrl(id, t, "grid")));
   const selected = pickPoster(list, choice)?.key ?? null;
+
+  // After the hooks above and before the early return below, so it runs for an
+  // empty grid too: "0" is an answer the summary needs as much as "4".
+  const shown = list.length;
+  useEffect(() => {
+    onCount?.(id, shown);
+  }, [onCount, id, shown]);
 
   /** POST one edit. Resolves to the server's view of the episode, or throws a message to show. */
   async function send(payload: { choice: string } | { headline: string }, fallback: string): Promise<Edited> {
@@ -122,7 +139,10 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
     byAspect.set(t.aspect, group);
   }
 
-  const canSubmit = canRetitle(draft, saved, failed);
+  // `list`, not `thumbnails`: a poster whose image will not load is no more
+  // there for the operator than one the server dropped, and redrawing is what
+  // brings either back.
+  const canSubmit = canRetitle(draft, saved, failed, list.length);
 
   return (
     <div className="flex flex-col gap-3">
@@ -207,10 +227,18 @@ export default function Thumbnails({ episode }: { episode: EpisodeState }) {
         {/* A toast is gone in under three seconds, and this stays true until the
             operator acts: some posters are missing, and submitting the same
             headline again is how they ask for them back. */}
-        {failed > 0 && (
+        {failed > 0 ? (
           <p role="status" className="hint" style={{ color: "var(--amber)" }}>
             {strings.thumbnails.retitledPartial(failed)}
           </p>
+        ) : (
+          // The same shortfall after a reload, when `failed` has been forgotten:
+          // the button is live again, and this says why.
+          list.length < POSTER_COUNT && (
+            <p role="status" className="hint" style={{ color: "var(--amber)" }}>
+              {strings.thumbnails.fewerPosters(list.length, POSTER_COUNT)}
+            </p>
+          )
         )}
       </form>
     </div>

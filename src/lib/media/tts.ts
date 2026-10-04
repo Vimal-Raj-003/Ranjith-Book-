@@ -27,6 +27,14 @@ export interface VoiceoverResult {
   audioPath: string;
   beats: BeatAudio[];
   totalDuration: number;
+  /**
+   * The voice and engine this recording was made with, as resolved when it
+   * started -- what the episode row records, rather than what the setting says
+   * by the time anyone reads it. Empty `voiceId` means the provider chose its
+   * own default (see `resolveVoice`).
+   */
+  voiceId: string;
+  provider: VoiceProvider;
 }
 
 const GAP = 0.34; // pause between beats
@@ -105,6 +113,28 @@ async function conditionBeat(input: string, out: string) {
   ]);
 }
 
+/**
+ * Which engine and which voice this render will use.
+ *
+ * Extracted from `synthesizeVoiceover` so the answer can be recorded on the
+ * episode and asserted in a test without synthesizing audio. The fallback
+ * chain is unchanged: an explicit override, then the stored setting, then
+ * the engine's own default.
+ *
+ * Pocket's default is only a fallback for Pocket. Another provider with no
+ * stored voice gets `""`, which its synth function turns into that provider's
+ * own default -- handing it "charles" would ask ElevenLabs for a voice it does
+ * not have. Callers that persist the id must treat `""` as "not recorded".
+ */
+export async function resolveVoice(
+  voiceOverride?: string | null,
+): Promise<{ provider: VoiceProvider; voiceId: string }> {
+  const provider = ((await getSetting("voiceProvider")) ?? "pocket") as VoiceProvider;
+  const stored = voiceOverride || (await getSetting("voiceId")) || "";
+  const voiceId = stored || (provider === "pocket" ? DEFAULT_POCKET_VOICE : "");
+  return { provider, voiceId };
+}
+
 export async function synthesizeVoiceover(
   beatTexts: string[],
   workDir: string,
@@ -113,10 +143,9 @@ export async function synthesizeVoiceover(
   await fs.mkdir(workDir, { recursive: true });
 
   // Pocket TTS is the default: a neural voice that runs locally with no key.
-  const provider = ((await getSetting("voiceProvider")) ?? "pocket") as VoiceProvider;
+  const { provider, voiceId } = await resolveVoice(voiceOverride);
   const elevenKey = (await getSetting("elevenLabsApiKey")) ?? process.env.ELEVENLABS_API_KEY ?? "";
   const openaiKey = (await getSetting("openaiApiKey")) ?? process.env.OPENAI_API_KEY ?? "";
-  const voiceId = voiceOverride || (await getSetting("voiceId")) || "";
 
   const files: string[] = [];
   for (let i = 0; i < beatTexts.length; i++) {
@@ -129,7 +158,7 @@ export async function synthesizeVoiceover(
     const ready = path.join(workDir, `beat-${n}.wav`);
     const text = beatTexts[i];
 
-    if (provider === "pocket") await synthPocket(text, spoken, voiceId || DEFAULT_POCKET_VOICE);
+    if (provider === "pocket") await synthPocket(text, spoken, voiceId);
     else if (provider === "elevenlabs" && elevenKey) await synthElevenLabs(text, spoken, elevenKey, voiceId);
     else if (provider === "openai" && openaiKey) await synthOpenAI(text, spoken, openaiKey, voiceId);
     else await synthSystem(text, spoken, voiceId);
@@ -162,5 +191,5 @@ export async function synthesizeVoiceover(
     cursor += d + (i < files.length - 1 ? GAP : 0);
   }
 
-  return { audioPath: mastered, beats, totalDuration: await durationOf(mastered) };
+  return { audioPath: mastered, beats, totalDuration: await durationOf(mastered), voiceId, provider };
 }

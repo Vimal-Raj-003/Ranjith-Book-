@@ -8,6 +8,7 @@ import path from "node:path";
 import { buildCaptionsFromWords, toSrt, PAUSE_BREAK } from "../src/lib/media/captions";
 import { timedSweepForBeat, quotedAnchors, QUOTE_RUN } from "../src/lib/video/sweep";
 import { timeNarration } from "../src/lib/media/narration-timing";
+import type { VoiceoverResult } from "../src/lib/media/tts";
 import type { LineRun } from "../src/lib/ingest/lines";
 
 /** Recognised words, one every `step` seconds from `t0`, each `dur` long. */
@@ -302,10 +303,12 @@ test("when word timing cannot run, the estimate is used AND labelled as an estim
   const prev = process.env.BOOKREEL_ALIGN_PYTHON;
   process.env.BOOKREEL_ALIGN_PYTHON = "Z:/definitely/not/a/python.exe";
   try {
-    const voice = {
+    const voice: VoiceoverResult = {
       audioPath: "none.wav",
       totalDuration: 4,
       beats: [{ index: 0, text: "Two words here.", file: "", start: 0, end: 4, speechStart: 0.09, speechEnd: 3.78 }],
+      voiceId: "charles",
+      provider: "pocket",
     };
     const t = await timeNarration(voice, process.env.TEMP ?? ".");
     assert.equal(t.source, "estimated");

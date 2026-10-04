@@ -30,19 +30,34 @@ export function normaliseHeadline(raw: unknown): string | null {
 }
 
 /**
+ * How many posters a complete episode has: three variants in each of two
+ * aspect ratios.
+ *
+ * Copied from `THUMB_KEYS.length` rather than imported, because `types.ts`
+ * pulls in `path` and the work directory and this module runs in the browser.
+ * `tests/thumbnails-grid.test.mts` compares the two, so the copy cannot drift.
+ */
+export const POSTER_COUNT = 6;
+
+/**
  * Whether the Retitle button should be live.
  *
  * Normally only when the field differs from what is saved: there is nothing to
- * redraw otherwise. The exception is the aftermath of a partial redraw. By then
- * the server has already stored the headline, so the field equals the saved
- * text, yet some posters were dropped -- and submitting that same text again is
- * the only way the operator can ask for them back. `failed` is how many posters
- * the last redraw could not draw; while it is above zero the button stays live.
+ * redraw otherwise. The exception is an episode that is short of posters. After
+ * a partial redraw the server has already stored the headline, so the field
+ * equals the saved text, yet some posters were dropped -- and submitting that
+ * same text again is the only way the operator can ask for them back.
  * Disabling it there left a dead end whose only exit was clearing the field,
  * paying for a full redraw to the generated headline, and retyping the words.
+ *
+ * Two things say "short", and both are needed. `failed` is how many posters the
+ * last redraw could not draw -- but it lives in client state, so a reload forgets
+ * it and the dead end came straight back. `posters` is how many the episode has,
+ * which a reload cannot forget: below `POSTER_COUNT` is retryable whatever the
+ * client remembers.
  */
-export function canRetitle(draft: string, saved: string, failed: number): boolean {
-  return draft.trim() !== saved || failed > 0;
+export function canRetitle(draft: string, saved: string, failed: number, posters: number): boolean {
+  return draft.trim() !== saved || failed > 0 || posters < POSTER_COUNT;
 }
 
 /**

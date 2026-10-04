@@ -48,6 +48,10 @@ export interface EpisodeState {
   thumbChoice?: string | null;
   /** The operator's headline override; null or absent means the generated one. */
   thumbHeadline?: string | null;
+  /** The voice that narrated this episode; null or absent means not recorded.
+   *  `voiceProvider` says which catalogue `voiceId` belongs to. */
+  voiceId?: string | null;
+  voiceProvider?: string | null;
   /** Caption copy, once the route returns it. */
   hook?: string | null;
   description?: string | null;

@@ -25,6 +25,7 @@ import { numberedWordLines } from "./content/prompt";
 import type { CliProvider } from "./content/cli";
 import type { RightsStatus } from "./content/quotation";
 import { synthesizeVoiceover } from "./media/tts";
+import { voiceFields } from "./episode-view";
 import { generateMusicBed } from "./media/ffmpeg";
 import { toSrt } from "./media/captions";
 import { timeNarration, serializeTiming } from "./media/narration-timing";
@@ -1042,6 +1043,12 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         scenePlan: JSON.stringify(scenePlan.scenes),
         durationSec: voice.totalDuration,
         audioPath: voice.audioPath,
+        // What narrated THIS video, from the recording itself rather than the
+        // setting as it reads later: the operator can change the voice the
+        // moment the run starts, and an episode must state what it was made with.
+        // Through `voiceFields` because a provider with no stored voice resolves
+        // to "", which is "not recorded" and must be stored as NULL.
+        ...voiceFields({ voiceId: voice.voiceId, voiceProvider: voice.provider }),
         visualPlan: JSON.stringify({ ...range, sweeps, camera }),
       },
     });
