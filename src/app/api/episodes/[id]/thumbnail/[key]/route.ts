@@ -7,7 +7,7 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { prisma } from "@/lib/db";
 import { currentUser } from "@/lib/auth/session";
 import { parseThumbnails, selectThumb } from "@/lib/thumbnails";
-import { deriveGrid, parseSize } from "@/lib/thumbnails/derive";
+import { cacheControlFor, deriveGrid, parseSize } from "@/lib/thumbnails/derive";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,6 +48,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string; key
   const derived = size === "grid" ? await deriveGrid(spec, episode.id) : null;
   const file = derived ?? spec.path;
   const type = derived ? "image/webp" : "image/jpeg";
+  const cacheControl = cacheControlFor(size, derived);
 
   let stat: Stats;
   try {
@@ -71,11 +72,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string; key
   // `private` is retained deliberately. A shared proxy must never hold one
   // operator's photograph of their own book where another could be handed it;
   // only the browser that asked for it caches this.
+  //
+  // A grid request that fell back to the full JPEG is the one case that is NOT
+  // immutable (see `cacheControlFor`): it must be allowed to try again.
   const etag = `"${stat.size.toString(16)}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
   if (req.headers.get("if-none-match") === etag) {
     return new NextResponse(null, {
       status: 304,
-      headers: { ETag: etag, "Cache-Control": "private, max-age=31536000, immutable" },
+      headers: { ETag: etag, "Cache-Control": cacheControl },
     });
   }
 
@@ -85,7 +89,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string; key
     headers: {
       "Content-Type": type,
       "Content-Length": String(stat.size),
-      "Cache-Control": "private, max-age=31536000, immutable",
+      "Cache-Control": cacheControl,
       ETag: etag,
       // The filename is built from the validated key, never from the raw URL.
       "Content-Disposition": `inline; filename="${spec.key}${derived ? ".webp" : ".jpg"}"`,

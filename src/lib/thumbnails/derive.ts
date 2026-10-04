@@ -35,6 +35,27 @@ export function parseSize(raw: unknown): ThumbSize | null {
 }
 
 /**
+ * The `Cache-Control` for a thumbnail response.
+ *
+ * Normally a year, `immutable`: a poster's bytes do not change under a URL, so
+ * the browser never needs to ask again. The exception is a degraded response --
+ * the grid variant was requested but could not be made, so the full-resolution
+ * JPEG is being served under the `?size=grid` URL. Caching that for a year
+ * would pin the heavy image to that URL and stop the browser from ever retrying
+ * the derivation, turning one transient failure (a lock, a sharp error) into a
+ * permanent one. `no-cache` still lets it keep the bytes, but makes it
+ * revalidate with the ETag first, which costs one cheap 304 -- and picks up the
+ * derivative as soon as the next attempt succeeds.
+ *
+ * `private` throughout: a shared proxy must never hold one operator's
+ * photograph of their own book where another could be handed it.
+ */
+export function cacheControlFor(size: ThumbSize | null, derived: string | null): string {
+  const degraded = size === "grid" && !derived;
+  return degraded ? "private, no-cache" : "private, max-age=31536000, immutable";
+}
+
+/**
  * Is the derivative at `made` still a faithful copy of the poster at `source`?
  *
  * A derivative is a pure function of the original, so it is valid for exactly
