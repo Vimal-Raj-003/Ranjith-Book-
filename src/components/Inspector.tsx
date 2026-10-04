@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { strings, VOICES, VIDEO_THEMES, recordedVoiceName } from "@/lib/strings";
+import { EMPTY_TRACK, displayed, stepTrack, type Track, type WriteEvent } from "@/lib/setting-writes";
 import { Badge, Disclosure, EmptyState, Hint, Panel, StatRow } from "./ui";
 import Thumbnails from "./Thumbnails";
 import { useToast } from "./Toast";
@@ -39,10 +40,15 @@ export default function Inspector({ episode }: { episode: EpisodeState | null })
   const toast = useToast();
   const voiceFieldId = useId();
   const voiceHintId = `${voiceFieldId}-hint`;
-  // What `GET /api/settings` said, by key, with any edit still in flight laid
-  // over it. A key that is absent has not been read (or could not be), which the
-  // controls show as nothing selected rather than as a default they are not sure of.
+  // What each control shows, by key: what `GET /api/settings` said, with any
+  // edit still in flight laid over it. A key that is absent has not been read
+  // (or could not be), which the controls show as nothing selected rather than
+  // as a default they are not sure of.
   const [settings, setSettings] = useState<Record<string, string>>({});
+  // Per key, what the server is KNOWN to hold, what the operator wants, and which
+  // write is on its way -- `setting-writes.ts` is the state machine. A ref, not
+  // state: answers arrive between renders and each must see the last one's effect.
+  const tracks = useRef<Record<string, Track>>({});
   // How many posters the grid is really showing, as the grid reports it. Held
   // against the episode it was reported for, so switching episodes can never
   // show one episode's count on another.
@@ -53,6 +59,46 @@ export default function Inspector({ episode }: { episode: EpisodeState | null })
     [],
   );
 
+  /**
+   * Advance one key's write state by `first`, and keep going while the machine
+   * says there is another write to send. One loop runs per key at a time: a
+   * choice made while a write is outstanding only updates the state and returns,
+   * and the loop already waiting on that write picks it up.
+   */
+  const drive = useCallback(
+    async (key: string, first: WriteEvent) => {
+      let event = first;
+      for (;;) {
+        const step = stepTrack(tracks.current[key] ?? EMPTY_TRACK, event);
+        tracks.current[key] = step.track;
+        const value = displayed(step.track);
+        setSettings((all) => {
+          if (all[key] === value) return all;
+          const next = { ...all };
+          if (value === undefined) delete next[key];
+          else next[key] = value;
+          return next;
+        });
+        if (step.rolledBack) toast.show(strings.inspector.saveFailed, "error"); // rolled back rather than lie about it
+        if (step.send === undefined) return;
+
+        let ok = false;
+        try {
+          const res = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ [key]: step.send }),
+          });
+          ok = res.ok;
+        } catch {
+          // Unreachable counts as refused: the server was not told.
+        }
+        event = { type: ok ? "saved" : "failed" };
+      }
+    },
+    [toast],
+  );
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -61,10 +107,11 @@ export default function Inspector({ episode }: { episode: EpisodeState | null })
         if (!res.ok) return;
         const body = await res.json();
         if (cancelled) return;
-        const read: Record<string, string> = {};
-        for (const [key, value] of Object.entries(body)) if (typeof value === "string") read[key] = value;
-        // An edit made while this was in flight is newer than what it read.
-        setSettings((current) => ({ ...read, ...current }));
+        // Each value is what the server holds. A choice made while this was in
+        // flight is newer, and `setting-writes` keeps it on top.
+        for (const [key, value] of Object.entries(body)) {
+          if (typeof value === "string") void drive(key, { type: "read", value });
+        }
       } catch {
         // A settings read that fails leaves the picker showing nothing
         // selected, which is honest — better than asserting a default that
@@ -74,45 +121,23 @@ export default function Inspector({ episode }: { episode: EpisodeState | null })
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [drive]);
 
   /**
    * Write one setting: the control moves at once, and goes back if the server
    * refuses. Theme and voice share it, and so will anything else that is a key
    * in `PUT /api/settings`.
    *
-   * There is deliberately no "one save at a time" guard, and nothing is disabled
-   * while a write is in flight. A `<select>` that disables itself loses keyboard
-   * focus, so stepping through voices with the arrow keys would stop after the
-   * first; and a guard that dropped the second change would snap the control
-   * back under the operator's hand. The cost is paid at rollback instead: a
-   * failed write restores the old value only if the control still shows the one
-   * this call set, so a slow failure cannot undo a newer choice.
+   * Nothing is disabled while a write is in flight. A `<select>` that disables
+   * itself loses keyboard focus, so stepping through voices with the arrow keys
+   * would stop after the first. The ordering is kept in `setting-writes.ts`
+   * instead: one write per key is outstanding at a time, so they reach the
+   * server in the order they were chosen, and a refusal goes back to the last
+   * value the server is known to hold -- never to one the operator only passed
+   * through on the way.
    */
-  async function save(key: string, value: string) {
-    if (settings[key] === value) return;
-    const previous = settings[key];
-    setSettings((all) => ({ ...all, [key]: value })); // optimistic
-    const rollBack = () => {
-      setSettings((all) => {
-        if (all[key] !== value) return all;
-        const next = { ...all };
-        if (previous === undefined) delete next[key];
-        else next[key] = previous;
-        return next;
-      });
-      toast.show(strings.inspector.saveFailed, "error"); // roll back rather than lie about it
-    };
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ [key]: value }),
-      });
-      if (!res.ok) rollBack();
-    } catch {
-      rollBack();
-    }
+  function save(key: string, value: string) {
+    void drive(key, { type: "want", value });
   }
 
   const theme = settings.theme ?? null;

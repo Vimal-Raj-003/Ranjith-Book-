@@ -140,6 +140,9 @@ const CLIENT_SAFE_LIBS = new Set([
   // quietly become a route to `sharp` or Prisma.
   "@/lib/thumbnails/choose",
   "@/lib/thumbnails/url",
+  // The state machine behind the inspector's optimistic setting writes. Pure, and
+  // held to having no imports by the test below, for the same reason.
+  "@/lib/setting-writes",
 ]);
 
 test("the poster helpers the client imports have no imports of their own", async () => {
@@ -147,6 +150,11 @@ test("the poster helpers the client imports have no imports of their own", async
     const source = await fs.readFile(fileURLToPath(new URL(`../src/lib/thumbnails/${name}`, import.meta.url)), "utf8");
     assert.doesNotMatch(source, /^\s*(import|export\s[^;]*\sfrom)\s/m, `${name} must stay free of imports: a client component loads it`);
   }
+});
+
+test("the setting-write state machine has no imports of its own", async () => {
+  const source = await fs.readFile(fileURLToPath(new URL("../src/lib/setting-writes.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(source, /^\s*(import|export\s[^;]*\sfrom)\s/m, "setting-writes.ts must stay free of imports: Inspector loads it in the browser");
 });
 
 test("client components import only dependency-free lib modules", async () => {

@@ -1,9 +1,16 @@
 /**
- * Real audio: Pocket TTS records a short narration, faster-whisper times it,
- * and the timings are checked against the recording's measured silences
- * (`helpers/audio-truth.mts`).
+ * Narration: which voice a render uses, and what a real recording sounds like.
  *
- * Slow (a voice model and a speech model both load), so it only runs with
+ * Two kinds of test live here, and only one is opt-in.
+ *
+ * The `resolveVoice` / `voiceFields` tests at the bottom always run. They need
+ * no audio, only the `Setting` table, and they refuse to start outside the
+ * per-process test database (see `freshVoiceSettings`).
+ *
+ * The real-audio test is the opt-in one: Pocket TTS records a short narration,
+ * faster-whisper times it, and the timings are checked against the recording's
+ * measured silences (`helpers/audio-truth.mts`). Slow (a voice model and a
+ * speech model both load), so it only runs with
  *   BOOKREEL_AUDIO_TESTS=1 npm test
  * and skips — saying why — when either tool is not installed.
  */
@@ -13,7 +20,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { synthesizeVoiceover, resolveVoice } from "../src/lib/media/tts";
-import { setSetting, prisma } from "../src/lib/db";
+import { setSetting, prisma, DATABASE_URL } from "../src/lib/db";
 import { voiceFields } from "../src/lib/episode-view";
 import { pocketTtsStatus } from "../src/lib/media/pocket-tts";
 import { timeNarration, alignPython } from "../src/lib/media/narration-timing";
@@ -84,12 +91,23 @@ test("a real Pocket TTS narration is timed from its own audio", async (t) => {
 // the answer a finished episode records can be asserted without a TTS model.
 // These write the `Setting` table, which is only safe in the per-process copy
 // `tests/setup/isolated-db.mjs` hands out -- run bare (`tsx --test`) they would
-// overwrite the operator's real voice choice, so they refuse to start without it.
+// overwrite the operator's real voice choice.
+//
+// So the guard checks what the Prisma client is actually connected to, not a
+// flag: the preload names this process's own copy (`run-<pid>.db` under
+// `.bookreel/test/`), and anything else -- a bare run, a stale or inherited
+// `BOOKREEL_TEST_DB_PID`, a `DATABASE_URL` pointed at a real database -- fails
+// here before a single row is deleted.
+
+const ISOLATED_DB_URL = `file:${path.join(process.cwd(), ".bookreel", "test", `run-${process.pid}.db`).replace(/\\/g, "/")}`;
 
 async function freshVoiceSettings(): Promise<void> {
-  assert.ok(
-    process.env.BOOKREEL_TEST_DB_PID,
-    "these tests write Setting rows: run them through `npm test`, which isolates the database",
+  const hint = "these tests write Setting rows: run them through `npm test`, which isolates the database";
+  assert.equal(process.env.BOOKREEL_TEST_DB_PID, String(process.pid), `no isolated database for this process: ${hint}`);
+  assert.equal(
+    DATABASE_URL.replace(/\\/g, "/"),
+    ISOLATED_DB_URL,
+    `the client is not on this process's own test database (${DATABASE_URL}): ${hint}`,
   );
   await prisma.setting.deleteMany({ where: { key: { in: ["voiceId", "voiceProvider"] } } });
 }
