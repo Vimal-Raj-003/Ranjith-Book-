@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { parseThumbnails } from "@/lib/thumbnails/store";
-import { publicThumbs, type PublicThumb } from "@/lib/episode-view";
+import { posterFields, publicThumbs, type PublicThumb } from "@/lib/episode-view";
 
 export interface EpisodeListItem {
   id: string;
@@ -14,6 +14,10 @@ export interface EpisodeListItem {
   createdAt: Date;
   bookTitle: string;
   thumbnails: PublicThumb[];
+  /** The poster the operator picked, or null for "no choice made". */
+  thumbChoice: string | null;
+  /** The operator's headline override, or null for the generated one. */
+  thumbHeadline: string | null;
 }
 
 /**
@@ -52,5 +56,6 @@ export async function listEpisodes(userId: string): Promise<EpisodeListItem[]> {
     bookTitle: e.book.title,
     // Lets the library grid show a real poster instead of a placeholder.
     thumbnails: publicThumbs(parseThumbnails(e)),
+    ...posterFields(e),
   }));
 }

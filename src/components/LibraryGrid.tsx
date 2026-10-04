@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { strings } from "@/lib/strings";
+import { pickPoster } from "@/lib/thumbnails/choose";
+import { thumbUrl } from "@/lib/thumbnails/url";
 import { Badge, StatusBadge } from "./ui";
 import type { EpisodeSummary } from "./types";
 
@@ -11,12 +13,20 @@ function initials(text: string): string {
   return (words[0][0] + (words[1]?.[0] ?? "")).toUpperCase();
 }
 
-/** The 9:16 poster, or a quiet tinted field with the book's initials. */
+/**
+ * The operator's chosen poster -- the 9:16 by default -- or a quiet tinted
+ * field with the book's initials.
+ *
+ * `broken` is remembered by URL, not as a flag: the URL carries the poster's
+ * revision, so a poster the operator has since redone is a new URL and gets a
+ * fresh chance rather than inheriting the old one's failure.
+ */
 function Poster({ episode }: { episode: EpisodeSummary }) {
-  const poster = (episode.thumbnails ?? []).find((t) => t.aspect === "9:16") ?? episode.thumbnails?.[0];
-  const [broken, setBroken] = useState(false);
+  const poster = pickPoster(episode.thumbnails ?? [], episode.thumbChoice);
+  const src = poster ? thumbUrl(episode.id, poster, "grid") : null;
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
 
-  if (!poster || broken) {
+  if (!poster || !src || brokenSrc === src) {
     return (
       <div className="poster">
         <div className="poster-empty" aria-hidden>
@@ -29,12 +39,7 @@ function Poster({ episode }: { episode: EpisodeSummary }) {
   return (
     <div className="poster">
       {/* eslint-disable-next-line @next/next/no-img-element -- session-guarded API route, not a statically optimizable asset */}
-      <img
-        src={`/api/episodes/${episode.id}/thumbnail/${poster.key}?size=grid`}
-        alt=""
-        loading="lazy"
-        onError={() => setBroken(true)}
-      />
+      <img src={src} alt="" loading="lazy" onError={() => setBrokenSrc(src)} />
     </div>
   );
 }

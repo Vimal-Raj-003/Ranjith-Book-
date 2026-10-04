@@ -197,6 +197,16 @@ export interface ThumbCopy {
   /** The takeaway bullets. The supporting line under a headline comes from
    *  here before it comes from the CTA: it is about THIS idea. */
   takeaway?: string[];
+  /**
+   * An operator's replacement for the big headline. When set it is used as
+   * written -- not cut to the word budget, not re-chosen by `headlineText` --
+   * because the operator typed exactly the words they want on the poster. It is
+   * NOT the same thing as `title`, which only feeds the small eyebrow tag:
+   * `headlineText` ranks the title last, so overriding the title would leave
+   * the generated headline in place and the retitle would appear to do nothing.
+   * Still escaped like every other piece of text.
+   */
+  headline?: string;
 }
 
 /**
@@ -365,7 +375,7 @@ export function buildThumbHtml(opts: {
 
   const title = escapeHtml(trimWords(copy.title, 5).toUpperCase());
   const cta = escapeHtml(trimWords(copy.cta, 6));
-  const head = paintKeywords(headlineText(copy, WORD_BUDGET[variant]), copy.keywords);
+  const head = paintKeywords(clean(copy.headline) || headlineText(copy, WORD_BUDGET[variant]), copy.keywords);
   const subSource = clean(copy.takeaway?.[0]) || clean(copy.cta);
   const sub = escapeHtml(trimWords(subSource, 9));
   const eyebrow = title

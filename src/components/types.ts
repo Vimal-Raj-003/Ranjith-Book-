@@ -16,6 +16,9 @@ export interface ThumbnailRef {
   variant: string;
   width: number;
   height: number;
+  /** Goes in the URL of every request for this poster, so a redone poster is a
+   *  new URL and not a year-old cached one. */
+  rev: number;
 }
 
 /** `GET /api/episodes/[id]` — polled while a run is live. */
@@ -41,6 +44,10 @@ export interface EpisodeState {
   durationSec?: number | null;
   /** Added by the thumbnail workstream; absent until then. */
   thumbnails?: ThumbnailRef[];
+  /** The poster the operator picked; null or absent means "no choice made". */
+  thumbChoice?: string | null;
+  /** The operator's headline override; null or absent means the generated one. */
+  thumbHeadline?: string | null;
   /** Caption copy, once the route returns it. */
   hook?: string | null;
   description?: string | null;
@@ -61,6 +68,8 @@ export interface EpisodeSummary {
   createdAt: string;
   bookTitle: string;
   thumbnails?: ThumbnailRef[];
+  thumbChoice?: string | null;
+  thumbHeadline?: string | null;
 }
 
 export type View = "studio" | "books" | "library" | "free-books" | "queue";

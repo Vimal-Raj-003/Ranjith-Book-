@@ -15,6 +15,18 @@ export interface ThumbSpec {
   path: string;
   width: number;
   height: number;
+  /**
+   * The poster file's `mtimeMs` (truncated), taken when it was written.
+   *
+   * It exists only to be put in a URL. Posters are served `immutable` for a
+   * year from `.../thumbnail/<key>`, and a redo overwrites `<key>.jpg` in
+   * place, so without a token that changes with the file a retitled poster
+   * stays stale in the browser for a year -- including the full-size JPEG the
+   * operator downloads and uploads to YouTube. `Episode.updatedAt` cannot
+   * stand in: it moves on any update to the row. 0 on rows stored before this
+   * field existed (see `parseThumbnails`).
+   */
+  rev: number;
 }
 
 export interface ThumbFocus {

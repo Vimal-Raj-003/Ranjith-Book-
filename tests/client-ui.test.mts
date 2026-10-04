@@ -62,7 +62,24 @@ test("only implemented themes are marked available", async () => {
  * it. Client components may only reach into `@/lib` for these leaf modules,
  * each of which is dependency-free or close to it.
  */
-const CLIENT_SAFE_LIBS = new Set(["@/lib/strings", "@/lib/pipeline-steps", "@/lib/format-duration", "@/lib/ingest/validate"]);
+const CLIENT_SAFE_LIBS = new Set([
+  "@/lib/strings",
+  "@/lib/pipeline-steps",
+  "@/lib/format-duration",
+  "@/lib/ingest/validate",
+  // The poster helpers the library grid and the inspector share. Pure, with no
+  // imports at all -- the next test holds them to that, so this entry cannot
+  // quietly become a route to `sharp` or Prisma.
+  "@/lib/thumbnails/choose",
+  "@/lib/thumbnails/url",
+]);
+
+test("the poster helpers the client imports have no imports of their own", async () => {
+  for (const name of ["choose.ts", "url.ts"]) {
+    const source = await fs.readFile(fileURLToPath(new URL(`../src/lib/thumbnails/${name}`, import.meta.url)), "utf8");
+    assert.doesNotMatch(source, /^\s*(import|export\s[^;]*\sfrom)\s/m, `${name} must stay free of imports: a client component loads it`);
+  }
+});
 
 test("client components import only dependency-free lib modules", async () => {
   const offenders: string[] = [];

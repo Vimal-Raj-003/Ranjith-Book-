@@ -18,7 +18,10 @@ export function isThumbKey(key: unknown): key is string {
   return KEY_RE.test(key);
 }
 
-function isSpec(value: unknown): value is ThumbSpec {
+/** A spec as it may sit in the column: everything required except `rev`. */
+type StoredSpec = Omit<ThumbSpec, "rev"> & { rev?: unknown };
+
+function isSpec(value: unknown): value is StoredSpec {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return (
@@ -29,6 +32,17 @@ function isSpec(value: unknown): value is ThumbSpec {
     typeof v.width === "number" &&
     typeof v.height === "number"
   );
+}
+
+/**
+ * `rev` is NOT part of what makes a spec valid. Every row written before the
+ * field existed lacks it, and refusing those would empty the library of
+ * posters that are sitting on disk, perfectly good. A missing or nonsensical
+ * `rev` reads as 0: the URL for that poster is simply the one with no history.
+ */
+function withRev(spec: StoredSpec): ThumbSpec {
+  const rev = typeof spec.rev === "number" && Number.isFinite(spec.rev) ? spec.rev : 0;
+  return { ...spec, rev };
 }
 
 /**
@@ -64,7 +78,7 @@ export function parseThumbnails(row: ThumbnailRow | null | undefined): ThumbSpec
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  return parsed.filter(isSpec);
+  return parsed.filter(isSpec).map(withRev);
 }
 
 export function serializeThumbnails(specs: ThumbSpec[]): string {

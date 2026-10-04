@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
 import { reapStaleRuns } from "@/lib/reap";
 import { parseThumbnails } from "@/lib/thumbnails/store";
-import { publicThumbs } from "@/lib/episode-view";
+import { posterFields, publicThumbs } from "@/lib/episode-view";
 
 /** `hashtags` is stored as a JSON string[]; a malformed or legacy row must not
  *  break the poll this rides in on, so it degrades to an empty list. */
@@ -74,6 +74,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       description: episode.description,
       hashtags: parseTags(episode.hashtags),
       thumbnails: publicThumbs(parseThumbnails(episode)),
+      ...posterFields(episode),
       // Per-step timings. `durationMs` is null for the step still running —
       // the client shows a live figure for that one rather than a blank.
       steps: episode.steps.map((s) => ({

@@ -847,6 +847,29 @@ body {
   object-fit: cover;
   display: block;
 }
+/* A poster and its "use this one" control. The control is a sibling of the
+   download link, never inside it: a button nested in an anchor is invalid and
+   would download the poster whenever it was meant to select it. */
+.thumb-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.thumb-cell .chip {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+/* Six posters are being redrawn; what is on screen is about to be replaced. */
+.thumb-grid[aria-busy="true"] {
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thumb-grid[aria-busy="true"] {
+    transition: none;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton {

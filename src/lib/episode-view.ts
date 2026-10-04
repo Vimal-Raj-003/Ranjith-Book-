@@ -7,6 +7,24 @@ export interface PublicThumb {
   variant: ThumbSpec["variant"];
   width: number;
   height: number;
+  /** Goes in the poster's URL so a redone poster is a new URL. See `ThumbSpec.rev`. */
+  rev: number;
+}
+
+/**
+ * The operator-edited poster fields, as every reader should see them.
+ *
+ * `||`, not `??`, on purpose: an empty string in either column means "nothing
+ * was set", exactly as NULL does. A hand-edited row or an older writer can leave
+ * `""` where the default is NULL, and the readers that disagreed about that
+ * would show a blank headline field or select a poster called "". One function,
+ * so the list, the detail route and the edit route cannot drift.
+ */
+export function posterFields(row: { thumbChoice?: string | null; thumbHeadline?: string | null }): {
+  thumbChoice: string | null;
+  thumbHeadline: string | null;
+} {
+  return { thumbChoice: row.thumbChoice || null, thumbHeadline: row.thumbHeadline || null };
 }
 
 /**
@@ -20,11 +38,12 @@ export interface PublicThumb {
  * path back as if it were trustworthy input.
  */
 export function publicThumbs(specs: ThumbSpec[]): PublicThumb[] {
-  return specs.map(({ key, aspect, variant, width, height }) => ({
+  return specs.map(({ key, aspect, variant, width, height, rev }) => ({
     key,
     aspect,
     variant,
     width,
     height,
+    rev,
   }));
 }

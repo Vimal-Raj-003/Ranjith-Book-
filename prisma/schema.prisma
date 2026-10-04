@@ -299,8 +299,11 @@ model Episode {
   /// The poster the operator chose for this episode. Null means "no choice
   /// made", and every reader falls back to the first 9:16 poster.
   thumbChoice   String?
-  /// An operator-edited headline, already applied to the rendered poster.
-  /// Kept so the edit survives a re-render and can be shown back in the field.
+  /// The headline the operator typed to replace the generated one, already
+  /// drawn onto all six posters, and shown back in the retitle field. Null
+  /// means the generated headline. Only the poster-edit route reads or writes
+  /// it: the pipeline never does, so a full re-render of an episode redraws its
+  /// posters from the script and this edit does not survive it.
   thumbHeadline String?
 
   startedAt  DateTime?

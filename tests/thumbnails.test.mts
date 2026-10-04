@@ -39,6 +39,7 @@ function spec(key: string, over: Partial<ThumbSpec> = {}): ThumbSpec {
     path: path.join(thumbsDir(EPISODE), `${key}.jpg`),
     width: 1080,
     height: 1920,
+    rev: 0,
     ...over,
   };
 }

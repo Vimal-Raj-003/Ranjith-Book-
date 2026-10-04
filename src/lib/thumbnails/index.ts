@@ -75,7 +75,12 @@ async function loadPhoto(page: ThumbPage | undefined): Promise<Photo | null> {
  */
 export async function generateThumbnails(opts: {
   episodeId: string;
-  pkg: ContentPackage;
+  /**
+   * Partial because a redo (`source.ts`) rebuilds the package from the episode
+   * row, which keeps the title, hook, CTA and beats but not the hook keywords
+   * or the takeaway bullets. This function already read every field defensively.
+   */
+  pkg: Partial<ContentPackage>;
   /** The DERIVED page images (1600px long edge), same ones the video uses. */
   pages: ThumbPage[];
   /** Optional: the highlight box of the strongest beat, in page-image pixels,
@@ -92,9 +97,23 @@ export async function generateThumbnails(opts: {
    * both render the DEFAULT theme's poster rather than failing.
    */
   theme?: string | null;
+  /**
+   * The operator's replacement for the big headline, on all six posters.
+   *
+   * Why a redo goes through here rather than overlaying text in the browser:
+   * the poster the operator sees and the file they download must never
+   * disagree, and an overlay would make the preview right and the JPEG wrong.
+   * Why every poster and not one: `Episode.thumbHeadline` is one value, so a
+   * headline that applied to only some posters would leave the others
+   * contradicting the field the operator reads it back from.
+   *
+   * Null, empty and whitespace-only all mean "no override" -- the generated
+   * headline, so a reset reproduces the original posters byte for byte.
+   */
+  headline?: string | null;
   outDir: string;
 }): Promise<ThumbSpec[]> {
-  const pkg = (opts.pkg ?? {}) as Partial<ContentPackage>;
+  const pkg = opts.pkg ?? {};
   const pages = Array.isArray(opts.pages) ? opts.pages : [];
 
   // The beats' on-screen labels, hook beat first. These are headline material,
@@ -117,6 +136,7 @@ export async function generateThumbnails(opts: {
     cta: clean(pkg.cta),
     onScreen,
     takeaway: (Array.isArray(pkg.takeaway) ? pkg.takeaway : []).map(clean).filter(Boolean),
+    ...(clean(opts.headline) ? { headline: clean(opts.headline) } : {}),
   };
 
   // Which photograph, and does the focus box belong to it? A `pageIndex` that
@@ -189,6 +209,9 @@ export async function generateThumbnails(opts: {
             path: file,
             width: aspect.width,
             height: aspect.height,
+            // File metadata read back from what was just written, not a clock:
+            // a redo overwrites this path, and this is what tells the browser.
+            rev: Math.trunc((await fs.stat(file)).mtimeMs),
           });
         } catch (err) {
           warn(`thumbnail ${key} failed`, err);

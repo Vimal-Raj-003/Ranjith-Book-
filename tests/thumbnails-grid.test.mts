@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { chromium } from "playwright-core";
 import { cacheControlFor, deriveGrid, parseSize } from "../src/lib/thumbnails/derive";
-import { gridDir, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails/types";
+import { ASPECTS, gridDir, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails/types";
+import { normaliseHeadline, pickPoster } from "../src/lib/thumbnails/choose";
+import { thumbUrl } from "../src/lib/thumbnails/url";
+import { focusFromPlan, loadPosterSource } from "../src/lib/thumbnails/source";
+import { generateThumbnails, parseThumbnails, serializeThumbnails } from "../src/lib/thumbnails";
+import { buildThumbHtml } from "../src/lib/thumbnails/render";
+import { publicThumbs } from "../src/lib/episode-view";
 
 const EPISODE = "ep-grid-test";
 
@@ -28,7 +36,7 @@ async function makeFullPoster(key: string, busy = false): Promise<ThumbSpec> {
   })
     .jpeg({ quality: 80 })
     .toFile(file);
-  return { key, aspect: "9:16", variant: "quote", path: file, width: 1080, height: 1920 };
+  return { key, aspect: "9:16", variant: "quote", path: file, width: 1080, height: 1920, rev: 0 };
 }
 
 test("parseSize accepts only 'grid' and treats hostile input as absent", () => {
@@ -118,7 +126,7 @@ test("a degraded grid response is never cached as immutable", async () => {
   const broken = path.join(thumbsDir(EPISODE), "9x16-broken.jpg");
   await fs.mkdir(thumbsDir(EPISODE), { recursive: true });
   await fs.writeFile(broken, "this is not a jpeg");
-  const spec: ThumbSpec = { key: "9x16-broken", aspect: "9:16", variant: "quote", path: broken, width: 1080, height: 1920 };
+  const spec: ThumbSpec = { key: "9x16-broken", aspect: "9:16", variant: "quote", path: broken, width: 1080, height: 1920, rev: 0 };
   const derived = await deriveGrid(spec, EPISODE);
   assert.equal(derived, null, "an undecodable original yields no derivative");
 
@@ -141,7 +149,7 @@ test("deriveGrid returns null rather than throwing when the original is gone", a
   const spec: ThumbSpec = {
     key: "9x16-split", aspect: "9:16", variant: "split",
     path: path.join(thumbsDir(EPISODE), "does-not-exist.jpg"),
-    width: 1080, height: 1920,
+    width: 1080, height: 1920, rev: 0,
   };
   assert.equal(await deriveGrid(spec, EPISODE), null);
 });
@@ -153,6 +161,314 @@ test("a deleted grid cache is re-derived on the next call", async () => {
   const again = await deriveGrid(spec, EPISODE);
   assert.equal(again, first);
   await fs.access(again!);
+});
+
+// ------------------------------------------------- choosing and retitling a poster
+
+test("normaliseHeadline rejects empty and whitespace-only overrides", () => {
+  // Review Focus 4: an all-spaces edit means "no override", not an empty poster.
+  assert.equal(normaliseHeadline(""), null);
+  assert.equal(normaliseHeadline("   \n\t "), null);
+  assert.equal(normaliseHeadline(null), null);
+  assert.equal(normaliseHeadline(42), null);
+});
+
+test("normaliseHeadline trims and caps long text", () => {
+  assert.equal(normaliseHeadline("  Compounding beats talent  "), "Compounding beats talent");
+  const long = normaliseHeadline("x".repeat(500));
+  assert.ok(long && long.length <= 120, `expected a cap, got ${long?.length}`);
+});
+
+test("normaliseHeadline keeps markup as text, for the template to escape", () => {
+  // The value is stored raw and escaped at render by the existing escapeHtml.
+  // Stripping here would silently mangle a legitimate ampersand in a title.
+  assert.equal(normaliseHeadline("<script>alert(1)</script>"), "<script>alert(1)</script>");
+});
+
+test("pickPoster honours the operator's choice", () => {
+  const thumbs = [
+    { key: "9x16-quote", aspect: "9:16" as const, variant: "quote" as const, width: 1080, height: 1920 },
+    { key: "9x16-bold", aspect: "9:16" as const, variant: "bold" as const, width: 1080, height: 1920 },
+  ];
+  assert.equal(pickPoster(thumbs, "9x16-bold")?.key, "9x16-bold");
+});
+
+test("pickPoster falls back to the first 9:16 when the choice is stale or absent", () => {
+  // Review Focus 3: a choice naming a key that no longer exists must degrade,
+  // not produce a broken image.
+  const thumbs = [
+    { key: "16x9-quote", aspect: "16:9" as const, variant: "quote" as const, width: 1280, height: 720 },
+    { key: "9x16-quote", aspect: "9:16" as const, variant: "quote" as const, width: 1080, height: 1920 },
+  ];
+  assert.equal(pickPoster(thumbs, "9x16-deleted")?.key, "9x16-quote");
+  assert.equal(pickPoster(thumbs, null)?.key, "9x16-quote");
+  assert.equal(pickPoster([], "9x16-quote"), null);
+});
+
+test("an empty-string choice is no choice at all, exactly like null", () => {
+  // A hand-edited row can hold "" where the column's default is NULL. Every
+  // reader must agree that the two mean the same thing.
+  const thumbs = [
+    { key: "16x9-quote", aspect: "16:9", variant: "quote", width: 1280, height: 720 },
+    { key: "9x16-bold", aspect: "9:16", variant: "bold", width: 1080, height: 1920 },
+  ];
+  assert.equal(pickPoster(thumbs, "")?.key, pickPoster(thumbs, null)?.key);
+  assert.equal(pickPoster(thumbs, "")?.key, "9x16-bold");
+  assert.equal(pickPoster(thumbs, undefined)?.key, "9x16-bold");
+});
+
+// ------------------------------------------------------- the cache-busting revision
+
+test("a row stored before posters carried a revision still parses, as revision 0", () => {
+  // The 140 episodes already in the library were written without `rev`. They
+  // must keep their posters, not lose them to a stricter parse.
+  const legacy = JSON.stringify([
+    { key: "9x16-quote", aspect: "9:16", variant: "quote", path: "/x/9x16-quote.jpg", width: 1080, height: 1920 },
+  ]);
+  const [only] = parseThumbnails({ thumbnails: legacy });
+  assert.ok(only, "the legacy poster is kept");
+  assert.equal(only.rev, 0);
+});
+
+test("a stored revision round-trips, and a nonsense one reads as 0 without costing the poster", () => {
+  const spec = (key: string, rev: number): ThumbSpec => ({
+    key, aspect: "9:16", variant: "quote", path: `/x/${key}.jpg`, width: 1080, height: 1920, rev,
+  });
+  const back = parseThumbnails({ thumbnails: serializeThumbnails([spec("9x16-quote", 1759571234567)]) });
+  assert.equal(back[0].rev, 1759571234567);
+
+  const odd = JSON.stringify([{ ...spec("9x16-bold", 1), rev: "yesterday" }, { ...spec("9x16-split", 1), rev: null }]);
+  assert.deepEqual(parseThumbnails({ thumbnails: odd }).map((s) => [s.key, s.rev]), [["9x16-bold", 0], ["9x16-split", 0]]);
+});
+
+test("the public view of a poster carries its revision and still never its path", () => {
+  const [pub] = publicThumbs([
+    { key: "9x16-quote", aspect: "9:16", variant: "quote", path: "/secret/x.jpg", width: 1080, height: 1920, rev: 4242 },
+  ]);
+  assert.equal(pub.rev, 4242);
+  assert.equal("path" in pub, false);
+});
+
+test("every poster URL carries its revision, so a redone poster is a new URL", () => {
+  // Posters are served `immutable` for a year from a URL that does not change
+  // when the file under it is redone. The revision is what makes a retitled
+  // poster, and the full-size file an operator uploads to YouTube, fresh.
+  const before = { key: "9x16-quote", rev: 1000 };
+  const after = { key: "9x16-quote", rev: 2000 };
+
+  assert.equal(thumbUrl("ep1", before), "/api/episodes/ep1/thumbnail/9x16-quote?v=1000");
+  assert.equal(thumbUrl("ep1", before, "grid"), "/api/episodes/ep1/thumbnail/9x16-quote?v=1000&size=grid");
+  assert.notEqual(thumbUrl("ep1", before), thumbUrl("ep1", after));
+  assert.notEqual(thumbUrl("ep1", before, "grid"), thumbUrl("ep1", after, "grid"));
+});
+
+// ------------------------------------------------------------ the headline override
+
+const COPY = {
+  title: "Deep Work",
+  hook: "Most people are busy. Almost nobody is focused.",
+  keywords: ["busy"],
+  cta: "Follow for one page a day",
+};
+
+test("a headline override replaces the big headline, not just the small title tag", () => {
+  // The poster's headline is chosen by `headlineText` (hook sentence, then
+  // clauses, then beat labels, and only last the title). Overriding the title
+  // alone changes the eyebrow and leaves "Most people are busy." as the
+  // headline, so the operator's retitle would appear to do nothing.
+  const base = buildThumbHtml({ aspect: ASPECTS[0], variant: "bold", copy: COPY, photo: null, focus: null });
+  assert.match(base, /Most people are/);
+
+  const html = buildThumbHtml({
+    aspect: ASPECTS[0], variant: "bold", copy: { ...COPY, headline: "Compounding beats talent" }, photo: null, focus: null,
+  });
+  assert.match(html, /Compounding beats talent/);
+  assert.doesNotMatch(html, /Most people are/, "the generated headline is gone");
+  assert.match(html, /DEEP WORK/, "the eyebrow still names the episode");
+});
+
+test("a headline override is escaped like every other piece of book text", () => {
+  const html = buildThumbHtml({
+    aspect: ASPECTS[1], variant: "quote", copy: { ...COPY, headline: "<script>alert(1)</script> & co" }, photo: null, focus: null,
+  });
+  assert.doesNotMatch(html, /<script>alert/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt; &amp; co/);
+});
+
+test("an empty override is the generated headline, not a blank poster", () => {
+  const base = buildThumbHtml({ aspect: ASPECTS[0], variant: "bold", copy: COPY, photo: null, focus: null });
+  const empty = buildThumbHtml({ aspect: ASPECTS[0], variant: "bold", copy: { ...COPY, headline: "   " }, photo: null, focus: null });
+  assert.equal(empty, base);
+});
+
+// ------------------------------------------------ rebuilding a poster from the row
+
+const BEATS = [
+  { id: "hook", voiceover: "v", onScreen: "Busy is not focused", sourcePage: 2, startWord: 0, endWord: 3 },
+  { id: "idea-1", voiceover: "v", onScreen: "Depth is rare", sourcePage: 4, startWord: 0, endWord: 3 },
+];
+const stroke = (x0: number, y0: number, x1: number, y1: number) => ({ box: { x0, y0, x1, y1 }, start: 0, end: 1 });
+
+test("the focus box is the widest stroke on a page the poster can actually show", () => {
+  // Mirrors the pipeline's own choice of crop, rebuilt from what the episode
+  // row stored, so a redone poster crops where the original did.
+  const plan = { sweeps: [[stroke(10, 10, 100, 30)], [stroke(0, 0, 300, 50), stroke(5, 5, 50, 20)]] };
+  const pages = [{ pageIndex: 2 }, { pageIndex: 3 }, { pageIndex: 4 }];
+  assert.deepEqual(focusFromPlan(plan, BEATS, pages), { pageIndex: 2, x0: 0, y0: 0, x1: 300, y1: 50 });
+
+  // The widest stroke belongs to a page that is not in the list: skipped, not fatal.
+  assert.deepEqual(focusFromPlan(plan, BEATS, [{ pageIndex: 2 }]), { pageIndex: 0, x0: 10, y0: 10, x1: 100, y1: 30 });
+});
+
+test("a plan that is missing or malformed yields no focus rather than an error", () => {
+  const pages = [{ pageIndex: 2 }];
+  for (const plan of [null, undefined, "x", 7, {}, { sweeps: "no" }, { sweeps: [null, [{}], [{ box: "x" }]] }]) {
+    assert.equal(focusFromPlan(plan, BEATS, pages), null, JSON.stringify(plan));
+  }
+});
+
+async function pageRows(dir: string, indices: number[]) {
+  await fs.mkdir(dir, { recursive: true });
+  const rows = [];
+  for (const pageIndex of indices) {
+    const derivedPath = path.join(dir, `page-${pageIndex}.jpg`);
+    await sharp({ create: { width: 800, height: 1200, channels: 3, background: "#d8cfb8" } }).jpeg().toFile(derivedPath);
+    // The row's own dimensions deliberately disagree with the file: the
+    // pipeline measures the derived image, and a focus box is in ITS pixels.
+    rows.push({ pageIndex, filePath: path.join(dir, `orig-${pageIndex}.jpg`), derivedPath, width: 3000, height: 4000 });
+  }
+  return rows;
+}
+
+const ROW = {
+  title: "Deep Work",
+  hook: "Most people are busy.",
+  cta: "Follow for one page a day",
+  script: JSON.stringify(BEATS),
+  visualPlan: JSON.stringify({ startPage: 2, endPage: 4, startWord: 0, endWord: 0, sweeps: [[stroke(10, 10, 100, 30)], []] }),
+  theme: "spotlight",
+};
+
+test("a poster source is rebuilt from the row: package, in-range pages, measured size, focus", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-src-"));
+  try {
+    const rows = await pageRows(dir, [1, 2, 3, 4, 5]);
+    const source = await loadPosterSource(ROW, rows);
+    assert.ok(source, "a complete row yields a source");
+
+    assert.deepEqual(source.pages.map((p) => p.src), [2, 3, 4].map((i) => path.join(dir, `page-${i}.jpg`)));
+    assert.deepEqual([source.pages[0].width, source.pages[0].height], [800, 1200], "measured from the image, not trusted from the row");
+    assert.equal(source.pkg.title, "Deep Work");
+    assert.equal(source.pkg.hook, "Most people are busy.");
+    assert.equal(source.pkg.cta, "Follow for one page a day");
+    assert.equal(source.pkg.beats?.[0].onScreen, "Busy is not focused");
+    assert.equal(source.theme, "spotlight");
+    assert.deepEqual(source.focus, { pageIndex: 0, x0: 10, y0: 10, x1: 100, y1: 30 });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("without its photograph an episode cannot be redone, so no source is offered", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-src-"));
+  try {
+    const rows = await pageRows(dir, [2, 3, 4]);
+    // The work dir was cleaned: the page the poster would be cropped from is gone.
+    await fs.rm(rows[0].derivedPath!, { force: true });
+    assert.equal(await loadPosterSource(ROW, rows), null);
+    // No pages at all is the same absence.
+    assert.equal(await loadPosterSource(ROW, []), null);
+    // So is a row whose range matches nothing.
+    assert.equal(await loadPosterSource(ROW, (await pageRows(dir, [9])).map((r) => ({ ...r }))), null);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("without its script an episode cannot be redone, so no source is offered", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-src-"));
+  try {
+    const rows = await pageRows(dir, [2, 3, 4]);
+    for (const script of [null, "", "not json", "[]", '{"a":1}']) {
+      assert.equal(await loadPosterSource({ ...ROW, script }, rows), null, `script ${JSON.stringify(script)}`);
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a missing or unreadable plan still yields a source, cropped without a marker", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-src-"));
+  try {
+    const rows = await pageRows(dir, [0, 1]);
+    for (const visualPlan of [null, "not json", "{}"]) {
+      const source = await loadPosterSource({ ...ROW, visualPlan }, rows);
+      assert.ok(source, `plan ${JSON.stringify(visualPlan)}`);
+      assert.equal(source.focus, null);
+      assert.equal(source.pages.length, 2, "no range means every page of the upload");
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------ full render
+
+const chromiumAvailable = await chromium
+  .launch()
+  .then((b) => b.close())
+  .then(() => true)
+  .catch(() => false);
+const needsChromium = { skip: chromiumAvailable ? false : "chromium is not available here" };
+
+test("each poster is stamped with the mtime of the file it was written to", needsChromium, async () => {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-rev-"));
+  try {
+    const specs = await generateThumbnails({
+      episodeId: EPISODE,
+      pkg: { title: "Deep Work", hook: "Most people are busy.", cta: "Follow", beats: BEATS },
+      pages: [],
+      outDir,
+    });
+    assert.equal(specs.length, 6);
+    for (const s of specs) {
+      assert.equal(s.rev, Math.trunc((await fs.stat(s.path)).mtimeMs), `${s.key} carries its own file's mtime`);
+      assert.ok(s.rev > 0);
+    }
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("a retitle redoes all six posters with the new words, and an empty one restores the originals", needsChromium, async () => {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-retitle-"));
+  const opts = {
+    episodeId: EPISODE,
+    pkg: { title: "Deep Work", hook: "Most people are busy.", cta: "Follow", beats: BEATS },
+    pages: [],
+    outDir,
+  };
+  const bytes = async (specs: ThumbSpec[]) => Promise.all(specs.map((s) => fs.readFile(s.path)));
+  try {
+    const first = await generateThumbnails(opts);
+    const firstBytes = await bytes(first);
+
+    await new Promise((r) => setTimeout(r, 25)); // distinct mtimes even on a coarse clock
+    const retitled = await generateThumbnails({ ...opts, headline: "Compounding beats talent" });
+    assert.equal(retitled.length, 6, "every poster is redone, not one variant");
+    const retitledBytes = await bytes(retitled);
+    retitled.forEach((s, i) => {
+      assert.ok(s.rev > first[i].rev, `${s.key} has a newer revision`);
+      assert.ok(!retitledBytes[i].equals(firstBytes[i]), `${s.key} shows different words`);
+    });
+
+    await new Promise((r) => setTimeout(r, 25));
+    const reset = await generateThumbnails({ ...opts, headline: null });
+    const resetBytes = await bytes(reset);
+    reset.forEach((s, i) => assert.ok(resetBytes[i].equals(firstBytes[i]), `${s.key} is back to the generated headline`));
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
 });
 
 test.after(async () => {
