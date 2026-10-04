@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 
-import { renderPad, levelAndFade, toWav, type MusicMood } from "./music-synth";
+import { renderPad, levelAndFade, toWav } from "./music-synth";
+import { MOODS } from "./moods";
 import { abortOpts } from "../cancel";
 
 const execRaw = promisify(execFile);
@@ -159,50 +160,9 @@ export async function toMp3(input: string, out: string) {
 // The music bed
 // ---------------------------------------------------------------------------
 
-/**
- * What the bed sounds like, chosen per video rather than fixed.
- *
- * The previous bed was three static sine partials with a slow tremolo — a
- * drone, not music. A drone has no phrase and no development, so after about
- * fifteen seconds the ear stops hearing it as background and starts hearing it
- * as a fault. These are short chord progressions instead: they move, they
- * resolve, and they get out of the way.
- *
- * Semitone offsets from the key's root, one entry per chord, three voices each.
- */
-
-const MOODS: Record<string, MusicMood> = {
-  // Dark, developer-native. Minor, unhurried, no brightness.
-  terminal: {
-    id: "terminal",
-    // i – VI – III – VII, the standard "calm technical" loop.
-    progression: [[0, 3, 7], [8, 12, 15], [3, 7, 10], [10, 14, 17]],
-    chordSeconds: 4,
-    root: 130.81, // C3
-  },
-  // Punchy, made for Shorts. Same minor colour, faster harmonic rhythm.
-  spotlight: {
-    id: "spotlight",
-    progression: [[0, 3, 7], [5, 8, 12], [10, 14, 17], [7, 10, 14]],
-    chordSeconds: 3,
-    root: 146.83, // D3
-  },
-  // Calm, technical, documentary. Suspended voicings, very little movement.
-  blueprint: {
-    id: "blueprint",
-    progression: [[0, 5, 7], [2, 7, 9], [0, 5, 7], [-2, 3, 5]],
-    chordSeconds: 5,
-    root: 123.47, // B2
-  },
-  // Warm paper, magazine feature. Major, gentle, the friendliest of the four.
-  editorial: {
-    id: "editorial",
-    // I – V – vi – IV.
-    progression: [[0, 4, 7], [7, 11, 14], [9, 12, 16], [5, 9, 12]],
-    chordSeconds: 4.5,
-    root: 138.59, // C#3
-  },
-};
+// The mood registry (`MOODS`) lives in `./moods`, as pure data, so a client
+// component can name the moods without importing this file and with it
+// `node:child_process`. It is re-exported as `MUSIC_MOODS` at the bottom.
 
 
 /**
