@@ -34,6 +34,28 @@ export const HOOK_MAX_SEC = 5.8;
 const SENTENCE_END = /[.!?]["'”’)\]]*$/;
 
 /**
+ * Where a long sentence may be broken: punctuation the author wrote that the
+ * voice pauses on anyway. Deliberately not a space — a scene must never cut
+ * through the middle of a phrase.
+ */
+const CLAUSE_END = /[,;:—–]["'”’)\]]*$/;
+
+/**
+ * How long a run has to get before a clause boundary is taken as a split.
+ * Comfortably clear of MIN_SCENE_SEC so neither half can come out too short to
+ * be a scene, and below MAX_SCENE_SEC so the split happens BEFORE the run
+ * becomes unsplittable rather than after.
+ */
+const CLAUSE_SPLIT_SEC = 7.5;
+
+/**
+ * Below this a piece has no usable time on screen at all and must be merged
+ * whatever that costs; above it, a short scene is merely short, and keeping it
+ * short beats building an over-long one to avoid it.
+ */
+const NO_TIME_SEC = 0.3;
+
+/**
  * Split the narration into sentences. A sentence never spans two beats: beats
  * are recorded as separate audio clips with a gap between them, so a "sentence"
  * crossing that boundary would be one visual over two unrelated passages.
@@ -67,7 +89,22 @@ export function sentencesOf(beats: Beat[], words: TimedWord[]): Sentence[] {
     };
     for (const w of beatWords) {
       run.push(w);
-      if (SENTENCE_END.test(w.word)) flush();
+      if (SENTENCE_END.test(w.word)) {
+        flush();
+        continue;
+      }
+      // A sentence can outrun what a single scene may hold, and `enforceDurations`
+      // cannot help: it splits between sentences, so one long sentence becomes one
+      // over-long scene. Measured in a real episode, that produced a 13.9s scene —
+      // a single photographed page holding 41% of a 65s video.
+      //
+      // So a run that has already grown past what a scene may hold is broken at
+      // the next CLAUSE boundary: a comma, semicolon, colon or dash the author
+      // actually wrote. That is a place the voice pauses anyway, never a cut
+      // through the middle of a phrase, and the pieces are still whole runs of
+      // words with their own timings — so grounding (which keys off the beat, not
+      // the sentence) and the word-level highlights are untouched.
+      if (CLAUSE_END.test(w.word) && w.end - run[0].start >= CLAUSE_SPLIT_SEC) flush();
     }
     flush();
   }
@@ -209,5 +246,52 @@ export function enforceDurations(
       from = to + 1;
     }
   }
-  return out;
+
+  // The split above can hand back a piece that is shorter than the merge pass
+  // would ever have allowed, because it only ever looks FORWARD: the inner loop
+  // refuses to take the next sentence when that would break MAX_SCENE_SEC, and
+  // then emits whatever it has — even when that is a single sentence of no
+  // duration at all. Measured in a real episode: a sentence whose words had all
+  // collapsed onto one instant was merged into its neighbour correctly here,
+  // and this loop promptly split it back out into a scene with start === end,
+  // leaving the following sentence alone as a 13.9s block.
+  //
+  // The word timings that caused that are fixed at source (media/word-timing.ts),
+  // but a scene with no time is wrong whatever produced it, so the band is
+  // closed here rather than assumed. Merging FORWARD, not backward, is
+  // deliberate: a range keeps the spec of the sentence it begins on, so folding
+  // a too-short piece into the one after it preserves the director's choice for
+  // the earlier sentence instead of discarding it.
+  // Merging has to be weighed against the ceiling, not applied blindly. A piece
+  // with effectively NO time cannot be a scene at all, so it is always folded
+  // forward. A piece that is merely a little short is folded only when that does
+  // not push the result past MAX_SCENE_SEC: a 2.2s scene reads perfectly well,
+  // whereas forcing it into its neighbour to satisfy the floor can build the
+  // very 15s block this function exists to prevent.
+  const banded: { fromSentence: number; toSentence: number }[] = [];
+  for (const r of out) {
+    const prev = banded[banded.length - 1];
+    if (prev) {
+      const prevSpan = span(prev);
+      const joined = sentences[r.toSentence].end - sentences[prev.fromSentence].start;
+      if (prevSpan < NO_TIME_SEC || (prevSpan < MIN_SCENE_SEC && joined <= MAX_SCENE_SEC)) {
+        prev.toSentence = r.toSentence;
+        continue;
+      }
+    }
+    banded.push({ ...r });
+  }
+  while (banded.length >= 2) {
+    const last = banded[banded.length - 1];
+    const lastSpan = span(last);
+    if (lastSpan >= MIN_SCENE_SEC) break;
+    const prev = banded[banded.length - 2];
+    const joined = sentences[last.toSentence].end - sentences[prev.fromSentence].start;
+    // Same trade at the tail: a short final scene is acceptable, a timeless one
+    // is not, and neither is a merge that blows the ceiling.
+    if (lastSpan >= NO_TIME_SEC && joined > MAX_SCENE_SEC) break;
+    banded.pop();
+    prev.toSentence = last.toSentence;
+  }
+  return banded;
 }

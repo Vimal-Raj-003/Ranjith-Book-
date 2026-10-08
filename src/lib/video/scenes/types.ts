@@ -107,10 +107,28 @@ export interface SceneSpec {
   keyword?: string;
   /** `cinematic`: up to six narrated words that lead into the keyword. */
   lead?: string;
+  /** Every kind: the world this stretch of narration sits in (environment.ts). Unchecked here: the validator accepts it or repairs it. */
+  environment?: string;
 }
 
 /** A scene's background mood, which drives the backdrop glow. */
 export type SceneTone = "neutral" | "warm" | "cool" | "bright" | "deep";
+
+/**
+ * The world a scene sits in: the full-frame atmosphere behind everything else,
+ * chosen by what the sentence MEANS (environment.ts says what each is for). Seven,
+ * not more, because each must be told apart from the others at a glance: they differ
+ * in where the light comes from and how heavy the dark is, not only in hue, and every
+ * colour is drawn from the theme's own palette, so a video keeps one identity while
+ * its world changes with the story.
+ */
+export const ENVIRONMENTS = ["still", "dawn", "dusk", "storm", "deep", "warm", "grid"] as const;
+
+export type Environment = (typeof ENVIRONMENTS)[number];
+
+export function isEnvironment(v: unknown): v is Environment {
+  return typeof v === "string" && (ENVIRONMENTS as readonly string[]).includes(v);
+}
 
 /** One resolved icon: its name and the raw SVG path markup, theme-coloured. */
 export interface SceneIcon {
@@ -133,6 +151,12 @@ export interface Scene {
   start: number;
   end: number;
   tone: SceneTone;
+  /**
+   * The atmosphere behind this scene. The validator always sets it (the director's
+   * choice when valid, otherwise derived), so a planned scene never lacks one; it is
+   * optional only because a hand-built scene may, and the composition derives one then.
+   */
+  environment?: Environment;
   /** Sentences this scene covers. */
   sentences: number[];
   /** The beat(s) the sentences belong to. */

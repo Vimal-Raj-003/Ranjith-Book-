@@ -14,7 +14,15 @@
 import fs from "node:fs";
 
 const args = process.argv.slice(2);
-const idx = args.indexOf("--append-system-prompt");
+// Both spellings, because the real CLI is invoked with either: `claudeArgs`
+// uses `--append-system-prompt` only on the legacy BOOKREEL_CLI_LEAN=0 path and
+// `--system-prompt` on the lean path that is now the default. Reading only the
+// first one left `system` empty on every modern call, so `isGrounding` below was
+// always false and this fixture answered a GROUNDING request with a writer's
+// script — which then arrived at `revisionBrief` as a report with no `issues`
+// and crashed. The flag the CLI is actually given is the only thing that can be
+// trusted here.
+const idx = Math.max(args.indexOf("--append-system-prompt"), args.indexOf("--system-prompt"));
 const system = idx >= 0 ? args[idx + 1] : "";
 
 let input = "";

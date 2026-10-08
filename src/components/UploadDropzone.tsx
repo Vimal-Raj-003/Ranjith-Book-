@@ -196,8 +196,13 @@ export default function UploadDropzone({
     /* The heading lives on the panel this sits inside, so the section is
        labelled rather than titled twice. */
     <section aria-label={strings.upload.sectionHeading} className="flex flex-col gap-2.5">
+      {/* `min-w-0` on the title column, and it is load-bearing: a flex item's
+          default `min-width: auto` is its intrinsic width, so the text input
+          refused to shrink and pushed the 42% rights select straight through
+          the right edge of the card. Harmless while this panel had half the
+          window; a visible defect the moment the aside became 320px. */}
       <div className="flex flex-col gap-2.5 sm:flex-row">
-        <div className="flex flex-1 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <label htmlFor={titleId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
             {strings.upload.titleLabel}
           </label>
@@ -212,7 +217,7 @@ export default function UploadDropzone({
           />
         </div>
 
-        <div className="flex flex-col gap-1 sm:w-[42%]">
+        <div className="flex min-w-0 flex-col gap-1 sm:w-[42%]">
           <label htmlFor={rightsId} className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
             {strings.upload.rightsLabel}
           </label>

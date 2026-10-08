@@ -28,6 +28,10 @@ export default function ThemeToggle() {
   const theme = useSyncExternalStore<"light" | "dark" | null>(subscribe, readTheme, () => null);
 
   function toggle() {
+    // Nothing has been read yet (server render, or the instant before
+    // hydration), so there is no "other" theme to switch to. Refused here
+    // rather than with the `disabled` attribute — see the button below.
+    if (theme === null) return;
     const next = theme === "light" ? "dark" : "light";
     document.documentElement.setAttribute("data-theme", next);
     try {
@@ -43,7 +47,11 @@ export default function ThemeToggle() {
     <button
       type="button"
       onClick={toggle}
-      disabled={theme === null}
+      // `aria-disabled`, never `disabled`: this is only unresolved between the
+      // server render and hydration, and a `disabled` button is out of the tab
+      // order for exactly that window — so someone tabbing down the rail on a
+      // slow load skips Appearance entirely and it reappears behind them.
+      aria-disabled={theme === null}
       className="nav-item justify-between"
       aria-label={isLight ? strings.themeToggle.toDark : strings.themeToggle.toLight}
     >

@@ -5,18 +5,21 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { sentencesOf, slotSentences, normalizeRanges, enforceDurations, MIN_SCENE_SEC, MAX_SCENE_SEC } from "../src/lib/video/scenes/plan";
 import { validateScenes, groundedIn, numberIsSaid, shotFor, assignShots, MIN_BOOK_SCENES, DEFAULT_CARD_HEIGHT_IN_COLUMN_PX, type ValidateContext } from "../src/lib/video/scenes/validate";
-import { renderScene, overlappingAnims, sceneCss } from "../src/lib/video/scenes/render";
+import { renderScene, overlappingAnims, sceneCss, environmentCss } from "../src/lib/video/scenes/render";
+import { ENVIRONMENT_GUIDE, environmentCatalogue, environmentFor } from "../src/lib/video/scenes/environment";
+import { DIRECTOR_SCHEMA, DIRECTOR_SYSTEM } from "../src/lib/video/scenes/director";
+import { HERO_IDS } from "../src/lib/video/scenes/heroes";
 import { targetSceneCount, planScenes } from "../src/lib/video/scenes";
 import { dimKeys } from "../src/lib/video/composition/highlight";
 import { cardVisibility, cardZooms, glowKeys, buildComposition, CARD_X, CARD_Y, CARD_W, CARD_H, AUDIO_OFFSET } from "../src/lib/video/composition/build";
-import { bookThemeById } from "../src/lib/video/composition/themes";
+import { bookThemeById, BOOK_THEMES } from "../src/lib/video/composition/themes";
 import type { CompositionInput } from "../src/lib/video/composition/build";
 import { lexicalEmbedder } from "../src/lib/analysis/embed";
 import { resolveIcon, iconText, iconIndex, iconPaths, findIcons, resetIconIndex, takeIconTrouble } from "../src/lib/video/scenes/icons";
 import type { Beat } from "../src/lib/content/schema";
 import type { TimedWord } from "../src/lib/media/word-timing";
-import { PAGE_KINDS, SHOT_SCALE } from "../src/lib/video/scenes/types";
-import type { Scene, SceneSpec, VisualKind } from "../src/lib/video/scenes/types";
+import { PAGE_KINDS, SHOT_SCALE, ENVIRONMENTS, isEnvironment } from "../src/lib/video/scenes/types";
+import type { Environment, Scene, SceneSpec, SceneTone, VisualKind } from "../src/lib/video/scenes/types";
 import { fixtureInput } from "../scripts/fixtures/composition-fixture.mjs";
 
 // --- fixtures ----------------------------------------------------------------
@@ -235,6 +238,162 @@ test("every scene records where in the book it came from", async () => {
     assert.ok(s.sentences.length >= 1);
     assert.ok(Number.isFinite(s.start) && s.end > s.start);
   }
+});
+
+// --- environments ----------------------------------------------------------------
+//
+// Why this exists: `theme.backdrop()` was emitted once, outside the scene stack, and the
+// theme came from a global setting, so across 40 finished episodes there were exactly two
+// distinct backgrounds. Nothing downstream of the sentence could change it. Each scene now
+// carries an `environment` the director chooses by what the sentence means.
+
+test("the director is offered exactly the environments that exist, and told to follow the meaning and to vary them", () => {
+  const items = DIRECTOR_SCHEMA.properties.scenes.items;
+  assert.deepEqual([...(items.properties.environment.enum as readonly string[])].sort(), [...ENVIRONMENTS].sort());
+  assert.ok((items.required as readonly string[]).includes("environment"), "asked for on every scene, not left to chance");
+  for (const id of ENVIRONMENTS) {
+    assert.ok(environmentCatalogue().includes(`- ${id} —`), `${id} is described`);
+    assert.ok(DIRECTOR_SYSTEM.includes(`- ${id} —`), `${id} is in the prompt`);
+  }
+  assert.match(DIRECTOR_SYSTEM, /follow the meaning of the sentence/i);
+  assert.match(DIRECTOR_SYSTEM, /consecutive scenes should not all share one/i);
+  // Every one has a use the director can match a sentence against, not just a picture.
+  for (const id of ENVIRONMENTS) assert.ok(ENVIRONMENT_GUIDE[id].use.length > 20 && ENVIRONMENT_GUIDE[id].shows.length > 20, `${id} says what it shows and when to use it`);
+});
+
+test("every hero, tone and kind has an environment, and the ones that carry a meaning get the world that means it", () => {
+  const tones: SceneTone[] = ["neutral", "warm", "cool", "bright", "deep"];
+  const base = { index: 0, start: 0, end: 4, sentences: [0], beatIndex: 0, source: { pageIndex: 0, startWord: 0, endWord: 3 }, reason: "", concept: "" };
+  const heroEnvs = new Set<string>();
+  for (const hero of HERO_IDS) {
+    const env = environmentFor({ ...base, kind: "cinematic", tone: "deep", cine: { hero, keyword: "k", lead: "" } });
+    assert.ok(isEnvironment(env), `${hero} -> ${env}`);
+    heroEnvs.add(env);
+  }
+  assert.equal(heroEnvs.size, ENVIRONMENTS.length, "the heroes between them reach every environment: none is dead code");
+  for (const tone of tones) for (const kind of ["book-page", "kinetic-text", "icon-concept", "stat"] as VisualKind[]) assert.ok(isEnvironment(environmentFor({ ...base, kind, tone })), `${kind}/${tone}`);
+
+  const heroEnv = (hero: (typeof HERO_IDS)[number]) => environmentFor({ ...base, kind: "cinematic", tone: "deep", cine: { hero, keyword: "k", lead: "" } });
+  assert.equal(heroEnv("storm"), "storm");
+  assert.equal(heroEnv("wall"), "storm");
+  assert.equal(heroEnv("mind"), "deep");
+  assert.equal(heroEnv("rest"), "still");
+  assert.equal(heroEnv("dialogue"), "warm");
+  assert.equal(heroEnv("spark"), "dawn");
+  assert.equal(heroEnv("hourglass"), "dusk");
+  // A scene that is not a hero scene falls back on its tone, which says what KIND of scene it is.
+  assert.equal(environmentFor({ ...base, kind: "icon-concept", tone: "cool" }), "grid");
+  assert.equal(environmentFor({ ...base, kind: "book-page", tone: "warm" }), "warm");
+  assert.equal(environmentFor({ ...base, kind: "kinetic-text", tone: "neutral" }), "still");
+});
+
+test("the validator keeps the director's environment when it is valid and derives one otherwise, on every kind of scene", async () => {
+  const beats = [beat(0, "A. B. C. D. E. F. G. H.")];
+  const sentences = sentencesOf(beats, timed(beats));
+  const specs = [
+    spec(0, 0, "cinematic", { hero: "storm", environment: "dawn" }), // valid: kept, even though the hero would say storm
+    spec(1, 1, "cinematic", { hero: "mind" }), // absent: from the hero
+    spec(2, 2, "cinematic", { hero: "rest", environment: "sunset" }), // not an environment: from the hero
+    spec(3, 3, "book-page", { environment: "grid" }), // kept on a page scene too
+    spec(4, 4, "kinetic-text"),
+    spec(5, 5, "cinematic", { hero: "spark", environment: 7 as unknown as string }), // not even a string
+    spec(6, 6, "book-crop"),
+    spec(7, 7, "kinetic-text", { environment: "STORM" }), // case is not forgiven: it is repaired, not guessed at
+  ];
+  const r = await validateScenes(specs, ctx({ sentences }));
+  assert.equal(r.scenes.length, specs.length);
+  for (const s of r.scenes) assert.ok(isEnvironment(s.environment), `scene ${s.index} (${s.kind}) has an environment: ${s.environment}`);
+
+  assert.equal(r.scenes[0].environment, "dawn", "the hook keeps the director's choice");
+  assert.equal(r.scenes[3].environment, "grid", "a page scene keeps it");
+  assert.equal(r.scenes[1].environment, "deep", "an absent choice comes from the hero's meaning");
+  // Scene 2 asked for "sunset", which is not one of ours. The book-scene floor also turned it
+  // into a page scene, so the world it ends up in is the one its FINAL kind and tone say — the
+  // same rule scenes 4, 6 and 7 are held to below. What matters here is that the invalid string
+  // was repaired rather than guessed at or carried through.
+  assert.ok(isEnvironment(r.scenes[2].environment), "an invalid one is repaired, not carried through");
+  assert.equal(r.scenes[2].environment, environmentFor(r.scenes[2]), "an invalid one is derived from what the scene finally is");
+  assert.equal(r.scenes[5].environment, "dawn");
+  // Whatever the repairs turned the rest into, the environment is the one its final kind and tone say.
+  for (const i of [4, 6, 7]) assert.equal(r.scenes[i].environment, environmentFor(r.scenes[i]), `scene ${i} is derived from what it finally is`);
+});
+
+test("a scene repaired into another kind keeps what the director said about its meaning", async () => {
+  // Six kinetic scenes: the cinematic floor turns some into hero scenes. The director's environment
+  // was a judgement about the SENTENCE, so it must survive the kind changing underneath it.
+  //
+  // The narration has to carry real meaning for this to exercise anything: since the hero floor
+  // landed, a scene is only made cinematic when a hero actually fits it, so placeholder text like
+  // "A. B. C." now (correctly) converts nothing and the test would pass while proving nothing.
+  const beats = [beat(0, "Time runs out while you wait. Fear keeps you from starting. A conversation changes how both people see it. Sleep repairs the body overnight. Your memory fails you when you need it. Small steps build real progress.")];
+  const sentences = sentencesOf(beats, timed(beats));
+  const asked: Environment[] = ["dusk", "storm", "warm", "grid", "deep", "dawn"];
+  const r = await validateScenes(sentences.map((s) => spec(s.index, s.index, "kinetic-text", { environment: asked[s.index] })), ctx({ sentences }));
+  assert.ok(r.scenes.some((s) => s.kind === "cinematic" && s.index > 0), "the repairs did change some scenes' kind");
+  r.scenes.forEach((s, i) => assert.equal(s.environment, asked[i], `scene ${i} (${s.kind})`));
+});
+
+test("a plan whose world barely changes says so, instead of quietly looking flat", async () => {
+  const beats = [beat(0, "A. B. C. D. E. F. G. H.")];
+  const sentences = sentencesOf(beats, timed(beats));
+  const flat = await validateScenes(sentences.map((s) => spec(s.index, s.index, "cinematic", { hero: HERO_IDS[s.index], environment: s.index % 2 ? "deep" : "storm" })), ctx({ sentences }));
+  assert.match(flat.notes.join(" | "), /only 2 environments across 8 scenes/i);
+
+  const varied = ["dawn", "storm", "deep", "warm", "dusk", "grid", "still", "dawn"];
+  const fine = await validateScenes(sentences.map((s) => spec(s.index, s.index, "cinematic", { hero: HERO_IDS[s.index], environment: varied[s.index] })), ctx({ sentences }));
+  assert.doesNotMatch(fine.notes.join(" | "), /environments across/i);
+});
+
+// --- the environment CSS: palette roles only, so a theme keeps its identity --------
+
+/** Every rgb()/rgba() in a stylesheet as numbers. */
+function colours(css: string): { r: number; g: number; b: number }[] {
+  return [...css.matchAll(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*[\d.]+\s*)?\)/g)].map((m) => ({ r: +m[1], g: +m[2], b: +m[3] }));
+}
+function hue({ r, g, b }: { r: number; g: number; b: number }): number | null {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  if (max - min < 8) return null;
+  const d = max - min;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+test("environment CSS defines every environment, with no literal colour of any kind", () => {
+  for (const [id, theme] of Object.entries(BOOK_THEMES)) {
+    const css = environmentCss(theme);
+    for (const e of ENVIRONMENTS) assert.match(css, new RegExp(`\\.env-${e}\\s*\\{`), `${id}: .env-${e}`);
+    assert.match(css, /\.env \{/, `${id}: the shared layer rule`);
+    assert.match(css, /\.env-first \{/, `${id}: the opening layer rests visible`);
+    assert.deepEqual(css.match(/#[0-9a-f]{3,8}\b/gi) ?? [], [], `${id}: no hex colour`);
+    assert.doesNotMatch(css, /\b(white|black|gr[ae]y|red|green|blue|orange|yellow|purple)\b/i, `${id}: no named colour`);
+    assert.doesNotMatch(css, /\bbottom\s*:/, `${id}: positioned with top/inset, never bottom`);
+  }
+});
+
+test("every colour the environments paint is derived from the palette: change the palette's hue and nothing is left behind", () => {
+  // Every role the same hue (about 19 degrees), one theme dark and one light. A colour in the
+  // output that is neutral (pure grey, white, black) or of any other hue did not come from a role.
+  const sentinel = (backdropDeep: string) => {
+    const palette = Object.fromEntries(Object.keys(bookThemeById("marginalia").palette).map((k) => [k, "#c85a28"]));
+    return { ...bookThemeById("marginalia"), palette: { ...palette, backdropDeep } } as ReturnType<typeof bookThemeById>;
+  };
+  for (const [name, theme] of [["dark", sentinel("#2a1409")], ["light", sentinel("#f4ded4")]] as const) {
+    const found = colours(environmentCss(theme));
+    assert.ok(found.length >= ENVIRONMENTS.length * 3, `${name}: the environments actually use colour (${found.length})`);
+    for (const c of found) {
+      const h = hue(c);
+      assert.ok(h !== null, `${name}: rgb(${c.r}, ${c.g}, ${c.b}) is neutral, so it was not derived from a coloured palette role`);
+      assert.ok(Math.abs(h! - 18.75) < 9, `${name}: rgb(${c.r}, ${c.g}, ${c.b}) has hue ${h!.toFixed(1)}, not the palette's`);
+    }
+  }
+});
+
+test("the environments follow the theme: its own accent shows up in them, and no two themes get the same ones", () => {
+  const css = Object.fromEntries(Object.entries(BOOK_THEMES).map(([id, theme]) => [id, environmentCss(theme)]));
+  const accent = (hex: string) => `rgba(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)},`;
+  for (const [id, theme] of Object.entries(BOOK_THEMES)) assert.ok(css[id].includes(accent(theme.palette.accent)), `${id}'s environments are lit by ${theme.palette.accent}`);
+  const ids = Object.keys(css);
+  for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) assert.notEqual(css[ids[i]], css[ids[j]], `${ids[i]} and ${ids[j]} differ`);
 });
 
 // --- rendering -----------------------------------------------------------------

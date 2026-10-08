@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { wordsOf, parsePageText } from "../src/lib/ingest/vision";
-import { CliError } from "../src/lib/content/cli";
+import { isCliError } from "../src/lib/content/cli";
 
 test("words are taken in reading order, paragraph by paragraph", () => {
   const words = wordsOf({
@@ -43,20 +43,20 @@ test("a hyphen broken across a line is rejoined", () => {
 test("a non-string paragraph element throws a named error, not an unnamed crash in wordsOf", () => {
   assert.throws(
     () => parsePageText({ chapterHeading: null, paragraphs: [123], legible: true, note: null }, 0),
-    CliError,
+    (e: unknown) => isCliError(e),
   );
   assert.throws(
     () => parsePageText({ chapterHeading: null, paragraphs: [null], legible: true, note: null }, 0),
-    CliError,
+    (e: unknown) => isCliError(e),
   );
 });
 
 test("a reply with no paragraphs key at all is a protocol failure, not a blank page", () => {
   assert.throws(
     () => parsePageText({ chapterHeading: null, legible: true, note: null }, 0),
-    CliError,
+    (e: unknown) => isCliError(e),
   );
-  assert.throws(() => parsePageText({}, 0), CliError);
+  assert.throws(() => parsePageText({}, 0), (e: unknown) => isCliError(e));
 });
 
 test("an empty paragraphs array is a legitimate blank page, not an error", () => {

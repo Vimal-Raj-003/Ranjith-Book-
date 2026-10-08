@@ -13,3 +13,13 @@ tools/bin/
 
 # Ad-hoc local screenshots (e.g. sign-in code captures) — never publishable.
 otp.png
+
+# Local scratch, screenshots, render outputs and logs — not for the repo
+.ov/
+Referances/
+output vid/
+.full.log
+.seek.log
+.dev-3013.log
+.dev-3013.prev.log
+.playwright-mcp/

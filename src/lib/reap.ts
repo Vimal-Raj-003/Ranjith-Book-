@@ -7,7 +7,8 @@ import { releaseIdea } from "./content/idea";
  * A restart, a crash, or a child process that dies without settling its promise
  * would otherwise leave a row stuck on RUNNING forever.
  *
- * Any run whose current step has been open longer than the cap is closed out as
+ * Any run that has not moved for longer than the cap — whether it died inside
+ * a step, between two steps, or before the first one — is closed out as
  * interrupted, so the UI never shows a spinner that will never finish.
  */
 const STEP_STALE_MS = 12 * 60_000;
@@ -19,8 +20,25 @@ export async function reapStaleRuns(): Promise<number> {
     where: {
       status: { in: ["RUNNING", "QUEUED"] },
       OR: [
+        // Died DURING a step: its `StepRun` is still open and has been for
+        // longer than the cap.
         { steps: { some: { status: "RUNNING", startedAt: { lt: cutoff } } } },
+        // Never started: queued, no `StepRun` ever opened.
         { steps: { none: {} }, createdAt: { lt: cutoff } },
+        // Died BETWEEN steps — the case the two branches above both miss, and
+        // the one that left a real row stuck on RUNNING for 17 hours.
+        // `StepTimer.start` closes the previous `StepRun` DONE *before* it
+        // creates the next one, so for a moment the run has steps but none
+        // RUNNING. A process that dies in that window matches neither branch
+        // 1 (nothing is RUNNING) nor branch 2 (`steps` is not empty), so it
+        // was invisible to this function forever.
+        //
+        // `updatedAt` is the signal, for exactly the reason the `Upload` half
+        // of this function below already uses it: `StepTimer.start` writes
+        // `step`/`status` to the Episode row at every step transition, so
+        // `updatedAt` IS "when this run last made progress". Stale by more
+        // than the cap, with no step open, means nothing is going to move it.
+        { steps: { none: { status: "RUNNING" } }, updatedAt: { lt: cutoff } },
       ],
     },
     select: { id: true, step: true, bookId: true, ideaKey: true },
@@ -31,6 +49,12 @@ export async function reapStaleRuns(): Promise<number> {
   // behind three renders can sit untouched for longer than the cutoff, and a
   // 2-minute video's render step can run past it. Only a run with no live
   // process behind it — what a restart leaves — is reaped.
+  //
+  // This is load-bearing for the between-steps branch above, which is the
+  // broadest of the three: a genuinely running episode whose current step is
+  // slow enough to leave `updatedAt` stale now matches the `where`, and this
+  // line is the only thing between it and being killed mid-render. There is
+  // deliberately no time-based override of it.
   const reapable = stale.filter((r) => !isEpisodeLive(r.id));
   for (const run of reapable) {
     // The run that died still holds its idea's reservation (`reserveIdea`,

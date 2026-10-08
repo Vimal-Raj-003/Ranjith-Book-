@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/lib/db";
+import { visibleTo } from "@/lib/episodes/visibility";
 import { posterFields, publicThumbs } from "@/lib/episode-view";
 import { generateThumbnails, parseThumbnails, serializeThumbnails, thumbsDir, type ThumbSpec } from "@/lib/thumbnails";
 import { normaliseHeadline } from "@/lib/thumbnails/choose";
@@ -39,7 +40,10 @@ export async function editPoster(
   body: unknown,
   deps: { render?: typeof generateThumbnails } = {},
 ): Promise<PosterEditResult> {
-  const episode = await prisma.episode.findFirst({ where: { id: episodeId, userId } });
+  // The same visibility the library lists by (`visibleTo`), so selection and
+  // retitling work on exactly the episodes whose cards are on screen. `userId`
+  // alone matched nothing for an episode with no owner.
+  const episode = await prisma.episode.findFirst({ where: { id: episodeId, ...visibleTo(userId) } });
   if (!episode) return refuse(404, "not_found", "Not found");
 
   if (!body || typeof body !== "object" || Array.isArray(body)) {

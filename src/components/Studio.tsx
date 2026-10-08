@@ -6,18 +6,18 @@ import UploadDropzone from "./UploadDropzone";
 import UploadRun from "./UploadRun";
 import EpisodeCard from "./EpisodeCard";
 import VideoPreview from "./VideoPreview";
-import PublishPanel from "./PublishPanel";
+import PublishCenter from "./PublishCenter";
 import LibraryGrid from "./LibraryGrid";
 import Inspector from "./Inspector";
 import Sidebar from "./Sidebar";
-import { Badge, Disclosure, Panel } from "./ui";
+import { Badge, Disclosure, Panel, useMediaQuery, usePersistentFlag } from "./ui";
 import { strings } from "@/lib/strings";
 import FreeBooks from "./FreeBooks";
 import BooksView from "./BooksView";
 import type { EpisodeState, View } from "./types";
 
 /**
- * The desktop application shell: a fixed sidebar, a flexible workbench and an
+ * The desktop application shell: a sidebar, a flexible workbench and an
  * inspector, collapsing to two columns below 1200px and to one below 900px.
  *
  * From 1200px up the shell is the window — `height: 100dvh`, the page itself
@@ -25,17 +25,40 @@ import type { EpisodeState, View } from "./types";
  * actual request: everything at once, no scrolling the page in either
  * direction. Under it the studio splits into two stacks, so the upload form
  * and the run sit beside the preview rather than a screen below it; below
- * 1200px they fall back to one column in the same source order and the
- * document scrolls the ordinary way, which is what a phone wants.
+ * 1200px they fall back to one column and the document scrolls the ordinary
+ * way, which is what a phone wants.
+ *
+ * Both rails fold away, independently, and the choice is remembered for this
+ * device. The widths live in `--side-col`/`--insp-col` on `.app-shell`, which
+ * the two data attributes below switch, so what a rail gives up the middle
+ * column takes — the operator's "collapse only the centre section where the
+ * video we are working" read backwards: collapse everything AROUND the video.
+ *
+ * On a narrow window the two work stacks swap order once there is an episode
+ * to look at: a phone should open on the video, not on an upload form it has
+ * already been used for. The swap is in the markup rather than in CSS `order`
+ * on purpose — `order` moves the picture and leaves the tab key reading the
+ * old sequence, which is a worse bug than the one it fixes.
  *
  * All episode polling is owned here rather than by whichever pane happens to
  * be showing an episode. `EpisodeCard` runs the 1.5s poll for its id and
- * reports each snapshot up; the preview, the publish blocks and the inspector
+ * reports each snapshot up; the preview, the Publish Center and the inspector
  * all read that same snapshot. One poll per episode, and every pane agrees
  * with every other one.
+ *
+ * `PublishCenter` is the exception that proves the rule: it needs facts the
+ * snapshot does not carry (whether the render is on disk, what each platform
+ * would refuse), so it reads `GET /api/episodes/[id]/publish` itself -- but
+ * only when the snapshot's `status` or `hasVideo` changes, never on the 1.5s
+ * tick, because those are the only two things that can change its answer.
  */
 export default function Studio({ email }: { email: string }) {
   const [view, setView] = useState<View>("studio");
+
+  // Per-device UI state, not project data: which rails this person keeps open.
+  const [sideOpen, setSideOpen] = usePersistentFlag("bookreel.rail.side", true);
+  const [inspOpen, setInspOpen] = usePersistentFlag("bookreel.rail.insp", true);
+  const narrow = useMediaQuery("(max-width: 1199px)");
 
   // Every upload the operator has started ingesting THIS session, newest
   // first. There is no need to persist this across a reload — a finished run
@@ -76,6 +99,18 @@ export default function Studio({ email }: { email: string }) {
   const activeId = selectedId ?? episodeIds[0] ?? null;
   const active = useMemo(() => (activeId ? (states[activeId] ?? null) : null), [activeId, states]);
 
+  // Preview-first, but only once there is a preview worth leading with: on a
+  // phone with nothing made yet, the upload form is the whole point of the
+  // screen and putting an empty 9:16 box above it would be a regression.
+  const previewFirst = narrow && Boolean(active);
+
+  const studioStage = (
+    <div className="work-col work-stage">
+      <VideoPreview episode={active} />
+      <PublishCenter episode={active} />
+    </div>
+  );
+
   return (
     <ToastHost>
       <a
@@ -86,25 +121,39 @@ export default function Studio({ email }: { email: string }) {
         {strings.app.skipToContent}
       </a>
 
-      <div className="app-shell">
+      <div
+        className="app-shell"
+        data-side={sideOpen ? "open" : "collapsed"}
+        data-insp={inspOpen ? "open" : "collapsed"}
+      >
         <header className="app-side">
-          <Sidebar view={view} onView={setView} email={email} />
+          <Sidebar
+            view={view}
+            onView={setView}
+            email={email}
+            collapsed={!sideOpen}
+            onToggleCollapsed={() => setSideOpen(!sideOpen)}
+          />
         </header>
 
         <main id="main" className="app-work" tabIndex={-1}>
-          <div className="work-measure flex flex-col gap-3">
+          {/* `data-pane` names which view is mounted. Nothing in the app reads
+              it; the layout harness waits on it, because a probe that fires
+              while the previous pane is still painted measures the old tree
+              and reports an overflow that does not exist. */}
+          <div className="work-measure flex flex-col gap-3" data-pane={view}>
             {view === "studio" && (
               <>
                 {/* One line, not four. What the studio is FOR is a sentence
                     the operator needed once; it is under the summary now. */}
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <div className="pane-head">
                   <h1 className="font-display text-[18px] font-semibold leading-tight" style={{ color: "var(--ink)" }}>
                     {strings.studio.subheading}
                   </h1>
                   <span className="text-[12px]" style={{ color: "var(--mute)" }}>
                     {strings.studio.workbenchIntro}
                   </span>
-                  <div className="ms-auto">
+                  <div className="pane-head-end">
                     <Disclosure quiet summary={strings.studio.workbenchHelpSummary}>
                       <p className="max-w-[60ch] text-[12px] leading-relaxed" style={{ color: "var(--mute)" }}>
                         {strings.studio.workbenchHelp}
@@ -114,7 +163,11 @@ export default function Studio({ email }: { email: string }) {
                 </div>
 
                 <div className="work-split">
-                  {/* Left: what you are making. */}
+                  {/* What came out, and what you are making. On a wide window
+                      the stage is on the right and takes the room the aside
+                      no longer does; on a narrow one, once there is something
+                      to watch, it comes first. */}
+                  {previewFirst && studioStage}
                   <div className="work-col">
                     <Panel title={strings.upload.sectionHeading}>
                       <UploadDropzone onIngestStarted={(uploadId) => setRuns((list) => [uploadId, ...list])} />
@@ -141,11 +194,7 @@ export default function Studio({ email }: { email: string }) {
                     )}
                   </div>
 
-                  {/* Right: what came out. */}
-                  <div className="work-col">
-                    <VideoPreview episode={active} />
-                    <PublishPanel episode={active} />
-                  </div>
+                  {!previewFirst && studioStage}
                 </div>
               </>
             )}
@@ -175,7 +224,11 @@ export default function Studio({ email }: { email: string }) {
         </main>
 
         <aside className="app-insp" aria-label={strings.inspector.heading}>
-          <Inspector episode={active} />
+          <Inspector
+            episode={active}
+            collapsed={!inspOpen}
+            onToggleCollapsed={() => setInspOpen(!inspOpen)}
+          />
         </aside>
       </div>
     </ToastHost>

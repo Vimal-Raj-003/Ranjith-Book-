@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { prisma } from "@/lib/db";
+import { nodeToWebStream } from "@/lib/node-web-stream";
 import { RENDER_DIR } from "@/lib/paths";
 import { currentUser } from "@/lib/auth/session";
+import { canSee } from "@/lib/episodes/visibility";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,16 +45,18 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     where: { id },
     select: { id: true, title: true, userId: true },
   });
-  // Same rule `GET /api/episodes/[id]` already applies: an episode with no
-  // owner (`userId: null`) is shared with every signed-in user, not hidden
-  // from all of them. `findFirst({ where: { userId: user.id } })` does NOT
-  // match a NULL column — SQL's `NULL = 'x'` is never true — so an ownerless
-  // episode used to 404 here while the same episode's `hasVideo`/`status`
-  // came back fine from the JSON route. The UI has no way to tell "404" apart
-  // from "still loading": `VideoPreview` mounts a bare `<video src=...>` with
-  // no error handling, so the player just sat frozen — black box, spinner
-  // icon, 0:00, forever — which is indistinguishable from "still loading."
-  if (!episode || (episode.userId && episode.userId !== user.id)) {
+  // `episodes/visibility.ts` owns this rule — the same one `GET
+  // /api/episodes/[id]` and the poster routes apply, read from one place rather
+  // than spelled out again here. An episode with no owner (`userId: null`) is
+  // shared with every signed-in user, not hidden from all of them.
+  // `findFirst({ where: { userId: user.id } })` does NOT match a NULL column —
+  // SQL's `NULL = 'x'` is never true — so an ownerless episode used to 404 here
+  // while the same episode's `hasVideo`/`status` came back fine from the JSON
+  // route. The UI has no way to tell "404" apart from "still loading":
+  // `VideoPreview` mounts a bare `<video src=...>` with no error handling, so
+  // the player just sat frozen — black box, spinner icon, 0:00, forever — which
+  // is indistinguishable from "still loading."
+  if (!canSee(episode, user.id)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -102,11 +104,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     }
     end = Math.min(end, size - 1);
 
-    const stream = Readable.toWeb(
-      fs.createReadStream(file, { start, end }),
-    ) as WebReadableStream<Uint8Array>;
+    // `nodeToWebStream`, not `Readable.toWeb`: a <video> buffers ahead, stops
+    // draining, then abandons this response when the user seeks or leaves, and
+    // `toWeb` throws an uncatchable `ERR_INVALID_STATE` when that happens. See
+    // `lib/node-web-stream.ts`.
+    const stream = nodeToWebStream(fs.createReadStream(file, { start, end }), req.signal);
 
-    return new NextResponse(stream as unknown as ReadableStream, {
+    return new NextResponse(stream, {
       status: 206,
       headers: {
         ...base,
@@ -116,8 +120,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     });
   }
 
-  const stream = Readable.toWeb(fs.createReadStream(file)) as WebReadableStream<Uint8Array>;
-  return new NextResponse(stream as unknown as ReadableStream, {
+  const stream = nodeToWebStream(fs.createReadStream(file), req.signal);
+  return new NextResponse(stream, {
     status: 200,
     headers: { ...base, "Content-Length": String(size) },
   });

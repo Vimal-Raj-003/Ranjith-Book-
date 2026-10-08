@@ -22,6 +22,10 @@ model User {
 
   sessions  Session[]
   episodes  Episode[]
+  /// The platform connections this user has authorised. A relation field only —
+  /// it adds no column to `User`, so existing rows are untouched.
+  platformAccounts PlatformAccount[]
+  oauthStates      OAuthState[]
 }
 
 /// A one-time email code. Only the hash is stored, so a database leak cannot be
@@ -35,6 +39,89 @@ model LoginCode {
   createdAt DateTime @default(now())
 
   @@index([email])
+}
+
+/// One user's authorised connection to one platform. Today the only `provider`
+/// is `youtube`.
+///
+/// WHAT IS IN HERE IS A LONG-LIVED CREDENTIAL, so none of it is stored in the
+/// clear. `refreshTokenEnc` and `accessTokenEnc` hold AES-256-GCM ciphertext
+/// produced by `src/lib/publish/youtube/secrets.ts` from a key that lives only
+/// in `BOOKREEL_TOKEN_KEY` — never in this file, never in the database, never
+/// in a response body. The additional-authenticated-data is the user id and the
+/// purpose, so a row copied into another user's record fails to decrypt rather
+/// than silently granting access to someone else's channel.
+///
+/// There is deliberately NO plaintext column for either token and no column
+/// that could be mistaken for one. `scope` is recorded because a connection
+/// authorised before a scope was added cannot do the new thing, and the honest
+/// answer to that is "reconnect", which needs the old grant to be legible.
+///
+/// BACKWARD COMPATIBILITY. A new table with no rows. Absent means "no platform
+/// is connected", which is the truth for every existing install.
+model PlatformAccount {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// `youtube`. A free string for the same reason `PublishJob.platform` is one.
+  provider String
+
+  /// AES-256-GCM, keyed from the environment. See the note above.
+  refreshTokenEnc String
+  /// The short-lived access token, cached so a publish does not refresh on every
+  /// call. Encrypted the same way, and treated as disposable: a decrypt failure
+  /// or an expiry simply means "refresh".
+  accessTokenEnc  String?
+  accessExpiresAt DateTime?
+
+  /// The scopes Google actually granted, space-separated, as returned by the
+  /// token endpoint rather than as requested.
+  scope String
+
+  /// What the platform told us about the account, after the first call that
+  /// returned it. Null until then — never guessed.
+  externalAccountId String?
+  externalAccountName String?
+
+  /// Set when Google (or a Disconnect) has invalidated the grant. The row is
+  /// normally deleted on disconnect; this exists for the case where the revoke
+  /// call itself failed and the credential must still stop being used.
+  revokedAt DateTime?
+
+  connectedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+/// One in-flight OAuth authorisation. Exists so `state` is validated against a
+/// value this server stored rather than against a cookie the caller controls,
+/// and so the PKCE code verifier never leaves the server.
+///
+/// `stateHash` rather than `state`, for the same reason `Session` stores
+/// `tokenHash`: the state travels through a browser URL and a Google redirect,
+/// and a database leak must not hand anyone a replayable value. The verifier is
+/// encrypted with the same key as the tokens.
+///
+/// Rows are single-use (deleted when redeemed) and expire; `expiresAt` is what
+/// makes an abandoned authorisation stop being redeemable.
+model OAuthState {
+  id        String   @id @default(cuid())
+  stateHash String   @unique
+  provider  String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// AES-256-GCM of the PKCE code verifier.
+  verifierEnc String
+  /// Where in the app to send the operator back to. App-relative only —
+  /// validated before it is stored and again before it is used.
+  returnTo  String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Session {
@@ -306,10 +393,31 @@ model Episode {
   /// posters from the script and this edit does not survive it.
   thumbHeadline String?
 
+  /// When the operator last typed over this field by hand, or NULL if they
+  /// never have — in which case what is stored is still what the writer wrote.
+  ///
+  /// Three nullable timestamps rather than three booleans, and rather than one
+  /// JSON blob, because the Publish Center has to answer two questions and a
+  /// boolean only answers the first: "may Regenerate overwrite this without
+  /// asking?" and "when did that edit happen?". A `DateTime?` answers both and
+  /// costs the same NULL on all 160 existing rows, so nothing needs a backfill
+  /// and every reader that does not know about them is unaffected.
+  ///
+  /// They live on Episode, beside the columns they describe, NOT on PublishJob:
+  /// the metadata is a property of the episode (one title, one description, one
+  /// hashtag list — shared by every platform), while a PublishJob is a property
+  /// of the episode-platform pair. Putting the edit marks on the job would make
+  /// "has the title been hand-edited?" a question with a different answer per
+  /// platform, which is not a thing that can be true.
+  titleEditedAt       DateTime?
+  descriptionEditedAt DateTime?
+  hashtagsEditedAt    DateTime?
+
   startedAt  DateTime?
   finishedAt DateTime?
   totalMs    Int?
   steps      StepRun[]
+  publishJobs PublishJob[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -318,6 +426,107 @@ model Episode {
   @@index([uploadId])
   @@index([userId])
   @@index([contentIdeaId])
+}
+
+/// Where ONE episode stands on ONE platform. Nothing else in the app records
+/// that, so before this table the answer to "did this go out?" lived only in
+/// the operator's memory.
+///
+/// WHY A TABLE AND NOT COLUMNS ON EPISODE. The relationship is one-to-many by
+/// nature: an episode goes to YouTube and to Instagram, and later to whatever
+/// else. As columns that is `youtubeStatus`, `youtubeVideoId`, `youtubeError`,
+/// `youtubePublishedAt`, `instagramStatus`, … — five more columns per platform,
+/// a migration every time one is added, and a `SELECT` that cannot answer
+/// "which episodes are waiting on anything" without naming every platform in
+/// the query. A row per pair answers it with one `where`.
+///
+/// WHY ONE ROW PER PAIR AND NOT ONE PER ATTEMPT. This is current state, not an
+/// audit log. `attempts` counts the tries and `lastError` holds the last
+/// failure, which is what an operator looking at a card wants; an unbounded
+/// history would grow on every retry and nothing would ever read the old rows.
+/// `@@unique([episodeId, platform])` is what makes "the state" singular, and it
+/// is what lets a recorder upsert instead of racing a read against a write.
+///
+/// `status` is the vocabulary in `src/lib/publish/limits.ts`:
+/// NOT_READY | READY | REQUIRES_CONNECTION | PREPARING | UPLOADING | PUBLISHED
+/// | FAILED. Only a platform's own confirmation may write PUBLISHED, and the
+/// only way to get there in code is `PublishOutcome`'s PUBLISHED variant, which
+/// cannot be constructed without an `externalId` the platform returned. There
+/// is no publisher in this build that can produce one, so no row in this table
+/// can honestly say PUBLISHED yet — and none does.
+///
+/// BACKWARD COMPATIBILITY. A new table with no rows. Every existing query and
+/// all 160 existing episodes are untouched; absent rows are the correct reading
+/// of "never published anywhere", which is the truth for all of them.
+model PublishJob {
+  id        String  @id @default(cuid())
+  episodeId String
+  episode   Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  /// youtube | instagram | manual. A free string, not an enum, because SQLite
+  /// has no enums and a platform added later must not need a migration.
+  platform  String
+
+  status String @default("REQUIRES_CONNECTION")
+
+  /// The id the PLATFORM gave this upload, and the URL it can be watched at.
+  /// Both NULL until a platform confirms a publish. Never a locally invented
+  /// id: an id that did not come from the platform cannot be used to check on,
+  /// edit or delete what was posted, so it would be worse than no id at all.
+  externalId  String?
+  externalUrl String?
+
+  /// JSON PublishedMetadata — the title, description and hashtags ACTUALLY
+  /// handed over, frozen at the moment of the attempt. The episode's own
+  /// columns keep changing (the operator edits them, Regenerate rewrites them),
+  /// so without this snapshot there is no way to know what is live on a
+  /// platform versus what is merely current here.
+  metadata String?
+
+  /// How many attempts have been made, and what the last one said when it
+  /// failed. `lastError` is cleared by a success, so a stale message can never
+  /// sit beside a good outcome.
+  attempts  Int     @default(0)
+  lastError String?
+
+  /// `preparedAt` is when the metadata was last validated and handed over (for
+  /// the assisted handoff, when the operator was given the files and text).
+  /// `publishedAt` is ONLY ever set from a platform confirmation, alongside
+  /// `externalId`.
+  preparedAt  DateTime?
+  publishedAt DateTime?
+
+  /// THE PROGRESS IS MEASURED, NOT ESTIMATED. `uploadedBytes` is what the
+  /// platform has acknowledged receiving (YouTube's resumable protocol answers
+  /// every chunk with the byte range it now holds) and `totalBytes` is the size
+  /// of the file on disk. A reader divides one by the other; nothing in this app
+  /// invents a percentage, and a row with `totalBytes` null shows no bar at all
+  /// rather than a plausible-looking one.
+  uploadedBytes Int?
+  totalBytes    Int?
+
+  /// The resumable upload session, encrypted: it is a capability URL — anyone
+  /// holding it can continue this upload into the operator's channel without a
+  /// token. It is kept so a RETRY RESUMES instead of re-uploading 38 MB, and is
+  /// cleared the moment the upload completes or the session is known to be dead.
+  sessionUrlEnc String?
+
+  /// The thumbnail is a SEPARATE outcome from the video, because a channel that
+  /// is not verified cannot set one and that must not fail an upload that
+  /// succeeded. `APPLIED` | `SKIPPED` | `FAILED`, with the platform's own reason
+  /// beside it. Null means no attempt has been made.
+  thumbnailStatus String?
+  thumbnailError  String?
+
+  /// The privacy the video was created with. Always `private` for an upload this
+  /// app made: nothing here sets `public`, and recording what was sent means the
+  /// operator can see it rather than take it on trust.
+  privacyStatus String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([episodeId, platform])
+  @@index([episodeId])
 }
 
 model StepRun {

@@ -133,4 +133,13 @@ export interface AnalysisSummary {
   pageCount: number | null;
   ideaCount: number;
   createdAt: string;
+  /**
+   * Where the book's cover stands: `pending` (no pages yet), `ready` (it can be
+   * fetched, and is made on first request) or `failed` (the first page is gone
+   * or will not decode; show fallback art). Optional, so a row from a server
+   * that predates covers still type-checks, and absent reads as "no cover".
+   */
+  coverStatus?: "pending" | "ready" | "failed";
+  /** The version token for the cover's URL (`coverUrl`): a new value is a new URL. */
+  coverRev?: number;
 }

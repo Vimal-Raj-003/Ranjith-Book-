@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { measurePage, disposeOcr, setOcrEngine, type OcrEngine, type OcrWord } from "../src/lib/ingest/ocr";
-import { OcrTimeoutError } from "../src/lib/errors";
+import { OcrTimeoutError , isErrorCode} from "../src/lib/errors";
 
 test("a rendered line of text comes back as words with plausible boxes", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-ocr-"));
@@ -170,7 +170,7 @@ test("measurePage times out instead of hanging forever, and throws a named error
     await assert.rejects(
       () => measurePage("/does/not/matter.jpg", 20),
       (err: unknown) => {
-        assert.ok(err instanceof OcrTimeoutError, `expected OcrTimeoutError, got ${err}`);
+        assert.ok(isErrorCode(err, "ocr_timeout"), `expected an ocr_timeout error, got ${String(err)}`);
         assert.match((err as Error).message, /timed out/);
         return true;
       },

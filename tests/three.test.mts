@@ -12,9 +12,17 @@ test("each shape keyword group is reachable by an icon name alone", () => {
   assert.equal(shapeForIcon(icon("bulb")), "octahedron");
 });
 
-test("an icon that matches nothing falls back to icosahedron, not an exception", () => {
-  assert.equal(shapeForIcon(icon("umbrella")), "icosahedron");
-  assert.equal(shapeForIcon(icon("chair")), "icosahedron");
+test("an icon that matches nothing gets NO shape, so its own picture survives", () => {
+  // This used to fall back to `icosahedron`. A real render showed why that was
+  // wrong: the 3D treatment REPLACES the flat icon, so a scene captioned
+  // "Food / Friends / Piano" painted three identical blobs — none of those
+  // words matches growth, money, time or idea. The flat Tabler icons beneath
+  // were already distinct and already chosen semantically, so the right answer
+  // for an unmatched name is to leave them alone.
+  assert.equal(shapeForIcon(icon("umbrella")), null);
+  assert.equal(shapeForIcon(icon("chair")), null);
+  assert.equal(shapeForIcon(icon("piano")), null);
+  assert.equal(shapeForIcon(icon("friends")), null);
 });
 
 test("a multi-word, dash-joined keyword matches the whole slug, not a split fragment", () => {
@@ -41,7 +49,11 @@ test("every declared shape kind is one of the five single-group Three.js primiti
   // both are multi-group geometries, and CylinderGeometry specifically
   // captured as blank in a real hyperframes render where these five did not.
   const kinds: ThreeShapeKind[] = ["tetrahedron", "sphere", "torus", "octahedron", "icosahedron"];
-  for (const name of ["chart-line", "coin", "clock", "bulb", "chair"]) {
-    assert.ok(kinds.includes(shapeForIcon(icon(name))));
+  for (const name of ["chart-line", "coin", "clock", "bulb"]) {
+    const shape = shapeForIcon(icon(name));
+    assert.ok(shape !== null, `${name} should still resolve to a shape`);
+    assert.ok(kinds.includes(shape));
   }
+  // And a name that matches nothing opts out entirely rather than picking one.
+  assert.equal(shapeForIcon(icon("chair")), null);
 });

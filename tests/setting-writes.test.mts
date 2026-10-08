@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EMPTY_TRACK, displayed, stepTrack, type Track, type WriteEvent } from "../src/lib/setting-writes";
+import { EMPTY_TRACK, canonicalInt, displayed, stepTrack, type Track, type WriteEvent } from "../src/lib/setting-writes";
+import { validateSetting } from "../src/lib/settings/keys";
 
 /**
  * `Inspector`'s `save(key, value)` is an optimistic write with rollback, and
@@ -100,14 +101,32 @@ test("changing your mind back to the server's value while a write is in flight r
   assert.equal(refused.track.wanted, undefined, "settled");
 });
 
-test("a burst of changes sends the first and the last, nothing between", () => {
-  // A slider drag is dozens of changes a second. Only the value the operator
-  // stopped on matters, and the ones in between are not worth a request each.
+test("a burst that fits inside one round trip sends the first and the last, nothing between", () => {
+  // Everything chosen while a write is in flight collapses to the newest, so a
+  // burst that is over before the server answers costs two writes, not one per change.
   const events: WriteEvent[] = ["-30", "-29", "-28", "-27", "-26", "-25"].map(want);
   const { sends, track } = run(confirmed("-22"), [...events, SAVED, SAVED]);
   assert.deepEqual(sends.filter((s) => s !== undefined), ["-30", "-25"]);
   assert.equal(displayed(track), "-25");
   assert.equal(track.confirmed, "-25");
+});
+
+test("a burst that outlasts several round trips sends about one write per round trip", () => {
+  // The claim above does NOT stretch to a long drag: each answer lets the next
+  // write out. 30 changes with an answer after every ten is four writes (the
+  // first, then the newest at each answer), in order and all safe, but not "one
+  // per gesture". That is what the music level slider commits on release for: it
+  // only calls want() once the drag is over.
+  const events: WriteEvent[] = [];
+  for (let i = 1; i <= 30; i++) {
+    events.push(want(String(-40 + i)));
+    if (i % 10 === 0) events.push(SAVED);
+  }
+  events.push(SAVED);
+  const { sends, track } = run(confirmed("-22"), events);
+  assert.deepEqual(sends.filter((s) => s !== undefined), ["-39", "-30", "-20", "-10"]);
+  assert.equal(displayed(track), "-10");
+  assert.equal(track.confirmed, "-10");
 });
 
 test("what the settings read says does not override an edit, and a refusal falls back to it", () => {
@@ -183,4 +202,48 @@ test("under any interleaving of choices, answers and refusals the control ends o
     assert.equal(track.confirmed, server, `seed ${seed}: the confirmed value drifted from the server's`);
     assert.equal(track.wanted, undefined, `seed ${seed}: settled`);
   }
+});
+
+// ------------------------------------------------------- integer settings are sent canonical
+
+test("canonicalInt is the server's own spelling of an integer setting", () => {
+  // The tracker confirms what it SENT, so what a slider sends has to be what the
+  // server echoes back. Over the whole level range, and the intensity tiers:
+  for (let n = -40; n <= -13; n++) {
+    assert.equal(canonicalInt(n), validateSetting("musicLevel", n), `level ${n}`);
+    assert.equal(canonicalInt(String(n)), String(n), `level "${n}"`);
+  }
+  for (const n of [0, 1, 2]) assert.equal(canonicalInt(n), validateSetting("musicIntensity", n), `intensity ${n}`);
+  // Odd spellings of an integer: wherever the server accepts one, it stores exactly
+  // what canonicalInt says. ("+1" and "1e1" are in range for neither level nor
+  // intensity-10, so they are compared where they are valid.)
+  for (const raw of ["-22", "-22.0", "-22.00", "-0", "0", "1", "+1", " 1 ", "2.0", "-1e1", "-3e1"]) {
+    const sent = canonicalInt(raw);
+    assert.notEqual(sent, null, raw);
+    for (const key of ["musicLevel", "musicIntensity"] as const) {
+      const stored = validateSetting(key, raw);
+      if (stored !== null) assert.equal(stored, sent, `"${raw}" for ${key}: the server stores ${stored}`);
+    }
+    // A fixed point: spelling it again changes nothing.
+    assert.equal(canonicalInt(sent!), sent, raw);
+  }
+});
+
+test("canonicalInt refuses what the server refuses as not an integer", () => {
+  for (const raw of ["", "  ", "-22.5", "loud", "NaN", "Infinity", "1/2", Number.NaN, 0.5, Infinity]) {
+    assert.equal(canonicalInt(raw as string | number), null, String(raw));
+  }
+});
+
+test("a slider that sends the canonical spelling never shows a phantom unsaved value", () => {
+  // The control shows -22, which the server holds. A drag that lands back on it
+  // spelled "-22.0" is the SAME setting. Sent as typed it is a write that changes
+  // nothing and leaves the tracker confirmed on a string the server does not
+  // hold; canonicalised it is recognised as already displayed and nothing is sent.
+  const typed = run(confirmed("-22"), [want("-22.0"), SAVED]);
+  assert.deepEqual(typed.sends, ["-22.0", undefined], "as typed: a pointless write");
+  assert.notEqual(typed.track.confirmed, validateSetting("musicLevel", "-22.0"), "and the tracker now disagrees with the server's echo");
+  const canonical = run(confirmed("-22"), [want(canonicalInt("-22.0")!)]);
+  assert.deepEqual(canonical.sends, [undefined]);
+  assert.equal(displayed(canonical.track), "-22");
 });

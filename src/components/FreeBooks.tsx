@@ -587,7 +587,7 @@ export default function FreeBooks() {
           disclosure now. The provenance is still stated, still on this page,
           still reachable by keyboard; it is just not spending four lines of a
           window that has to hold a result grid as well. */}
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <div className="pane-head">
         <h2
           id="free-books-heading"
           ref={headingRef}
@@ -600,7 +600,7 @@ export default function FreeBooks() {
         <span className="text-[12px]" style={{ color: "var(--mute)" }}>
           {t.intro}
         </span>
-        <div className="ms-auto flex items-baseline gap-3">
+        <div className="pane-head-end flex items-baseline gap-3">
           {phase.kind === "ready" && (
             <Badge>{t.countLabel(phase.page.total, phase.page.books.length)}</Badge>
           )}
@@ -615,7 +615,11 @@ export default function FreeBooks() {
 
       <CatalogPanel status={catalog} onSync={startSync} busy={syncing} />
 
-      <form onSubmit={submit} className="flex flex-wrap items-end gap-2" role="search">
+      {/* Capped rather than full-window. This is a filter over the list below
+          it, not a search engine's front page, and at 1920px a single text
+          field stretched across 1400px of window is the shape the operator
+          called confusing. It still wraps exactly as it did on a phone. */}
+      <form onSubmit={submit} className="search-row flex flex-wrap items-end gap-2" role="search">
         <div className="min-w-[220px] flex-1">
           <label className="field-label" htmlFor="free-books-q">
             {t.searchLabel}

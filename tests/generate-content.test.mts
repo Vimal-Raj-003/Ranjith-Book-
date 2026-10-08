@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { prisma } from "../src/lib/db";
 import { generateContent } from "../src/lib/content/index";
-import { ContentRejectedError } from "../src/lib/errors";
+import { isErrorCode } from "../src/lib/errors";
 
 // A fake `claude` CLI so generateContent's orchestration (release-on-failure,
 // the deterministic author/quotation gate, and the split verdict /
@@ -64,7 +64,7 @@ test("a mismatched author name is rejected even though the book's author is veri
           provider: "claude-cli",
         }),
       (err: unknown) => {
-        assert.ok(err instanceof ContentRejectedError);
+        assert.ok(isErrorCode(err, "content_rejected"), `expected a content_rejected error, got ${String(err)}`);
         assert.match(err.message, /named an author/i);
         return true;
       },
@@ -131,7 +131,7 @@ test("indicesGrounded: false is not swallowed by a verdict of 'pass' (finding 5)
           pages,
           provider: "claude-cli",
         }),
-      ContentRejectedError,
+      (e: unknown) => isErrorCode(e, "content_rejected"),
     );
     assert.equal(await ideaRowExists(bookId, ideaKey), false);
   });
@@ -153,7 +153,7 @@ test("authorNamed: true on an unverified book is not swallowed by a verdict of '
           pages,
           provider: "claude-cli",
         }),
-      ContentRejectedError,
+      (e: unknown) => isErrorCode(e, "content_rejected"),
     );
     assert.equal(await ideaRowExists(bookId, ideaKey), false);
   });
@@ -253,11 +253,13 @@ test("an over-budget draft that never recovers still fails with ContentRejectedE
           provider: "claude-cli",
         }),
       (err: unknown) => {
-        assert.ok(err instanceof ContentRejectedError);
+        assert.ok(isErrorCode(err, "content_rejected"), `expected a content_rejected error, got ${String(err)}`);
         // The budget must never become advisory: it still fails after the
         // ceiling, and the message must help — how far over it ran, and that
         // the book's rights status is what drives the limit at all.
-        assert.match(err.message, /longest run \d+ words/i);
+        // "longest quote N words" — the wording the budget check actually uses;
+        // the point of the assertion is that the message says HOW FAR over it ran.
+        assert.match(err.message, /longest quote \d+ words/i);
         assert.match(err.message, /rights status is "in-copyright"/i);
         assert.match(err.message, /public-domain or own-work/i);
         return true;

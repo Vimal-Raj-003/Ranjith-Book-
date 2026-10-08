@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
 import { reapStaleRuns } from "@/lib/reap";
+import { canSee } from "@/lib/episodes/visibility";
 import { parseThumbnails } from "@/lib/thumbnails/store";
 import { posterFields, publicThumbs, voiceFields } from "@/lib/episode-view";
 
@@ -46,7 +47,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       },
     });
     if (!episode) return NextResponse.json({ error: "Not found", code: "not_found" }, { status: 404 });
-    if (episode.userId && episode.userId !== user.id) {
+    // The rule is `episodes/visibility.ts`, not a copy of it here: the poster
+    // routes drifted from exactly this hand-rolled line and the symptom was a
+    // library card with an initials tile instead of its picture.
+    if (!canSee(episode, user.id)) {
       return NextResponse.json({ error: "Not found", code: "not_found" }, { status: 404 });
     }
 

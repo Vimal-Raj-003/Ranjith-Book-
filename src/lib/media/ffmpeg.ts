@@ -179,6 +179,44 @@ export async function toMp3(input: string, out: string) {
  */
 const BED_MEAN_DB = -22;
 
+/**
+ * How hard the bed steps back under the narration. `normal` is the compressor the
+ * bed has always had, so a render that does not choose is unchanged; `off` skips
+ * the second ffmpeg pass altogether (see `generateMusicBed`).
+ *
+ * What the other two are for: against a speech-like key at about -17 dBFS RMS,
+ * measured, light takes the bed down about 5 dB under a phrase, normal about 10
+ * and strong about 15. (Real narration differs in the particulars; the order and
+ * the spacing are what the profiles are for, and a test holds the order.) Attack
+ * and release are the same for all of them (see the comment on the filter below):
+ * a hard ratio with a fast release pumps, and a strong duck is not a licence to.
+ */
+export const DUCK_PROFILES = {
+  light: { threshold: 0.08, ratio: 3 },
+  normal: { threshold: 0.05, ratio: 6 },
+  strong: { threshold: 0.03, ratio: 10 },
+} as const;
+
+export type MusicDuck = "off" | keyof typeof DUCK_PROFILES;
+
+/**
+ * The compressor for one duck setting, as ffmpeg spells it. A function of its own
+ * so a test can hold `normal` to the exact string the bed has always used: the
+ * ducked pass is the one part of the bed that cannot be compared byte for byte
+ * between runs, or between builds. The same graph on the same inputs sometimes
+ * comes out a fraction of a second SHORT -- the tail is cut at a variable whole
+ * number of ffmpeg frames, a flush race at end of stream (measured: of 24 runs,
+ * 21 were the full length and 3 were up to about 0.2 s short). It is the tail and
+ * not the start: the first samples were silent in every run, and the loss falls
+ * inside the closing fade-out, where the bed is a few percent of its level.
+ * So the graph's inputs are what is pinned instead. (`duck: "off"` writes the
+ * synthesized pad directly and has no such variance.)
+ */
+export function duckFilter(duck: Exclude<MusicDuck, "off">): string {
+  const { threshold, ratio } = DUCK_PROFILES[duck];
+  return `sidechaincompress=threshold=${threshold}:ratio=${ratio}:attack=20:release=500:makeup=1`;
+}
+
 /** Mean level of a file in dB, as ffmpeg measures it. */
 export async function meanLevelDb(file: string): Promise<number> {
   const { stderr } = await exec(
@@ -205,15 +243,36 @@ export async function meanLevelDb(file: string): Promise<number> {
  *    music steps back under each spoken phrase and returns in the gaps, instead
  *    of sitting at one level and fighting the words.
  *
- * Deterministic for a given mood and duration, so a re-render is identical.
+ * Deterministic for a given mood, duration and settings, so a re-render is
+ * identical -- bar the length of the ducked pass's tail, which ffmpeg itself cuts
+ * a little short on some runs, inside the closing fade (see `duckFilter`).
+ *
+ * The three controls are the operator's, and each defaults to what the bed was
+ * before it had controls: `intensity` 1 (the pad plus a bass; 0 is the pad alone,
+ * which is the old sound to the byte), `level` -22 dB, `duck` normal.
  */
 export async function generateMusicBed(
   durationSec: number,
   out: string,
-  opts: { style?: string; voicePath?: string; voiceOffsetSec?: number } = {},
+  opts: {
+    style?: string;
+    voicePath?: string;
+    voiceOffsetSec?: number;
+    intensity?: number;
+    level?: number;
+    duck?: MusicDuck;
+  } = {},
 ) {
   const d = Math.max(1, +durationSec.toFixed(3));
   const mood = MOODS[opts.style ?? "terminal"] ?? MOODS.terminal;
+  const level = Number.isFinite(opts.level) ? (opts.level as number) : BED_MEAN_DB;
+  // An id this build does not have is the usual duck rather than none: a bed with
+  // no ducking at all is the more surprising of the two mistakes. (`hasOwn`, not
+  // `in`: "constructor" is `in` every object.)
+  const duck: MusicDuck =
+    opts.duck === "off" || (opts.duck !== undefined && Object.hasOwn(DUCK_PROFILES, opts.duck))
+      ? (opts.duck as MusicDuck)
+      : "normal";
 
   // Pass one: the pad itself, synthesized directly and levelled arithmetically.
   //
@@ -223,15 +282,16 @@ export async function generateMusicBed(
   // on one run and a bed that was loud for eight seconds and then digitally
   // silent for the remaining ninety on the next. See `music-synth.ts` for the
   // full account. Nothing about the sound has changed; only how it is built.
-  const pad = levelAndFade(renderPad(d, mood), BED_MEAN_DB, d);
+  const pad = levelAndFade(renderPad(d, mood, opts.intensity), level, d);
   const raw = `${out}.raw.wav`;
   await fs.promises.writeFile(raw, toWav(pad));
 
   // Pass two: duck the bed against the narration. This stays in ffmpeg because
   // sidechain compression genuinely is its job — and this graph has two inputs,
   // not sixty-seven.
-  if (!opts.voicePath || !fs.existsSync(opts.voicePath)) {
-    // Nothing to duck against: the levelled pad IS the bed.
+  if (duck === "off" || !opts.voicePath || !fs.existsSync(opts.voicePath)) {
+    // Nothing to duck against, or the operator turned ducking off: the levelled
+    // pad IS the bed.
     await fs.promises.rename(raw, out);
     return;
   }
@@ -253,7 +313,9 @@ export async function generateMusicBed(
       // sentences, not between words. The ratio is 6 rather than the original
       // 4 because the bed now sits ~6 dB under the voice instead of ~16: at
       // the old level a gentler duck was enough, at this one it is not.
-      `[0][key]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=500:makeup=1[ducked]`,
+      // (That is `normal`. `light` and `strong` move the threshold and the ratio
+      // and nothing else; see `DUCK_PROFILES`.)
+      `[0][key]${duckFilter(duck)}[ducked]`,
     "-map", "[ducked]",
     "-ar", "44100", "-ac", "1",
     "-t", String(d),

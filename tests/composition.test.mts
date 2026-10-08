@@ -21,6 +21,7 @@ import {
   bylineText,
   BYLINE_MAX_CHARS,
 } from "../src/lib/video/composition/build";
+import * as buildModule from "../src/lib/video/composition/build";
 import { BANDS, CONTENT_WIDTH, RESERVED } from "../src/lib/video/composition/frame";
 import { cameraTrack } from "../src/lib/video/sweep";
 import { marginalia } from "../src/lib/video/composition/themes/marginalia";
@@ -28,8 +29,8 @@ import { buildCaptions } from "../src/lib/media/captions";
 import type { CaptionWord } from "../src/lib/media/captions";
 import { bookThemeById } from "../src/lib/video/composition/themes";
 import type { CompositionInput } from "../src/lib/video/composition/build";
-import { PAGE_KINDS, SHOT_SCALE } from "../src/lib/video/scenes/types";
-import type { Scene } from "../src/lib/video/scenes/types";
+import { PAGE_KINDS, SHOT_SCALE, ENVIRONMENTS } from "../src/lib/video/scenes/types";
+import type { Scene, Environment } from "../src/lib/video/scenes/types";
 import { fixtureInput } from "../scripts/fixtures/composition-fixture.mjs";
 
 const input = () => ({
@@ -1156,4 +1157,156 @@ test("with no scenes there is no zoom, no dim layer and no change to the old com
   const data = JSON.parse(html.match(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/)![1]) as { zooms: unknown[]; dim: unknown[] };
   assert.deepEqual(data.zooms, []);
   assert.deepEqual(data.dim, []);
+});
+
+// --- the per-scene environment ------------------------------------------------------
+//
+// The backdrop used to be emitted once, outside the scene stack, so no sentence could
+// change it. Each scene now names a world (scenes/environment.ts) and the composition
+// crossfades between them. One layer per environment in use, each with a STATIC look,
+// each tweened on opacity only: the look of a layer never depends on how the playhead
+// got there, which is what keeps it seek-safe.
+
+type EnvKey = { t: number; d: number; env: string; from: string };
+const dataOf = (html: string) => JSON.parse(/<script id="composition-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)![1]);
+const CYCLE: Environment[] = ["still", "dawn", "storm", "deep"];
+
+function withEnvironments(themeId = "marginalia", cycle: readonly Environment[] = CYCLE) {
+  const base = fixtureInput({ theme: bookThemeById(themeId), withScenes: true }) as unknown as CompositionInput;
+  const scenes = (base.scenes as Scene[]).map((s, i) => ({ ...s, environment: cycle[i % cycle.length] }));
+  return { base, scenes, html: buildComposition({ ...base, scenes, bookTitle: "T" }) };
+}
+
+test("each scene carries its own environment, and the crossfades never overlap", () => {
+  const { scenes, html } = withEnvironments();
+  const data = dataOf(html) as { env: EnvKey[] };
+  assert.ok(data.env.length >= 3, "the environment actually changes through the video");
+  for (let i = 1; i < data.env.length; i++) {
+    assert.ok(data.env[i - 1].t + data.env[i - 1].d <= data.env[i].t + 1e-9, "two environment crossfades never run at once");
+  }
+
+  // Each crossfade leaves the world the previous one arrived in.
+  assert.equal(data.env[0].from, scenes[0].environment, "the first change leaves the opening environment");
+  for (let i = 1; i < data.env.length; i++) assert.equal(data.env[i].from, data.env[i - 1].env, `change ${i} leaves where change ${i - 1} arrived`);
+
+  // Exactly one static layer per environment that is ever on screen.
+  const named = new Set<string>([scenes[0].environment!, ...data.env.flatMap((e) => [e.from, e.env])]);
+  for (const name of named) {
+    assert.equal(html.split(`id="env-${name}"`).length - 1, 1, `one layer for ${name}`);
+  }
+  const first = scenes[0].environment!;
+  assert.match(html, new RegExp(`<div class="env env-${first} env-first" id="env-${first}"></div>`), "the opening environment rests visible, like the opening scene");
+  assert.equal((html.match(/class="env [^"]*env-first"/g) ?? []).length, 1, "and no other layer does");
+});
+
+test("a photo episode has no environment layer at all", () => {
+  const html = buildComposition({ ...(fixtureInput({ theme: bookThemeById("marginalia") }) as unknown as CompositionInput), bookTitle: "T" });
+  assert.ok(!html.includes('class="env'), "no layer in the markup");
+  assert.ok(!/id="env-/.test(html), "no layer id");
+  for (const e of ENVIRONMENTS) assert.ok(!html.includes(`env-${e}`), `no ${e} rule or layer either`);
+  assert.deepEqual(dataOf(html).env, []);
+});
+
+test("environmentKeys emits one entry per CHANGE, leaving the opening scene to set the opening look", () => {
+  const { base } = withEnvironments();
+  const scene = (i: number, environment: Environment): Scene => ({ ...(base.scenes as Scene[])[0], index: i, kind: "kinetic-text", start: i * 3, end: i * 3 + 3, environment });
+  const keys = buildModule.environmentKeys([scene(0, "dawn"), scene(1, "dawn"), scene(2, "storm"), scene(3, "storm"), scene(4, "storm"), scene(5, "dawn")], AUDIO_OFFSET);
+  assert.deepEqual(keys.map((k) => k.env), ["storm", "dawn"], "six scenes, two changes");
+  assert.deepEqual(keys.map((k) => k.from), ["dawn", "storm"]);
+  // Centred on the cut, so half of it is spent in the pause before the scene starts.
+  const cut = AUDIO_OFFSET + 6;
+  assert.ok(keys[0].t < cut && cut < keys[0].t + keys[0].d, "the crossfade straddles the moment the scene changes");
+  assert.deepEqual(buildModule.environmentKeys([scene(0, "dawn")], AUDIO_OFFSET), [], "one scene never changes");
+});
+
+test("scenes closer together than the crossfade is long are still clipped, never overlapped", () => {
+  // 0.25 s per scene against a crossfade that wants about a second: every adjacent pair
+  // is forced into the clip branch, which spaced-out fixtures never reach.
+  const { base } = withEnvironments();
+  const flip: Environment[] = ["dawn", "storm", "dawn", "deep", "storm", "grid", "still", "warm"];
+  const scenes = flip.map((environment, i): Scene => ({ ...(base.scenes as Scene[])[0], index: i, kind: "kinetic-text", start: i * 0.25, end: i * 0.25 + 0.25, environment }));
+  const keys = buildModule.environmentKeys(scenes, 0);
+  assert.equal(keys.length, flip.length - 1, "every scene changes the world");
+  for (let i = 0; i < keys.length; i++) {
+    assert.ok(keys[i].d > 0, `crossfade ${i} keeps a positive duration`);
+    if (i > 0) assert.ok(keys[i - 1].t + keys[i - 1].d <= keys[i].t + 1e-9, `crossfade ${i - 1} ends before ${i} starts`);
+  }
+  assert.ok(keys.some((k, i) => i < keys.length - 1 && k.d < 0.5), "at least one was clipped below its natural length");
+  // Coincident cuts (zero-length scenes) still do not overlap.
+  const stacked = (["dawn", "storm", "deep"] as Environment[]).map((environment, i): Scene => ({ ...(base.scenes as Scene[])[0], index: i, kind: "kinetic-text", start: 5, end: 5, environment }));
+  const k2 = buildModule.environmentKeys(stacked, 0);
+  for (let i = 1; i < k2.length; i++) assert.ok(k2[i - 1].t + k2[i - 1].d <= k2[i].t + 1e-9, "coincident cuts do not overlap either");
+});
+
+test("a scene with no environment of its own still gets one, so hand-built plans render a world", () => {
+  const base = fixtureInput({ theme: bookThemeById("marginalia"), withScenes: true }) as unknown as CompositionInput;
+  assert.ok((base.scenes as Scene[]).every((s) => s.environment === undefined), "the fixture sets none");
+  const html = buildComposition({ ...base, bookTitle: "T" });
+  const data = dataOf(html) as { env: EnvKey[] };
+  assert.ok(data.env.length >= 2, "derived environments differ with the scene's tone and kind");
+  for (const e of data.env) assert.ok((ENVIRONMENTS as readonly string[]).includes(e.env) && (ENVIRONMENTS as readonly string[]).includes(e.from));
+  assert.ok(/class="env env-\w+ env-first"/.test(html));
+});
+
+test("the environment layers sit behind the scenes and the card, in front of the theme's own backdrop, and use inset not bottom", () => {
+  const { html } = withEnvironments();
+  const envAt = html.indexOf('class="env ');
+  assert.ok(envAt > 0);
+  assert.ok(envAt < html.indexOf('id="card"'), "behind the page card");
+  // A scene layer is `class="sc" data-scene="0" style=...` — matched on the style attribute that
+  // follows it, because a plain scene carries no modifier class (so `class="sc "` with a trailing
+  // space never appears) and the bare `data-scene="` also occurs earlier, inside the timeline script.
+  assert.ok(envAt < html.indexOf('data-scene="0" style='), "behind every scene layer");
+  assert.ok(envAt > html.indexOf('class="backdrop"'), "in front of the theme's backdrop, which they tint rather than replace");
+  const css = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+  const rule = /\.env \{[^}]*\}/.exec(css)![0];
+  assert.doesNotMatch(rule, /bottom\s*:/, "an absolutely positioned layer anchors with top/inset");
+});
+
+test("environment crossfades land on the right state at any instant, in any order (live browser)", async () => {
+  const { scenes, html } = withEnvironments();
+  const keys = (dataOf(html) as { env: EnvKey[] }).env;
+  const first = scenes[0].environment!;
+  const names = [...new Set([first, ...keys.flatMap((k) => [k.from, k.env])])];
+  const up = (name: string) => Object.fromEntries(names.map((n) => [n, n === name ? 1 : 0]));
+
+  const browser = await chromium.launch();
+  try {
+    const stateAt = async (page: import("playwright-core").Page, t: number) =>
+      page.evaluate((time) => {
+        (window as unknown as { __tl: { seek(t: number, s: boolean): unknown } }).__tl.seek(time, false);
+        const out: Record<string, number> = {};
+        for (const el of document.querySelectorAll(".env")) out[el.id.replace("env-", "")] = Math.round(Number(getComputedStyle(el).opacity) * 1000) / 1000;
+        return out;
+      }, t);
+    const open = async () => {
+      const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+      await page.setContent(html, { waitUntil: "load" });
+      await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+      return page;
+    };
+
+    const page = await open();
+    const times: number[] = [0.05];
+    for (const k of keys) times.push(k.t, k.t + k.d / 2, k.t + k.d);
+    const played: Record<number, Record<string, number>> = {};
+    for (const t of times) played[t] = await stateAt(page, t);
+
+    assert.deepEqual(played[0.05], up(first), "the opening environment is up before anything has changed");
+    for (const k of keys) {
+      assert.deepEqual(played[k.t], up(k.from), `as ${k.from} -> ${k.env} begins, ${k.from} is fully up`);
+      assert.deepEqual(played[k.t + k.d], up(k.env), `as it ends, ${k.env} is fully up`);
+      const mid = played[k.t + k.d / 2];
+      assert.ok(mid[k.from] > 0.05 && mid[k.from] < 0.95 && mid[k.env] > 0.05 && mid[k.env] < 0.95, `halfway both are partly visible: ${JSON.stringify(mid)}`);
+      assert.ok(Math.abs(mid[k.from] + mid[k.env] - 1) < 0.02, "and together they sum to one, so the frame never dims through the fade");
+    }
+
+    // The same instants in the opposite order, on a page that has never seen the earlier ones.
+    const cold = await open();
+    for (const t of [...times].reverse()) assert.deepEqual(await stateAt(cold, t), played[t], `t=${t}: a cold seek agrees with the played-through one`);
+    // And back to the start from the end: the opening environment is restored.
+    assert.deepEqual(await stateAt(page, 0.05), up(first));
+  } finally {
+    await browser.close();
+  }
 });

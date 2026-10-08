@@ -142,8 +142,11 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
         />
       </div>
 
+      {/* `min-w-0`: see the same row in `UploadDropzone.tsx`. Without it the
+          title input cannot shrink below its intrinsic width and the rights
+          select is pushed through the card's right border. */}
       <div className="flex flex-col gap-2.5 sm:flex-row">
-        <div className="flex flex-1 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <label htmlFor={titleId} className={labelClass} style={{ color: "var(--mute-2)" }}>
             {strings.upload.titleLabel}
           </label>
@@ -157,7 +160,7 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
             style={fieldStyle}
           />
         </div>
-        <div className="flex flex-col gap-1 sm:w-[40%]">
+        <div className="flex min-w-0 flex-col gap-1 sm:w-[40%]">
           <label htmlFor={rightsId} className={labelClass} style={{ color: "var(--mute-2)" }}>
             {strings.upload.rightsLabel}
           </label>

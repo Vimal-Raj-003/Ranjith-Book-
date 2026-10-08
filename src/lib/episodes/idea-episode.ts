@@ -11,7 +11,8 @@
  *   - a script length chosen from the idea's content: 45, 60 or up to 90 seconds.
  */
 import { prisma, getSetting } from "../db";
-import { isBookThemeId, DEFAULT_BOOK_THEME_ID } from "../video/composition/themes";
+import { isBookThemeId } from "../video/composition/themes";
+import { themeForTextSync } from "../video/composition/themes/choose";
 import type { IdeaBrief } from "../content/schema";
 import { VIDEO_MAX_SECONDS, VIDEO_MIN_HARD_SECONDS, VIDEO_MIN_TARGET_SECONDS, videoSecondsVerdict } from "../content/duration";
 import type { SourceRef } from "../analysis/types";
@@ -98,6 +99,29 @@ export function ideaVideoDuration(seconds: number): "ok" | "note" | "fail" {
   return videoSecondsVerdict(seconds);
 }
 
+/**
+ * The fields of an idea that say what it is ABOUT, which is what its theme is
+ * chosen from. All five are non-null `String` columns on `ContentIdea`.
+ *
+ * `sourceText` — the raw page extract — is deliberately not here. It is the
+ * longest field and the least about the idea: a page carries the book's own
+ * incidental vocabulary (a chapter heading, a footnote, whatever example the
+ * author happened to use), and letting a few hundred words of that outvote the
+ * four sentences written specifically to state the idea is how the choice
+ * drifts back towards "whatever word appeared most".
+ */
+export interface IdeaTheme {
+  title: string;
+  hook: string;
+  coreIdea: string;
+  angle: string;
+  whyItMatters: string;
+}
+
+export function ideaThemeText(idea: IdeaTheme): string {
+  return [idea.title, idea.hook, idea.coreIdea, idea.angle, idea.whyItMatters].join(" ");
+}
+
 export interface CreatedEpisode {
   ideaId: string;
   episodeId: string;
@@ -123,8 +147,28 @@ export async function createIdeaEpisodes(
     where: { id: { in: ideaIds }, uploadId },
     include: { episodes: { orderBy: { createdAt: "desc" } } },
   });
+  // The theme. An operator who has picked a specific one gets exactly that, on
+  // every episode, as before — an explicit choice is still an instruction.
+  // Anything else (the "auto" default, nothing stored, a value from a build that
+  // had a theme this one does not) means DERIVE IT, and the derivation happens
+  // per idea inside the loop, not once here.
+  //
+  // Per idea is the point. The old code read the setting once and stamped the
+  // same id on everything it created, so one click on "Generate videos" produced
+  // five identically-skinned episodes from five different ideas; four real
+  // episodes on four unrelated subjects rendered the same because all four were
+  // `marginalia`. Two ideas out of one book must be able to differ, which they
+  // can only do if the choice is made from each idea's own words.
+  //
+  // `themeForTextSync`, not `themeRanker`: this runs inside the POST the UI
+  // awaits when the operator clicks Generate. The semantic ranker's first call
+  // loads (and on a cold cache downloads) the sentence model, which would hold
+  // that response open for as long as that takes and could fail it outright. The
+  // keyword floor needs no model, no cache directory and no network, always
+  // answers, and answers the same way every time. The ingest path in
+  // `pipeline.ts` is a background job and does use the ranker.
   const settingTheme = await getSetting("theme");
-  const theme = isBookThemeId(settingTheme) ? settingTheme : DEFAULT_BOOK_THEME_ID;
+  const fixedTheme = isBookThemeId(settingTheme) ? settingTheme : null;
 
   const out: CreatedEpisode[] = [];
   for (const id of ideaIds) {
@@ -145,7 +189,7 @@ export async function createIdeaEpisodes(
         contentIdeaId: idea.id,
         ideaKey: idea.ideaKey,
         title: idea.title,
-        theme,
+        theme: fixedTheme ?? themeForTextSync(ideaThemeText(idea)),
         status: "QUEUED",
         step: "Queued",
       },

@@ -285,6 +285,10 @@ export function thumbPalette(themeId?: string | null): ThumbPalette {
   const key = pickInk(groundMid, [p.hookKey, p.accent, p.marker, p.progressFill], 4);
 
   const accent = p.accent;
+  // Best of the theme's own inks on the raw accent; Marginalia's tops out at 4.15:1.
+  // The poster does not paint this accent as-is: `buildThumbHtml` (render.ts)
+  // nudges it with `lift()` until this ink reaches 4.7:1, so this role reports
+  // the theme's colour and not the drawn one.
   const onAccent = pickInk(accent, [p.ink, p.paper, p.captionInk], 4.5);
 
   const paper = p.paper;

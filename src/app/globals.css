@@ -121,16 +121,14 @@ body {
   font-family: var(--font-plex-mono), ui-monospace, monospace;
 }
 
-/* Hairline panel used across the app */
+/* Hairline panel used across the app. One flat surface, deliberately: the
+   vertical gradient this used to carry in dark mode was invisible on its own
+   and unmistakable the moment two of them were nested, which is most of what
+   "cards inside cards" looked like. */
 .slab {
   background: var(--slab);
   border: 1px solid var(--line);
-  border-radius: 14px;
-}
-
-:root[data-theme="dark"] .slab,
-:root:not([data-theme]) .slab {
-  background: linear-gradient(180deg, var(--slab-2), var(--slab));
+  border-radius: var(--r-panel);
 }
 
 .eyebrow {
@@ -243,13 +241,31 @@ body {
    a screen reader and the tab key want.
    ========================================================================== */
 :root {
-  --rail-w: 204px;
+  /* The left rail was 204px and the operator asked for it to be narrower; the
+     nav labels fit comfortably at 180. The two "-min" widths are the collapsed
+     rails: wide enough for a 32px target plus the 1px border, and nothing
+     more. */
+  --rail-w: 180px;
+  --rail-w-min: 54px;
   --inspector-w: 300px;
+  --inspector-w-min: 50px;
   --pane-gap: 16px;
   --pane-pad: 20px;
+
+  /* One radius scale, used everywhere. Before this there were five values
+     (16/14/12/10/9/8) chosen per component, which is why nothing lined up. */
+  --r-panel: 14px;
+  --r-group: 12px;
+  --r-control: 10px;
+  --r-chip: 8px;
 }
 
 .app-shell {
+  /* The two rail widths are indirected through these so one attribute on the
+     shell moves the whole grid. Every breakpoint below reads `--side-col` and
+     `--insp-col`, never `--rail-w` directly. */
+  --side-col: var(--rail-w);
+  --insp-col: var(--inspector-w);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
@@ -259,6 +275,13 @@ body {
   min-height: 100dvh;
   background: var(--void);
   color: var(--ink);
+}
+
+.app-shell[data-side="collapsed"] {
+  --side-col: var(--rail-w-min);
+}
+.app-shell[data-insp="collapsed"] {
+  --insp-col: var(--inspector-w-min);
 }
 
 .app-side {
@@ -284,7 +307,7 @@ body {
 
 @media (min-width: 900px) {
   .app-shell {
-    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-columns: var(--side-col) minmax(0, 1fr);
     grid-template-areas:
       "side work"
       "side insp";
@@ -328,7 +351,7 @@ body {
     overflow: hidden;
   }
   .app-shell {
-    grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
+    grid-template-columns: var(--side-col) minmax(0, 1fr) var(--insp-col);
     grid-template-areas: "side work insp";
     height: 100dvh;
     min-height: 0;
@@ -357,6 +380,214 @@ body {
   }
 }
 
+/* ==========================================================================
+   Collapsible rails
+   --------------------------------------------------------------------------
+   Both rails collapse by user action, independently, and the choice is
+   remembered per device. The rule the operator actually cares about is the
+   last one: whatever a rail gives up, the CENTRE takes — the grid columns are
+   driven by `--side-col`/`--insp-col` above, so a collapse widens `.app-work`
+   by exactly what it removed rather than leaving a gap.
+
+   A collapsed rail is never empty. It keeps a strip: the toggle, and one chip
+   per thing the rail was telling you. On a phone the strip is a row of chips
+   with their text; from 1200px there is no room for words, so each chip is a
+   glyph with the same sentence as its accessible name and its tooltip.
+   ========================================================================== */
+.app-shell[data-insp="collapsed"] .app-insp,
+.app-shell[data-side="collapsed"] .app-side {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.rail-strip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+}
+
+/* `hidden` has to win against a layout class, or the folded strip and the full
+   column would both be laid out. Tailwind's preflight sets this at a
+   specificity a single class beats, which is exactly the collision here. */
+[hidden] {
+  display: none !important;
+}
+
+/* The wrapper that holds the collapse toggle, present in BOTH states so the
+   button itself is never unmounted. The toggle is its first child either way;
+   everything else in it is `hidden` when the rail is folded. */
+.rail-top {
+  display: flex;
+  /* A row in BOTH states, never a column: expanded it is the toggle beside the
+     brand (or beside "Settings"), and collapsed everything but the toggle is
+     `hidden`, so there is nothing for a column to stack. */
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The nav keeps its own element — `display: contents` on a <nav> drops it out
+   of the accessibility tree in some browsers, and the landmark is the point. */
+.rail-strip-nav,
+.rail-strip-chips {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The inspector's groups, as one block that can be hidden whole. */
+.insp-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The strip turns vertical at the width its own rail becomes a column, which
+   is NOT the same width for the two rails: the sidebar is a column from
+   900px, the inspector only from 1200px (under that it is a full-width band
+   below the workbench). Measured, not assumed — a single 1200px rule left the
+   collapsed sidebar laying 110px chips out inside a 54px column at tablet
+   width, and the harness reported five of them outside their container. */
+@media (min-width: 900px) {
+  .app-side .rail-strip,
+  .app-side .rail-strip-nav {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+  .app-side .rail-strip {
+    padding: 0;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-insp .rail-strip,
+  .app-insp .rail-strip-chips {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+  .app-insp .rail-strip {
+    padding: 0;
+  }
+}
+
+/* The collapse/expand control. Square, 32px, a real button with
+   `aria-expanded` — the summary pattern the disclosures already use, applied
+   to a rail. */
+.rail-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: color-mix(in srgb, var(--slab-2) 60%, transparent);
+  color: var(--mute);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.rail-toggle:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+.rail-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* One fact from a collapsed rail. With words where there is room, as a glyph
+   with a tooltip where there is not — never nothing. */
+.rail-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: color-mix(in srgb, var(--slab-2) 45%, transparent);
+  font-size: 12.5px;
+  color: var(--mute);
+  text-align: left;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.rail-chip:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--amber) 35%, transparent);
+}
+.rail-chip[aria-current="page"],
+.rail-chip[data-state="on"] {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.rail-chip[aria-disabled="true"] {
+  color: var(--mute-2);
+  cursor: not-allowed;
+}
+.rail-chip .rail-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* No room for a sentence in a 50px rail, so the sentence becomes the tooltip
+   and the accessible name instead of being dropped. Same two breakpoints as
+   the direction above, and for the same reason. */
+@media (min-width: 900px) {
+  .app-side .rail-chip {
+    justify-content: center;
+    width: 32px;
+    padding: 0;
+  }
+  .app-side .rail-chip .rail-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-insp .rail-chip {
+    justify-content: center;
+    width: 32px;
+    padding: 0;
+  }
+  .app-insp .rail-chip .rail-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-toggle,
+  .rail-chip {
+    transition: none;
+  }
+}
+
 /* The workbench never stretches type past a comfortable measure, even on a
    very wide monitor — a 900px-wide paragraph is unreadable no matter how much
    room the window has. Once the shell is clamped the measure is set by the
@@ -372,8 +603,16 @@ body {
   }
 }
 
-/* Two stacks side by side: what you are making on the left, what came out on
-   the right. Below 1200px they fall back to one column in source order. */
+/* Two stacks side by side: what you are MAKING on the left, what came OUT on
+   the right. Below 1200px they fall back to one column in source order.
+
+   They used to be 1fr and 1fr, which gave an upload form with four short
+   fields exactly as much of the window as the video. The left stack is an
+   input panel and a list of names: both are done at 320px, and everything
+   past that was the empty space the operator complained about. So the left
+   column is sized to its content and the centre keeps the rest — which is
+   also the answer to "reduce the width of the book search section", because
+   the Book-PDF pane is this same split. */
 .work-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -383,8 +622,16 @@ body {
 
 @media (min-width: 1200px) {
   .work-split {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 16px;
+    grid-template-columns: minmax(0, var(--work-aside, 320px)) minmax(0, 1fr);
+    gap: 18px;
+  }
+}
+
+/* Above about 1700px a 320px aside starts to look like a sliver against a
+   1200px stage; it earns a little back, and no more. */
+@media (min-width: 1700px) {
+  .work-split {
+    --work-aside: 360px;
   }
 }
 
@@ -393,6 +640,30 @@ body {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+}
+
+/* The stage column, which is the one that gets the space the rails give up.
+   A 9:16 frame cannot be made wider, so with both rails folded on a 1440px
+   laptop the Preview panel was 950px of card around a 272px video — the
+   "giant empty space" complaint, moved rather than fixed.
+
+   So the column wraps instead of stretching: the preview and the publish copy
+   sit side by side once there is room for both, and when there is only a
+   preview it stops at 760px rather than running to the edge. No container
+   query and no measurement — `flex-wrap` with a basis does the whole job, and
+   it degrades to the stacked column it already was below 1200px. */
+@media (min-width: 1200px) {
+  .work-stage {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .work-stage > * {
+    flex: 1 1 440px;
+    min-width: 0;
+    max-width: 760px;
+  }
 }
 
 /* ==========================================================================
@@ -405,7 +676,7 @@ body {
    ========================================================================== */
 .disclosure {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--r-group);
   background: color-mix(in srgb, var(--slab-2) 45%, transparent);
 }
 .disclosure > summary {
@@ -414,7 +685,7 @@ body {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: var(--r-group);
   cursor: pointer;
   list-style: none;
   font-size: 13px;
@@ -468,9 +739,29 @@ body {
 }
 
 /* The summary counts as the label, so a disclosure inside a Panel does not
-   need the Panel's own header too — this is the headerless form. */
+   need the Panel's own header too — this is the headerless form. It carries
+   the panel radius and the panel surface, because at the top level of a
+   column it IS the panel. */
 .disclosure-panel {
-  border-radius: 14px;
+  border-radius: var(--r-panel);
+  background: var(--slab);
+}
+.disclosure-panel > summary {
+  border-radius: var(--r-panel);
+  padding: 10px 14px;
+}
+.disclosure-panel > .disclosure-body {
+  padding: 0 14px 13px;
+}
+/* The one open group reads as open at a glance, without opening a second
+   border: the summary keeps a hairline under it, like a panel header. */
+.disclosure-panel[open] > summary {
+  border-bottom: 1px solid var(--line-soft);
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+.disclosure-panel[open] > .disclosure-body {
+  padding-top: 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -486,7 +777,7 @@ body {
   gap: 10px;
   width: 100%;
   padding: 9px 11px;
-  border-radius: 10px;
+  border-radius: var(--r-control);
   border: 1px solid transparent;
   font-size: 14px;
   font-weight: 500;
@@ -495,7 +786,7 @@ body {
   text-align: left;
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.nav-item:hover:not(:disabled) {
+.nav-item:hover:not(:disabled):not([aria-disabled="true"]) {
   color: var(--ink);
   background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
@@ -504,20 +795,45 @@ body {
   background: color-mix(in srgb, var(--amber) 14%, transparent);
   border-color: color-mix(in srgb, var(--amber) 38%, transparent);
 }
-.nav-item:disabled {
+/* `aria-disabled`, never `disabled`: a disabled button drops out of the tab
+   order, so the one row that explains where the app is going becomes
+   unreachable by keyboard. The click is refused in the handler instead. */
+.nav-item:disabled,
+.nav-item[aria-disabled="true"] {
   color: var(--mute-2);
   cursor: not-allowed;
+}
+/* Sized here and not under `.nav-item`, because the same `<Glyph>` is used by
+   the nav rows AND by the chips in the folded rail. Scoping it to `.nav-item`
+   gave the folded rail five 32px buttons with an unsized span in them, which
+   rendered as five empty squares — caught in the screenshots, not in a test. */
+.nav-glyph,
+.rail-glyph {
+  flex: none;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  color: inherit;
+}
+.nav-glyph svg,
+.rail-glyph svg {
+  width: 100%;
+  height: 100%;
 }
 
 /* Panels ----------------------------------------------------------------- */
 .panel {
   background: var(--slab);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--r-panel);
 }
-:root[data-theme="dark"] .panel,
-:root:not([data-theme]) .panel {
-  background: linear-gradient(180deg, var(--slab-2), var(--slab));
+/* A panel inside a panel is the thing to stop doing, not a thing to decorate:
+   the inner one loses its fill and its shadow-by-gradient and keeps only the
+   hairline, so a group reads as a group rather than as a second card. */
+.panel .panel,
+.panel-body > .disclosure {
+  background: transparent;
+  border-color: var(--line-soft);
 }
 .panel-head {
   display: flex;
@@ -529,6 +845,17 @@ body {
 }
 .panel-body {
   padding: 12px 14px;
+}
+
+/* A run card's header: title, status badge, clock. The badge and clock drop to
+   their own row rather than squeezing the title, which is the only part of the
+   three you cannot guess from the rest of the card. */
+.episode-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.episode-head > :first-child {
+  flex: 1 1 180px;
 }
 
 .badge {
@@ -595,7 +922,7 @@ body {
   text-align: left;
   background: var(--slab);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--r-panel);
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 .library-card:hover {
@@ -658,6 +985,57 @@ body {
     var(--slab-2);
 }
 
+/* A book's cover on its card in the Book PDFs list: page one of the PDF, or
+   the same quiet initials field a poster-less episode gets. Fixed width and a
+   2:3 box so every card keeps its height whether the image has arrived or not. */
+.book-cover {
+  display: block;
+  flex: none;
+  width: 36px;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--slab-2);
+}
+.book-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.book-cover-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font-family: var(--font-space-grotesk), system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mute-2);
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--amber) 8%, transparent), transparent 70%),
+    var(--slab-2);
+}
+/* Under the card, lined up with its title: 11px padding + 1px border + 36px
+   cover + 10px gap. */
+.book-cover-action {
+  margin: 1px 0 4px 58px;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--mute);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.book-cover-action:hover:not([aria-disabled="true"]) {
+  color: var(--ink);
+}
+.book-cover-action[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 /* Skeletons — sized exactly like the content they stand in for, so nothing
    jumps when the real data lands. */
 @keyframes shimmer {
@@ -673,7 +1051,7 @@ body {
 }
 .skeleton {
   background: var(--slab-2);
-  border-radius: 8px;
+  border-radius: var(--r-chip);
   animation: shimmer 1.4s ease-in-out infinite;
 }
 
@@ -686,7 +1064,7 @@ body {
   width: 100%;
   max-width: 320px;
   aspect-ratio: 9 / 16;
-  border-radius: 14px;
+  border-radius: var(--r-panel);
   overflow: hidden;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--ink) 8%, var(--slab-2));
@@ -709,11 +1087,22 @@ body {
   color: var(--mute);
 }
 
+/* The stage is the point of the screen, so once there is room it takes it:
+   62dvh rather than 54, and the cap lifted from 440 to 560. On a 1440x780
+   laptop that is a 483px-tall 9:16 frame instead of 421px. */
 @media (min-width: 1200px) {
   .preview-stage {
     width: auto;
     max-width: 100%;
-    height: min(54dvh, 440px);
+    height: min(62dvh, 560px);
+  }
+
+  /* Folding both rails was giving the centre 376px that the video never saw:
+     a 9:16 frame is bound by HEIGHT, so all of it went to blank card. When
+     both are folded the stage takes the height too — the point of collapsing
+     a rail is a bigger picture, not a wider margin. */
+  .app-shell[data-side="collapsed"][data-insp="collapsed"] .preview-stage {
+    height: min(74dvh, 680px);
   }
 }
 
@@ -730,7 +1119,7 @@ body {
 .control {
   width: 100%;
   padding: 9px 11px;
-  border-radius: 10px;
+  border-radius: var(--r-control);
   border: 1px solid var(--line);
   background: var(--field);
   color: var(--ink);
@@ -748,7 +1137,7 @@ body {
    a weaker control. */
 .chip-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--chip-cols, 2), minmax(0, 1fr));
   gap: 6px;
 }
 .chip {
@@ -758,7 +1147,7 @@ body {
   gap: 6px;
   width: 100%;
   padding: 7px 9px;
-  border-radius: 9px;
+  border-radius: var(--r-chip);
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--slab-2) 55%, transparent);
   font-size: 12.5px;
@@ -767,9 +1156,51 @@ body {
   text-align: left;
   transition: border-color 0.15s ease, color 0.15s ease;
 }
-.chip:hover:not(:disabled) {
+.chip:hover:not(:disabled):not([aria-disabled="true"]) {
   color: var(--ink);
   border-color: color-mix(in srgb, var(--amber) 35%, transparent);
+}
+/* The theme picker, measured ------------------------------------------------
+   Eleven chips in a two-column grid is six rows. At 300px of rail that also
+   has to hold voice, music, thumbnails and a download, four of the eleven
+   names were being cut to "Premium Mini…" and "Vintage Story…" — a picker
+   where you cannot read four of the choices.
+
+   Two changes, together: the names wrap instead of truncating (one extra line
+   each, every name readable), and the grid is capped and scrolls.
+
+   The cap is tied to the window, not to a round number. Measured in Chromium
+   at 1440x780 the grid's natural height is 268px and the whole rail is 575px
+   of 780, so a fixed 190px cap did nothing but cut the last row in half and
+   make a working picker look broken. `38dvh` is 296px there — above the
+   natural height, so nothing scrolls today — and bites on a short window or
+   when a twentieth theme is added, which is the case the cap is for.
+   No reserved gutter: the stable one was holding about 10px that nothing has
+   used at any measured width, and giving it back is 10px the chip names get
+   instead. */
+.theme-group .chip-grid {
+  max-height: clamp(150px, 38dvh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.theme-group .chip {
+  align-items: flex-start;
+  min-height: 34px;
+  padding: 6px 8px;
+  line-height: 1.25;
+}
+/* Beats Tailwind's `truncate` on the span inside each chip, which is the
+   markup the theme workstream currently owns — overriding it here means this
+   layout work and that work do not have to touch the same lines. */
+.theme-group .chip > span:first-child {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.theme-group .chip-grid :focus-visible {
+  outline-offset: -2px;
 }
 .chip[data-state="on"] {
   color: var(--ink);
@@ -837,7 +1268,7 @@ body {
   display: block;
   width: 100%;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: var(--r-chip);
   border: 1px solid var(--line);
   background: var(--slab-2);
 }
@@ -867,6 +1298,259 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .thumb-grid[aria-busy="true"] {
+    transition: none;
+  }
+}
+
+/* Publish Center ----------------------------------------------------------
+   The one surface in the app that has to hold a video, a poster, three
+   editable fields and two platform cards in a column the operator can read
+   top to bottom. Everything here wraps rather than scrolls sideways: it sits
+   in the work stage, which is 320px wide on a phone and ~700px with both
+   rails folded, and a publish surface that needed a horizontal scrollbar to
+   reach the Download button would be unusable at exactly the moment it is
+   needed. No colour is literal — both themes repaint from the same tokens. */
+.pub-assets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+/* Deliberately small. The full-size 9:16 player is directly above this panel
+   (`VideoPreview`); this one is here to confirm WHICH video is about to go
+   out, which a 160px frame does. */
+.pub-stage {
+  position: relative;
+  width: 160px;
+  flex: 0 0 auto;
+  aspect-ratio: 9 / 16;
+  border-radius: var(--r-panel);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 8%, var(--slab-2));
+}
+.pub-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+.pub-poster {
+  width: 110px;
+  flex: 0 0 auto;
+  aspect-ratio: 9 / 16;
+  border-radius: var(--r-panel);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--slab-2);
+}
+.pub-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.pub-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+.pub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+/* A chip in this panel is an action, not a choice, so it sizes to its label
+   rather than filling its row the way the theme chips do. */
+.pub-actions .chip,
+.pub-platform .chip {
+  width: auto;
+  justify-content: center;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.pub-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-panel);
+  background: color-mix(in srgb, var(--slab-2) 40%, transparent);
+}
+.pub-field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pub-field textarea.control {
+  resize: vertical;
+  line-height: 1.5;
+}
+/* The counter. Red is the only state worth a colour: a field inside its limit
+   is unremarkable and a number that shouted would train the eye to ignore it. */
+.pub-count {
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--mute-2);
+  white-space: nowrap;
+}
+.pub-count[data-over="true"] {
+  color: var(--rose);
+  font-weight: 600;
+}
+.pub-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* The readiness list. Everything that is missing, not the first thing. */
+.pub-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pub-missing ul {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pub-missing li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.pub-missing li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+.pub-platforms {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.pub-platform {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: var(--slab-2);
+  min-width: 0;
+}
+.pub-platform-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pub-measures {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.pub-measures li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.pub-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid color-mix(in srgb, var(--rose) 40%, transparent);
+  background: color-mix(in srgb, var(--rose) 7%, transparent);
+}
+.pub-problems ul,
+.pub-requires {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.pub-requires {
+  color: var(--mute);
+}
+
+/* The platform connection card: the OAuth grant, the one upload button, and
+   the review link. Set apart from the rest of the platform card by a rule and a
+   tint rather than a box, because it is the same subject continued -- this
+   platform -- and not a new panel. */
+.pub-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.pub-connect code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* MEASURED progress only. The width comes from two byte counts the platform
+   itself reported, so there is no indeterminate variant of this bar and no
+   animation that could suggest movement that is not happening -- a reader with
+   no measurement renders a sentence instead (see YouTubePublish.tsx). */
+.pub-progress {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.pub-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--cyan);
+  transition: width 240ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pub-progress > span {
     transition: none;
   }
 }
@@ -992,3 +1676,44 @@ body {
     display: none;
   }
 }
+
+/* ==========================================================================
+   Search surfaces
+   --------------------------------------------------------------------------
+   "The book search section ... should reduce the width of the section."
+   A full-window search row is the shape of a search ENGINE; this is a filter
+   over a list that sits under it, and a filter wants to be about as wide as
+   the words you type into it. Capped rather than gridded so it keeps its
+   wrapping behaviour on a phone untouched.
+   ========================================================================== */
+.search-row {
+  width: 100%;
+  max-width: 560px;
+}
+
+/* ==========================================================================
+   Alignment pass
+   ========================================================================== */
+
+/* Every pane's heading row is the same three things in the same places:
+   a title, one line of context, and whatever folds away on the right. Giving
+   it a class stops each pane re-deciding its own baseline and gap. */
+.pane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.pane-head > .pane-head-end {
+  margin-inline-start: auto;
+}
+
+/* A right rail that has been collapsed must not leave its scrollbar gutter
+   behind: 50px minus a gutter is not a rail, it is a stripe. */
+.app-shell[data-insp="collapsed"] .app-insp {
+  scrollbar-width: none;
+}
+.app-shell[data-insp="collapsed"] .app-insp::-webkit-scrollbar {
+  width: 0;
+}
+

@@ -49,13 +49,46 @@ export class ContentRejectedError extends AppError {
   }
 }
 
+/**
+ * Is this one of ours? Asked by shape, never by `instanceof`.
+ *
+ * `instanceof` compares against ONE class object, so it answers false for an
+ * error that is in every other respect the same class — whenever the module
+ * defining it has been evaluated twice. That is not theoretical here: the test
+ * suite is `.mts` (ESM) while `src` is `.ts` under a package with no
+ * `"type": "module"`, so tsx instantiates this file once per graph and every
+ * `err instanceof AppError` across that boundary was quietly false. The same
+ * hazard exists in any bundler that splits a build into several graphs.
+ *
+ * `code` and `status` are set by the constructor and by nothing else, so they
+ * identify these errors without depending on which copy of the class built
+ * them — the same reasoning the embedder registry uses when it compares by id
+ * rather than by identity.
+ */
+export function isAppError(err: unknown): err is AppError {
+  return (
+    err instanceof Error &&
+    typeof (err as AppError).code === "string" &&
+    typeof (err as AppError).status === "number"
+  );
+}
+
+/**
+ * A specific one, by the code its constructor stamps. Declared as a type
+ * predicate so a caller that has just asserted this still gets `message`,
+ * `code` and `status` narrowed, exactly as `instanceof` used to give them.
+ */
+export function isErrorCode(err: unknown, code: string): err is AppError {
+  return isAppError(err) && err.code === code;
+}
+
 /** Turn any thrown value into a JSON body. Never returns an empty object. */
 export function errorBody(err: unknown): { error: string; code: string } {
-  if (err instanceof AppError) return { error: err.message || "Something failed without saying what.", code: err.code };
+  if (isAppError(err)) return { error: err.message || "Something failed without saying what.", code: err.code };
   const message = err instanceof Error ? err.message : String(err);
   return { error: message || "Something failed without saying what.", code: "unknown" };
 }
 
 export function errorStatus(err: unknown): number {
-  return err instanceof AppError ? err.status : 500;
+  return isAppError(err) ? err.status : 500;
 }

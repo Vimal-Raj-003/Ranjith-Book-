@@ -73,19 +73,29 @@ function tokensFor(icon: SceneIcon): string[] {
 }
 
 /**
- * The low-poly shape for a resolved icon. Never null — unlike `lottieFor`,
- * there is no "no accent" option here: a Three.js treatment either replaces
- * the flat icon or (on any runtime failure) never appears at all, and that
- * fallback is decided in the browser, not by returning nothing here. An
- * icon that matches no keyword group gets `icosahedron`, a generic faceted
- * "concept" shape, rather than the narration going unillustrated in 3D.
+ * The low-poly shape for a resolved icon, or null when none of the groups fit.
+ *
+ * It used to fall back to `icosahedron` for an unmatched name, on the reasoning
+ * that a generic faceted "concept" shape beat leaving the narration
+ * unillustrated in 3D. A real render disproved that. Because this treatment
+ * REPLACES the flat icon rather than sitting beside it, a scene captioned
+ * "Food / Friends / Piano" painted three identical red blobs: none of those
+ * three words matches growth, money, time or idea, so all three took the
+ * fallback. The labels did the whole job and the pictures actively misled —
+ * three identical objects read as three of the same thing.
+ *
+ * The flat Tabler icons underneath were already correct and already distinct,
+ * chosen semantically by `resolveIcon`. So the honest answer for an unmatched
+ * name is not a generic solid, it is *no 3D treatment*: keep the specific
+ * picture instead of covering it with a vague one. A shape is only ever an
+ * improvement when it says something the icon does not.
  */
-export function shapeForIcon(icon: SceneIcon): ThreeShapeKind {
+export function shapeForIcon(icon: SceneIcon): ThreeShapeKind | null {
   const tokens = new Set(tokensFor(icon));
   for (const [shape, words] of SHAPE_WORDS) {
     for (const word of words) {
       if (tokens.has(word)) return shape;
     }
   }
-  return "icosahedron";
+  return null;
 }

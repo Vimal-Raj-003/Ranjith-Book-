@@ -22,8 +22,13 @@
  *  2. At most one write per key is ever outstanding. A choice made meanwhile only
  *     updates `wanted`; when the outstanding write answers, the newest `wanted`
  *     is sent. Writes therefore reach the server in the order they were made, and
- *     a burst (a slider drag is dozens of changes a second) costs the first and
- *     the last, not one request each -- the ones in between are not observable.
+ *     a burst costs one request per ROUND TRIP rather than one per change: the
+ *     first goes out at once, everything chosen while it is in flight collapses
+ *     to the newest, and that goes out when the first answers. A burst shorter
+ *     than a round trip is the first and the last. A slider drag that outlasts
+ *     several round trips is therefore still several writes, which is safe but
+ *     is not "one per gesture" -- a control that wants one commits on release
+ *     (the music level slider does), and only then calls `want`.
  *
  * Nothing here disables a control while a write is in flight. That is
  * deliberate: a disabled `<select>` drops keyboard focus, and the arrow keys
@@ -103,4 +108,27 @@ export function stepTrack(track: Track, event: WriteEvent): Step {
       return send(idle, idle.wanted);
     }
   }
+}
+
+/**
+ * An integer setting's value, spelled the one way the server spells it back.
+ *
+ * `stepTrack` confirms the value it SENT, not the body `PUT` echoes, so a value
+ * spelled differently from the server's normal form leaves the control confirmed
+ * on a string the server does not hold. `intIn` in `settings/keys.ts` accepts
+ * "-22.0" and "+1" and stores "-22" and "1"; a slider that sent them as typed
+ * would show a phantom difference after the save (and again after a reload), and
+ * `want("-22")` against a control confirmed on "-22.0" would send a write that
+ * changes nothing. So integer controls send `canonicalInt(raw)`, which is `intIn`'s
+ * own normalisation, `String(Number(x))`, and a fixed point of it.
+ * `tests/setting-writes.test.mts` holds the two together over the whole level range.
+ *
+ * Null for what `intIn` would refuse as not an integer: blank, fractional, not a
+ * number. Bounds are not checked here -- the control has its own min and max and
+ * the server is the authority on both.
+ */
+export function canonicalInt(raw: string | number): string | null {
+  if (typeof raw === "string" && raw.trim() === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isInteger(n) ? String(n) : null;
 }

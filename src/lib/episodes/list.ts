@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { visibleTo } from "@/lib/episodes/visibility";
 import { parseThumbnails } from "@/lib/thumbnails/store";
 import { posterFields, publicThumbs, type PublicThumb } from "@/lib/episode-view";
 
@@ -37,7 +38,7 @@ export interface EpisodeListItem {
  */
 export async function listEpisodes(userId: string): Promise<EpisodeListItem[]> {
   const rows = await prisma.episode.findMany({
-    where: { OR: [{ userId }, { userId: null }] },
+    where: visibleTo(userId),
     orderBy: { createdAt: "desc" },
     take: 100,
     include: { book: { select: { title: true } } },

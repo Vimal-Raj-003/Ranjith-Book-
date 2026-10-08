@@ -13,8 +13,24 @@ import { focusFromPlan, loadPosterSource, takeawayFromBeats } from "../src/lib/t
 import { generateThumbnails, parseThumbnails, serializeThumbnails } from "../src/lib/thumbnails";
 import { buildThumbHtml } from "../src/lib/thumbnails/render";
 import { publicThumbs } from "../src/lib/episode-view";
+import { requireIsolatedWorkRoot } from "./setup/isolation";
 
 const EPISODE = "ep-grid-test";
+
+/**
+ * Fail the WHOLE FILE closed, before its first test.
+ *
+ * The per-helper guards below are the precise ones, but they are not
+ * sufficient: `deriveGrid` itself does `mkdir(gridDir(episodeId))` inside its
+ * try, so a test that only asks it about a file that is not there still creates
+ * `WORK_ROOT/thumbs/ep-grid-test/grid` -- which on a bare `tsx --test` is a
+ * directory in the operator's live poster store. Measured: it did exactly that.
+ * Every test in this file is about that episode's directory, so the gate
+ * belongs at the file.
+ */
+test.before(() => {
+  requireIsolatedWorkRoot("every test in this file reads or writes WORK_ROOT/thumbs/ep-grid-test");
+});
 
 /**
  * A 1080x1920 JPEG poster. `busy` fills it with noise so the file is
@@ -22,6 +38,13 @@ const EPISODE = "ep-grid-test";
  * any size assertion pass whether or not anything had been resized).
  */
 async function makeFullPoster(key: string, busy = false): Promise<ThumbSpec> {
+  // Fails closed before the first byte. These posters go under
+  // `WORK_ROOT/thumbs/ep-grid-test`, and `WORK_ROOT` is the operator's real
+  // `.bookreel/` unless the `npm test` preload has moved it -- so a bare
+  // `tsx --test` of this file writes fixtures into their live poster store, and
+  // `test.after` below then deletes a directory there. A Task 8 implementer did
+  // exactly this once, with a bare run, and nothing about it looked wrong.
+  requireIsolatedWorkRoot("these tests write fixture posters under the work root");
   const dir = thumbsDir(EPISODE);
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${key}.jpg`);
@@ -123,6 +146,7 @@ test("a degraded grid response is never cached as immutable", async () => {
   // If that were cached for a year the browser would never retry the
   // derivation, and one transient failure would defeat the whole point for
   // that poster.
+  requireIsolatedWorkRoot("these tests write fixture posters under the work root");
   const broken = path.join(thumbsDir(EPISODE), "9x16-broken.jpg");
   await fs.mkdir(thumbsDir(EPISODE), { recursive: true });
   await fs.writeFile(broken, "this is not a jpeg");
@@ -569,5 +593,7 @@ test("a retitle redoes all six posters with the new words, and an empty one rest
 });
 
 test.after(async () => {
+  // Recursive delete under the work root: the same guard, for the same reason.
+  requireIsolatedWorkRoot("this cleanup deletes a directory under the work root");
   await fs.rm(thumbsDir(EPISODE), { recursive: true, force: true });
 });

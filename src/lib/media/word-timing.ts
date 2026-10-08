@@ -145,6 +145,19 @@ export function timeBeat(
   }
 
   // Matched words take the recogniser's own times, kept in order.
+  //
+  // A match that cannot fit inside the beat's own audio window is DROPPED back
+  // to unmatched rather than pinned to the edge, and that is the whole point of
+  // the guard below. The previous version ended with `Math.min(end, window.end)`,
+  // which looks harmless and is not: once one word's end was clamped to
+  // `window.end`, `floor` became `window.end`, so every later match resolved to
+  // `start = end = window.end` and the entire tail of the beat collapsed onto a
+  // single instant. Measured in a real episode: 8 of 51 caption lines had zero
+  // duration and 2 ran backwards, the scene planner then produced a scene with
+  // start === end, and the sentence either side of the collapse became one
+  // 13.9s block. Leaving an unfittable match unmatched instead lets the
+  // interpolation pass below spread those words across the real remaining gap,
+  // which is what the estimate path already does when nothing matches at all.
   let floor = window.start;
   script.forEach((_, i) => {
     const j = map[i];
@@ -152,10 +165,11 @@ export function timeBeat(
     const h = cleanHeard[j];
     const start = Math.max(h.start, floor);
     const end = Math.max(h.end, start + MIN_WORD);
+    if (end > window.end) return; // not a usable match — interpolate it instead
     words[i].start = start;
-    words[i].end = Math.min(end, window.end);
+    words[i].end = end;
     words[i].source = "audio";
-    floor = words[i].end;
+    floor = end;
   });
 
   // Unmatched runs fill the real gap between the times around them.
@@ -177,6 +191,41 @@ export function timeBeat(
       words[i + r].source = "interpolated";
     }
     i = k;
+  }
+
+  // Final guarantee: always forward, never zero-length.
+  //
+  // The interpolation above divides a REAL gap between two anchors, so when
+  // those anchors land on the same instant the gap is zero and every word
+  // between them lands on it too. Nothing downstream can recover from that: a
+  // sentence takes its start from its first word and its end from its last, so
+  // a zero-length run becomes a zero-length sentence, and then a scene that
+  // renders for no time while its narration is still being spoken.
+  let cursor = window.start;
+  for (const w of words) {
+    w.start = Math.max(w.start, cursor);
+    w.end = Math.max(w.end, w.start + MIN_WORD);
+    cursor = w.end;
+  }
+  // Giving every word its minimum can overrun the beat's window. Squeeze back
+  // in, keeping the relative rhythm; if the window is too short to give every
+  // word even its minimum, share it out equally — the same thing the
+  // nothing-matched path above does, and for the same reason.
+  const span = window.end - window.start;
+  const overrun = words.length === 0 ? 0 : words[words.length - 1].end - window.start;
+  if (span > 0 && overrun > span) {
+    if (span < words.length * MIN_WORD) {
+      words.forEach((w, k) => {
+        w.start = window.start + (span * k) / words.length;
+        w.end = window.start + (span * (k + 1)) / words.length;
+      });
+    } else {
+      const squeeze = span / overrun;
+      for (const w of words) {
+        w.start = window.start + (w.start - window.start) * squeeze;
+        w.end = window.start + (w.end - window.start) * squeeze;
+      }
+    }
   }
 
   return { words, matched, total: script.length };

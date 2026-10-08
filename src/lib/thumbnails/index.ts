@@ -34,6 +34,10 @@ const QUALITY_LADDER = [88, 74, 60] as const;
 const MAX_BYTES = 340 * 1024;
 const NAV_TIMEOUT_MS = 20_000;
 
+/** Keeps two simultaneous writes of one key off each other's temp file. A
+ *  counter, not randomness — same device as `derive.ts`. */
+let partSeq = 0;
+
 function warn(message: string, err?: unknown): void {
   const detail = err instanceof Error ? err.message : err === undefined ? "" : String(err);
   console.warn(`[thumbnails] ${message}${detail ? `: ${detail}` : ""}`);
@@ -198,7 +202,21 @@ export async function generateThumbnails(opts: {
               if (buf.length <= MAX_BYTES) break;
             }
             if (!buf || buf.length === 0) throw new Error("empty screenshot");
-            await fs.writeFile(file, buf);
+            // Written beside its destination and renamed into place, for the
+            // reason `deriveGrid` does it: a redo overwrites `<key>.jpg` while
+            // the delivery route is free to be serving it, and that route stats
+            // the file and then opens it, so a GET landing mid-write could send
+            // a torn image or a body that does not match its `Content-Length`
+            // -- under a one-year `immutable` header. Rename is atomic, so a
+            // reader sees either the old poster whole or the new one whole.
+            const part = `${file}.${process.pid}-${partSeq++}.part`;
+            try {
+              await fs.writeFile(part, buf);
+              await fs.rename(part, file);
+            } catch (err) {
+              await fs.rm(part, { force: true }).catch(() => {});
+              throw err;
+            }
           } finally {
             await page.close().catch(() => {});
           }

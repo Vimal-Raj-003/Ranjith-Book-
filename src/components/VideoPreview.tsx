@@ -39,7 +39,14 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
         )
       }
     >
-      <div className="flex flex-col items-start gap-3 sm:flex-row">
+      {/* `sm:flex-row` is a WINDOW breakpoint, and this panel is not always as
+          wide as the window: the Book-PDF pane puts one of these in an
+          auto-fit grid cell about 400px across on a 1024px tablet, where the
+          320px stage left the title column 45px and the download button hung
+          12px off the right of the page (measured). Wrapping is the fix — the
+          meta column asks for 180px and drops under the stage when it cannot
+          have it, at any window width. */}
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:flex-wrap">
         <div className="preview-stage">
           {ready && episode && !loadFailed ? (
             /* The SRT is a separate deliverable, not attached as a <track> here.
@@ -71,7 +78,7 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
           )}
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex min-w-[180px] flex-1 basis-[180px] flex-col gap-1.5">
           {episode && (
             <>
               <span className="font-display text-[14px] font-semibold leading-snug" style={{ color: "var(--ink)" }}>
@@ -89,7 +96,7 @@ export default function VideoPreview({ episode }: { episode: EpisodeState | null
             <a
               href={`/api/episodes/${episode.id}/video`}
               download
-              className="mt-1 inline-flex w-fit rounded-lg px-3 py-1.5 text-[12.5px] font-semibold"
+              className="mt-1 inline-flex w-fit max-w-full rounded-[var(--r-control)] px-3 py-1.5 text-[12.5px] font-semibold"
               style={{ background: "var(--cyan)", color: "var(--on-accent)" }}
             >
               {strings.preview.download}

@@ -15,9 +15,10 @@
  * page, every number against the source text, and replaces anything that fails
  * with a template that cannot be wrong about meaning.
  */
-import { VISUAL_KINDS } from "./types";
+import { ENVIRONMENTS, VISUAL_KINDS } from "./types";
 import type { Sentence } from "./types";
 import { HERO_IDS, heroCatalogue } from "./heroes";
+import { environmentCatalogue } from "./environment";
 
 export const DIRECTOR_SCHEMA = {
   type: "object",
@@ -30,12 +31,13 @@ export const DIRECTOR_SCHEMA = {
       maxItems: 18,
       items: {
         type: "object",
-        required: ["fromSentence", "toSentence", "kind", "concept", "reason"],
+        required: ["fromSentence", "toSentence", "kind", "concept", "reason", "environment"],
         additionalProperties: false,
         properties: {
           fromSentence: { type: "integer", minimum: 0 },
           toSentence: { type: "integer", minimum: 0 },
           kind: { type: "string", enum: [...VISUAL_KINDS] },
+          environment: { type: "string", enum: [...ENVIRONMENTS] },
           concept: { type: "string", maxLength: 80 },
           reason: { type: "string", maxLength: 200 },
           quote: { type: "string", maxLength: 300 },
@@ -75,6 +77,9 @@ THE CATALOGUE — every scene must use one of these:
 THE HEROES (the "hero" of a cinematic scene — choose by what the sentence MEANS, not by a stray word in it):
 ${heroCatalogue()}
 
+THE ENVIRONMENTS (every scene, of any kind, also gets an "environment": the world behind it, a full-frame atmosphere that changes between scenes. Choose by what the sentence MEANS, not by its picture and not by a stray word):
+${environmentCatalogue()}
+
 RULES:
 1. Return roughly as many scenes as the user message asks for (never fewer than 5). Every sentence must be covered exactly once, in order: the first scene starts at sentence 0, each next scene starts at the sentence after the previous one ends, the last ends at the final sentence.
 2. Scene 0 MUST be cinematic: it is the hook, and the first thing a viewer sees. Choose the hero for the idea of the hook, never a book page. Keep scene 0 to the first one or two sentences.
@@ -83,6 +88,7 @@ RULES:
 5. Never use the same kind more than twice in a row. Never use the same hero twice in a row, and no hero more than twice in the whole video. Use "orb" only when nothing else fits.
 6. Use icon-concept at most twice. Use comparison, steps, timeline, growth-curve or stat only when the narration REALLY does that; otherwise choose cinematic.
 7. Invent nothing. Every keyword, lead, label, item, side, step and number must come from what the narration or the page actually says.
+8. The environment must follow the meaning of the sentence: the mood of what is being SAID, which is not always the mood of the object shown. A scene about losing time is "dusk" even when its hero is a clock. Consecutive scenes should not all share one: a story moves, so let the world change when the idea does, and keep a world for as long as the idea stays. Use "still" only when a sentence has no mood of its own, and never for a whole video.
 
 "concept" is WHAT TO SHOW, not what it means — a phrase that describes a picture. Two to six words, concrete, no abstractions.
 

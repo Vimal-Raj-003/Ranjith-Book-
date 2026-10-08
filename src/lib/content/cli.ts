@@ -35,6 +35,19 @@ export function run(
   const cancel = abortOpts();
   if (cancel.signal?.aborted) return Promise.reject(new CancelledError());
 
+  // A "binary" that is really a JavaScript file is run through this very Node.
+  // POSIX makes such a file spawnable with a `#!/usr/bin/env node` shebang and
+  // the execute bit; Windows honours neither, and `spawn` fails with the rather
+  // unhelpful `EFTYPE`. That is not hypothetical — the generate-content tests
+  // point CLAUDE_CLI_BIN at a .mjs fixture, which worked on POSIX and failed
+  // every one of those tests on Windows. Resolving it here, at the single spawn
+  // site, keeps the override portable for any caller that wants to name a JS
+  // wrapper, the same spirit as `cliBin`'s existing .cmd/.exe handling below.
+  if (/\.[cm]?js$/i.test(bin)) {
+    args = [bin, ...args];
+    bin = process.execPath;
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       cwd: opts.cwd,
@@ -182,7 +195,22 @@ export function ceilingFor(kind: string): number {
   return kind === "script-writer" ? WRITER_CEILING_MS : CLAUDE_CEILING_MS;
 }
 
-export class CliError extends Error {}
+export class CliError extends Error {
+  constructor(message: string) {
+    super(message);
+    // Without this every CliError reported itself as a plain "Error" in logs
+    // and in `recordCall`, which defeats the point of having the class at all.
+    this.name = "CliError";
+  }
+}
+
+/**
+ * Is this a CliError? By name, not by `instanceof` — see `isAppError` in
+ * lib/errors.ts for why class identity cannot be trusted across module graphs.
+ */
+export function isCliError(err: unknown): err is CliError {
+  return err instanceof Error && err.name === "CliError";
+}
 
 /**
  * The terminal result of a Claude run, from either output shape: the
@@ -559,7 +587,7 @@ export async function probeCli(provider: CliProvider): Promise<CliStatus> {
       signedIn: false,
       version,
       detail:
-        err instanceof CliError
+        isCliError(err)
           ? err.message
           : provider === "codex-cli"
             ? "Not signed in. Run `codex login`."

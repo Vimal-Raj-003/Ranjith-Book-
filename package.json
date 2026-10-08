@@ -17,6 +17,10 @@
     "setup:align": "node scripts/setup-align.mjs",
     "e2e:seek": "node --import tsx scripts/e2e-seek.mjs",
     "e2e:highlight": "node --import tsx scripts/e2e-highlight.mjs",
+    "e2e:layout": "node --import tsx scripts/e2e-layout.mjs",
+    "e2e:env": "node --import tsx scripts/e2e-environments.mjs",
+    "e2e:contrast": "node --import tsx scripts/e2e-contrast.mjs",
+    "e2e:thumbs": "node --import tsx scripts/e2e-thumbnails.mjs",
     "e2e:audio-tail": "node --import tsx scripts/e2e-audio-tail.mjs",
     "e2e:budget": "node --import tsx scripts/e2e-budget.mjs",
     "e2e:book": "node --import tsx scripts/e2e-book-analysis.mjs"

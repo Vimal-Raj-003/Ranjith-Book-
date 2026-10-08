@@ -1,6 +1,6 @@
 import type { AspectSpec, ThumbFocus, Variant } from "./types";
 import { clean, escapeHtml, headlineText, paintKeywords, trimWords } from "./text";
-import { alpha, fade, mix, thumbPalette, type ThumbPalette } from "./palette";
+import { alpha, contrast, fade, isDark, mix, thumbPalette, type ThumbPalette } from "./palette";
 
 export interface Photo {
   /** `data:image/jpeg;base64,...` — inlined, because the page is loaded via
@@ -218,6 +218,53 @@ export interface ThumbCopy {
 const WORD_BUDGET: Record<Variant, number> = { quote: 8, bold: 7, split: 6 };
 
 /**
+ * `bg`, moved away from `fg` just far enough for `fg` to read on it at `want`:1,
+ * or `bg` itself when it already does -- a theme that is fine is not recoloured.
+ *
+ * Needed because a theme picks its accent to look good, and picks the type that
+ * goes on it from the colours it already has. Marginalia's burnt orange manages
+ * 4.15:1 with the best of them, so a headline set on it was never going to reach
+ * 4.5. Nudging the surface rather than swapping the ink keeps the type in the
+ * theme's own palette: for Marginalia it is a tenth of the way to white,
+ * #d9531e becoming rgb(221,100,53). The other four themes already clear the bar
+ * and come through untouched.
+ *
+ * Fixed 2% steps in a fixed direction, so the same theme always lands on the
+ * same colour.
+ */
+function lift(bg: string, fg: string, want: number): string {
+  if (contrast(fg, bg) >= want) return bg;
+  const toward =
+    contrast(fg, mix(bg, "#ffffff", 0.1)) >= contrast(fg, mix(bg, "#000000", 0.1)) ? "#ffffff" : "#000000";
+  for (let i = 1; i < 50; i++) {
+    const c = mix(bg, toward, i * 0.02);
+    if (contrast(fg, c) >= want) return c;
+  }
+  return mix(bg, toward, 1);
+}
+
+/**
+ * Secondary type (the eyebrow, the supporting line) is drawn translucent so it
+ * sits behind the headline in the hierarchy. The least opacity that still
+ * clears `want`:1 on `surface` -- from `from` upward -- keeps that hierarchy
+ * where the theme allows it and gives it up where it does not.
+ *
+ * Editorial is the case that made this necessary. Dark ink at 66% over its ecru
+ * ground is 5.2:1 on the flat colour, but the poster is not the flat colour --
+ * the bloom, the scrim and the photograph all darken the ecru -- and as drawn it
+ * measured 4.4 to 4.7:1, which at the 164px the grid paints is a smudge. Every
+ * dark theme was already above 5.8:1 at the first step, so only Editorial moves.
+ */
+function softInk(ink: string, surface: string, want: number, from = 0.66): string {
+  for (const a of [from, from + 0.08, from + 0.16, from + 0.24]) {
+    if (a >= 1) break;
+    const c = alpha(ink, a);
+    if (contrast(c, surface) >= want) return c;
+  }
+  return ink;
+}
+
+/**
  * The shared skeleton. Everything that is the same whatever the layout: the
  * ground, its texture, the eyebrow, the marker slab, the headline box.
  */
@@ -300,17 +347,21 @@ body{background:${P.ground};color:${P.ink};
    same marker the video paints over the page. It is the one mark the channel
    owns, it survives a downscale to 200px as a bar of saturated colour, and it
    rhymes with the real marker in the photograph beside it.
-   The slab is a sized, positioned BACKGROUND rather than a plain fill: an
-   inline box is as tall as the font's content area (~1.16em), which at this
-   line-height is taller than the line box, so a plain background painted the
-   whole box and struck through the line above it. Naming the band's height and
-   offset in em keeps it inside the line at every size the fit can choose,
-   and changes no geometry, so the fit still measures what it did before. */
-.kw{font-style:normal;color:${P.onSlab};
+   The slab is the keyword's own LINE BOX, so it is an inline-block. An inline
+   box is as tall as the font's content area, and that is a property of the
+   font: 1.12em for Arial Bold, 1.41em for Arial Black, which is what weight 900
+   resolves to on Windows (read off Chromium's own font match, not assumed).
+   The slab used to be a band sized and offset in em against that box, tuned on
+   one font; on the other it sat a quarter of an em too high and the keyword's
+   dark lower edge hung off the bottom of it, onto a dark ground, where it
+   vanished -- the headline's most important word missing its feet. A line box
+   is .92em in every font, so the slab always spans the line the word is on,
+   and the fit still measures the same geometry.
+   One word per element (see \`paintKeywords\`), so nothing here ever needs to
+   break across lines. */
+.kw{font-style:normal;color:${P.onSlab};display:inline-block;
   background-image:linear-gradient(180deg,${mix(P.slab, "#ffffff", 0.2)} 0%,${P.slab} 62%,${P.slabEdge} 100%);
-  background-repeat:no-repeat;background-size:100% 0.88em;background-position:0 0.13em;
-  border-radius:${P.markRadius}px;padding:0 0.06em;margin:0 -0.02em;
-  -webkit-box-decoration-break:clone;box-decoration-break:clone}
+  border-radius:${P.markRadius}px;padding:0 0.06em;margin:0 -0.02em}
 .eyebrow{display:flex;align-items:center;gap:${Math.round(w * 0.02)}px;flex:0 0 auto}
 /* A short, fat accent bar rather than a hairline. At 200px the title next to
    it is unreadable by any measure — what has to survive is the MARK, so the
@@ -351,7 +402,19 @@ export function buildThumbHtml(opts: {
   palette?: ThumbPalette;
 }): string {
   const { aspect: a, variant, copy, photo, focus } = opts;
-  const P = opts.palette ?? thumbPalette(opts.theme);
+  const base = opts.palette ?? thumbPalette(opts.theme);
+  // The contrast floor. The palette guarantees its type reads on the GROUND; two
+  // other surfaces carry type that it never checked -- the accent (the split
+  // field, the call-to-action chip) and the translucent ink of the eyebrow and
+  // supporting line -- and each is brought a little past the 4.5:1 the type has
+  // to reach, so that a photograph showing through a scrim, or an anti-aliased
+  // edge, cannot take it back under.
+  const accent = lift(base.accent, base.onAccent, 4.7);
+  const P: ThumbPalette = {
+    ...base,
+    accent,
+    inkSoft: softInk(base.ink, base.groundMid, 5.2),
+  };
   const w = a.width;
   const h = a.height;
   const portrait = h > w;
@@ -395,11 +458,21 @@ export function buildThumbHtml(opts: {
     // because both sit in the upper half. Two hard-edged bands need no scrim
     // at all: the photograph keeps all of its contrast, the type keeps all of
     // the ground, and the accent rule between them does the separating.
-    const photoH = Math.round(h * (portrait ? 0.5 : 0.4));
+    const photoH = Math.round(h * (portrait ? 0.5 : 0.38));
+    // In landscape the type keeps clear of the bottom edge OR of the badge's
+    // side, never both (see `safeR`). The bottom clearance is already there, and
+    // reserving the right-hand fifth as well took a fifth of the width from the
+    // one layout whose headline was already the smallest at the grid: 8px for
+    // the longest real headline, against 12 or more everywhere else. The top and
+    // bottom pads and the photograph's share of the frame are trimmed for the
+    // same reason -- this panel is under 450px tall and 162px of it was padding.
+    // Together they take that headline from 64px to 83px (10.6px at the grid).
+    const padTop = portrait ? pad : Math.round(pad * 0.7);
+    const padBottom = portrait ? pad + safeB : safeB + Math.round(pad * 0.5);
     css = `
 .photo{border-bottom:${Math.round(w * (portrait ? 0.014 : 0.011))}px solid ${P.accent}}
 .panel{left:0;right:0;top:${photoH}px;bottom:0;
-  padding:${pad}px ${pad + (portrait ? 0 : safeR)}px ${pad + safeB}px ${pad}px;
+  padding:${padTop}px ${pad}px ${padBottom}px ${pad}px;
   gap:${Math.round(gap * (portrait ? 1 : 0.6))}px}
 .fit{font-size:${fitMax}px}
 .sub{padding-right:${safeR}px}
@@ -420,6 +493,13 @@ export function buildThumbHtml(opts: {
     // dark, desaturated, with the marker still glowing through it, so the
     // poster reads as "a page from a book" rather than as a gradient — which
     // is the whole difference from a generic quote card.
+    // The scrim is what the type reads against, so it is solid from the top of
+    // the frame. It used to FADE IN -- 62% (50% on a light ground) at the top to
+    // 94% at the foot -- which made it thinnest exactly where the eyebrow sits;
+    // on Editorial's ecru that left the eyebrow at 4.4:1. The fixture that
+    // measured it is a flat, even page, and a photograph of a desk is not, so
+    // the margin is spent here rather than left at the threshold.
+    const scrim = `linear-gradient(180deg,${alpha(P.ground, 0.84)} 0%,${alpha(P.ground, 0.84)} 46%,${alpha(P.ground, 0.95)} 100%)`;
     css = `
 /* The page is defocused rather than merely dimmed. At 200px a legible second
    block of words beside the headline is not texture, it is a competitor — but
@@ -437,18 +517,20 @@ ${
     ? `.photo{opacity:.5}
 .photo img{filter:grayscale(.68) contrast(1.25) brightness(.46) blur(${Math.round(w * 0.006)}px)}
 .photo .mark{mix-blend-mode:screen;opacity:.92}
-.scrim{position:absolute;inset:0;
-  background:linear-gradient(180deg,${alpha(P.ground, 0.62)} 0%,${alpha(P.ground, 0.8)} 46%,${alpha(P.ground, 0.94)} 100%)}`
+.scrim{position:absolute;inset:0;background:${scrim}}`
     : `.photo{opacity:.5;mix-blend-mode:multiply}
 .photo img{filter:grayscale(.6) contrast(.82) brightness(1.06) blur(${Math.round(w * 0.006)}px)}
 .photo .mark{mix-blend-mode:multiply;opacity:.9}
-.scrim{position:absolute;inset:0;
-  background:linear-gradient(180deg,${alpha(P.ground, 0.5)} 0%,${alpha(P.ground, 0.7)} 46%,${alpha(P.ground, 0.88)} 100%)}`
+.scrim{position:absolute;inset:0;background:${scrim}}`
 }
 .panel{left:${pad}px;right:${pad}px;top:${pad + Math.round(h * (portrait ? 0.1 : 0.14))}px;
   bottom:${pad + safeB + Math.round(h * (portrait ? 0.07 : 0.1))}px;gap:${gap}px;justify-content:center}
 .fit{font-size:${fitMax}px;text-transform:uppercase;letter-spacing:-0.022em;
   text-shadow:0 ${Math.round(h * 0.006)}px ${Math.round(h * 0.02)}px ${alpha(P.ground, 0.6)}}
+/* The headline's shadow lifts light type off the page. On a keyword it is dark
+   type on a bright slab, and a dark shadow there is a grey halo round every
+   letter -- the opposite of what a shadow is for. */
+.kw{text-shadow:none}
 .eyebrow{position:absolute;left:${pad}px;top:${pad}px;right:${pad}px}
 .chip{left:${pad}px;bottom:${pad + Math.round(safeB * 0.4)}px}
 `;
@@ -477,11 +559,20 @@ ${
     // being covered.
     const fieldH = Math.round(h * (portrait ? 0.66 : 0.66));
     const seam = Math.round(h * (portrait ? 0.008 : 0.014));
+    // The field's depth cue may only move the surface AWAY from the type on it.
+    // It used to be both a pale glow top-left and a dark fall-off at the foot,
+    // and each of them pulled the field toward the ink in one half of the
+    // frame: dark type lost a fifth of its contrast under the fall-off, where
+    // the headline sits, and Marginalia's 4.1:1 became 3.2.
+    const lightInk = !isDark(P.onAccent);
+    const fieldDepth = lightInk
+      ? `linear-gradient(180deg, ${fade("#000000")} 46%, ${alpha("#000000", 0.22)} 100%)`
+      : `radial-gradient(90% 80% at 16% 10%, ${alpha("#ffffff", 0.17)} 0%, ${fade("#ffffff")} 66%)`;
+    const fieldSoft = softInk(P.onAccent, P.accent, 5.2, 0.8);
     css = `
 .field{position:absolute;left:0;top:0;width:${w}px;height:${fieldH}px;background:${P.accent}}
 .fieldtex{position:absolute;left:0;top:0;width:${w}px;height:${fieldH}px;pointer-events:none;
-  background:radial-gradient(90% 80% at 16% 10%, ${alpha("#ffffff", 0.17)} 0%, ${fade("#ffffff")} 66%),
-             linear-gradient(180deg, ${fade("#000000")} 46%, ${alpha("#000000", 0.2)} 100%)}
+  background:${fieldDepth}}
 .seam{position:absolute;left:0;right:0;top:${fieldH}px;height:${seam}px;background:${P.ground}}
 .panel{left:${pad}px;right:${pad}px;top:${pad}px;height:${fieldH - pad * 2}px;gap:${Math.round(gap * 0.7)}px;
   justify-content:flex-start;color:${P.onAccent}}
@@ -489,9 +580,9 @@ ${
    air above them reads as a poster's negative space rather than as a gap the
    layout failed to fill. */
 .fitbox{align-items:flex-end}
-.etext{color:${alpha(P.onAccent, 0.82)}}
+.etext{color:${fieldSoft}}
 .ebar{background:${P.onAccent}}
-.sub{color:${alpha(P.onAccent, 0.8)}}
+.sub{color:${fieldSoft}}
 .fit{font-size:${fitMax}px;color:${P.onAccent};letter-spacing:-0.034em}
 /* The band is the quietest element here, not the loudest: it is evidence
    under a headline, and an unmodified page photograph is brighter than any
@@ -505,12 +596,9 @@ ${
   background:linear-gradient(180deg, ${alpha(P.ground, 0.16)} 0%, ${alpha(P.ground, 0.06)} 34%, ${alpha(P.ground, 0.5)} 100%)}
 /* On a field that is already the accent, the keyword inverts instead: a slab
    of marker on a slab of accent is two saturated colours fighting, and at
-   200px the pair reads as mud. */
-/* Still a background IMAGE, not a background-color: the sized, positioned band
-   is what keeps the slab inside its own line, and a flat colour would paint
-   the full inline box and strike through the line above — which it did. */
-.kw{color:${P.accent};
-  background-image:linear-gradient(180deg,${P.onAccent} 0%,${P.onAccent} 100%)}
+   200px the pair reads as mud. The type colour is the field's own, so it reads
+   on the ink slab at exactly the ratio the ink reads on the field. */
+.kw{color:${P.accent};background-image:none;background-color:${P.onAccent}}
 `;
     body =
       ground +

@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { isSettingKey, validateSetting, SETTING_FALLBACKS, SETTING_KEYS } from "../src/lib/settings/keys";
+import {
+  isSettingKey,
+  validateSetting,
+  voiceProviders,
+  POCKET_ONLY_CAPS,
+  SETTING_FALLBACKS,
+  SETTING_KEYS,
+  type VoiceProviderCaps,
+} from "../src/lib/settings/keys";
 import { POCKET_VOICES } from "../src/lib/media/pocket-tts";
 import { MOODS } from "../src/lib/media/moods";
 import { MUSIC_MOODS } from "../src/lib/media/ffmpeg";
@@ -70,12 +78,16 @@ test("non-finite and non-scalar numbers are refused", () => {
   }
 });
 
-test("musicLevel is bounded to -40..-6 dB", () => {
+test("musicLevel is bounded to -40..-13 dB", () => {
   assert.equal(validateSetting("musicLevel", "-22"), "-22");
-  assert.equal(validateSetting("musicLevel", -6), "-6");
+  assert.equal(validateSetting("musicLevel", -13), "-13");
   assert.equal(validateSetting("musicLevel", -40), "-40");
   assert.equal(validateSetting("musicLevel", -41), null);
-  assert.equal(validateSetting("musicLevel", -5), null);
+  // -12 and above is where `levelAndFade`'s peak ceiling can hold some mood back
+  // (momentum's upper tiers first engage it at about -12.0 to -12.2), so the slider
+  // would not be telling the truth: the contract stops short of it.
+  assert.equal(validateSetting("musicLevel", -12), null);
+  assert.equal(validateSetting("musicLevel", -6), null);
   assert.equal(validateSetting("musicLevel", "loud"), null);
 });
 
@@ -95,9 +107,82 @@ test("musicMood accepts 'auto' plus exactly the registered moods", () => {
   }
 });
 
-test("voiceProvider accepts the providers tts.ts dispatches on and nothing else", () => {
-  for (const p of ["pocket", "elevenlabs", "openai", "system"]) assert.equal(validateSetting("voiceProvider", p), p);
-  assert.equal(validateSetting("voiceProvider", "azure"), null);
+// ---------------------------------------------------------------------------
+// voiceProvider: a one-way door, because there is no selector for it.
+//
+// It used to accept all four providers `tts.ts` has code for. `resolveVoice`
+// reads the setting verbatim while `voiceId` stays a Pocket id, so `system` off
+// macOS and a keyless `elevenlabs`/`openai` all end in `synthSystem`'s throw --
+// failing the narration step of every render after that. Ruling R2 ships no
+// provider selector, so nothing in the app could set it back. The allow-list is
+// therefore what this install can honour, not what the code can dispatch on.
+// ---------------------------------------------------------------------------
+
+const caps = (over: Partial<VoiceProviderCaps> = {}): VoiceProviderCaps => ({ ...POCKET_ONLY_CAPS, ...over });
+
+test("voiceProvider accepts pocket always, and nothing else without the means to run it", () => {
+  // Pocket is local and needs no key, so it is honourable everywhere.
+  for (const c of [POCKET_ONLY_CAPS, caps({ platform: "darwin" }), caps({ elevenLabsKey: "k" })]) {
+    assert.equal(validateSetting("voiceProvider", "pocket", c), "pocket");
+  }
+
+  // Nothing else, on a machine with no keys and no `say`.
+  for (const p of ["elevenlabs", "openai", "system"]) {
+    assert.equal(validateSetting("voiceProvider", p, POCKET_ONLY_CAPS), null, `${p} with nothing to run it on`);
+  }
+
+  // The omitted-capabilities default is Pocket-only, so forgetting to pass them
+  // can only refuse a provider, never admit one this machine cannot run.
+  assert.equal(validateSetting("voiceProvider", "pocket"), "pocket");
+  for (const p of ["elevenlabs", "openai", "system"]) {
+    assert.equal(validateSetting("voiceProvider", p), null, `${p} is not the safe default`);
+  }
+
+  // Each one, once it has what it needs -- and only that one.
+  assert.equal(validateSetting("voiceProvider", "elevenlabs", caps({ elevenLabsKey: "sk-eleven" })), "elevenlabs");
+  assert.equal(validateSetting("voiceProvider", "openai", caps({ elevenLabsKey: "sk-eleven" })), null, "the wrong key is no key");
+  assert.equal(validateSetting("voiceProvider", "openai", caps({ openaiKey: "sk-openai" })), "openai");
+  assert.equal(validateSetting("voiceProvider", "elevenlabs", caps({ openaiKey: "sk-openai" })), null);
+
+  // `system` is macOS `say`: no key, and the platform is the whole gate.
+  assert.equal(validateSetting("voiceProvider", "system", caps({ platform: "darwin" })), "system");
+  for (const platform of ["win32", "linux", ""]) {
+    assert.equal(validateSetting("voiceProvider", "system", caps({ platform })), null, `system on ${platform || "(unknown)"}`);
+  }
+
+  // A key that is only whitespace is not a key.
+  assert.equal(validateSetting("voiceProvider", "elevenlabs", caps({ elevenLabsKey: "   " })), null);
+
+  // And a provider this build has no code for at all, however well equipped.
+  assert.equal(validateSetting("voiceProvider", "azure", caps({ elevenLabsKey: "k", openaiKey: "k", platform: "darwin" })), null);
+  assert.equal(validateSetting("voiceProvider", "", caps({ platform: "darwin" })), null);
+  assert.equal(validateSetting("voiceProvider", 7, caps({ platform: "darwin" })), null);
+});
+
+test("voiceProviders lists exactly what validateSetting will accept", () => {
+  // The list is what a provider selector would offer, if one is ever added
+  // (ruling R2 says not yet), so the two must not be able to disagree.
+  const every = ["pocket", "elevenlabs", "openai", "system"];
+  for (const c of [
+    POCKET_ONLY_CAPS,
+    caps({ platform: "darwin" }),
+    caps({ elevenLabsKey: "k" }),
+    caps({ openaiKey: "k" }),
+    caps({ elevenLabsKey: "k", openaiKey: "k", platform: "darwin" }),
+  ]) {
+    const offered = voiceProviders(c);
+    assert.equal(offered[0], "pocket", "pocket is always first and always there");
+    for (const p of every) {
+      assert.equal(validateSetting("voiceProvider", p, c) !== null, offered.includes(p), `${p} for ${JSON.stringify(c)}`);
+    }
+  }
+});
+
+test("the fallback is a provider every install can honour", () => {
+  // Otherwise GET would report a default that PUT refuses, on the one setting
+  // with no UI to change it back.
+  assert.equal(SETTING_FALLBACKS.voiceProvider, "pocket");
+  assert.equal(validateSetting("voiceProvider", SETTING_FALLBACKS.voiceProvider, POCKET_ONLY_CAPS), "pocket");
 });
 
 test("theme validation is unchanged", () => {
@@ -118,7 +203,49 @@ test("ffmpeg's MUSIC_MOODS is the registry moods.ts owns", () => {
   // and the settings vocabulary cannot drift apart; this guards the re-export
   // and the four shipped moods.
   assert.deepEqual(MUSIC_MOODS, MOODS);
-  assert.deepEqual(Object.keys(MOODS), ["terminal", "spotlight", "blueprint", "editorial"]);
+  assert.deepEqual(Object.keys(MOODS), [
+    "terminal", "spotlight", "blueprint", "editorial", // the four that shipped, first and in this order
+    "vista", "tension", "resolve", "nocturne", "momentum", "stark",
+  ]);
+});
+
+test("the four moods that shipped are, value for value, what they were", () => {
+  // The ids alone do not hold them: a mood whose progression, root or chord length
+  // changed would keep its id and re-key every old episode that is rendered again.
+  // These literals are the values at 9d60a66 (Task 4's move did not touch them,
+  // and Task 7's six new moods are added beside them, never in place of them).
+  // This is the half of acceptance criterion 19 that the audio comparison in
+  // tests/music-moods.test.mts cannot see, because that renders whatever the
+  // registry says -- including a registry that has changed.
+  assert.deepEqual(
+    Object.fromEntries(["terminal", "spotlight", "blueprint", "editorial"].map((id) => [id, MOODS[id]])),
+    {
+      terminal: {
+        id: "terminal",
+        progression: [[0, 3, 7], [8, 12, 15], [3, 7, 10], [10, 14, 17]],
+        chordSeconds: 4,
+        root: 130.81,
+      },
+      spotlight: {
+        id: "spotlight",
+        progression: [[0, 3, 7], [5, 8, 12], [10, 14, 17], [7, 10, 14]],
+        chordSeconds: 3,
+        root: 146.83,
+      },
+      blueprint: {
+        id: "blueprint",
+        progression: [[0, 5, 7], [2, 7, 9], [0, 5, 7], [-2, 3, 5]],
+        chordSeconds: 5,
+        root: 123.47,
+      },
+      editorial: {
+        id: "editorial",
+        progression: [[0, 4, 7], [7, 11, 14], [9, 12, 16], [5, 9, 12]],
+        chordSeconds: 4.5,
+        root: 138.59,
+      },
+    },
+  );
 });
 
 test("moods.ts is client-safe: it imports nothing from node or ffmpeg", () => {

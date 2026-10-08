@@ -88,10 +88,35 @@ export function serializeThumbnails(specs: ThumbSpec[]): string {
 /**
  * Resolve a requested key to a file, or null.
  *
- * The URL contributes NOTHING to the path. The key is matched, byte for byte,
- * against the keys already recorded on that episode; the path comes from the
- * matched record and is then confined to `THUMBS_ROOT/<episodeId>` anyway, so
- * even a poisoned database row cannot be used to read an arbitrary file.
+ * The URL contributes NOTHING to the path, and neither does the stored row. The
+ * key is matched, byte for byte, against the keys already recorded on that
+ * episode, and the path is then DERIVED: `THUMBS_ROOT/<episodeId>/<key>.jpg`,
+ * which is the only path a successful resolution could ever have had.
+ *
+ * It used to read `spec.path` and reject anything that was not exactly that
+ * derived path, which made the stored string redundant — its only possible
+ * contribution was a refusal. And it refused a great deal: this install
+ * inherited 50 of its 115 postered episodes from a `G:\YT-Book\` copy of the
+ * app, so their rows name that install's thumbs directory while all six poster
+ * files sit, complete and correct, in the local one. 43% of the library showed
+ * an initials tile, and the diagnosis "the data is stale, re-render them" was
+ * wrong: the files were never missing, only the string beside them was.
+ *
+ * Deriving keeps every guarantee the comparison gave and removes a hostile
+ * input from the read path rather than adding one:
+ *   - `isThumbKey` still gates the key before it is compared or joined;
+ *   - the key must still appear, byte for byte, in this episode's own stored
+ *     specs, so an unrecorded key resolves to nothing even if a file with that
+ *     name exists on disk;
+ *   - the filename is still pinned to `<key>.jpg`, so a record can never name
+ *     another file;
+ *   - `episodeId` must still name one directory directly under `THUMBS_ROOT`,
+ *     which is now checked here instead of falling out of the comparison. It
+ *     always comes from a row this process just read, but deriving a path from
+ *     it makes it part of the path, so it is confined like anything else.
+ *
+ * A row that points at `/etc/passwd` is therefore no longer a refusal — it is
+ * simply ignored, and the episode's own poster is served.
  */
 export function selectThumb(specs: ThumbSpec[], key: unknown, episodeId: string): ThumbSpec | null {
   if (!isThumbKey(key)) return null;
@@ -99,10 +124,9 @@ export function selectThumb(specs: ThumbSpec[], key: unknown, episodeId: string)
   const spec = specs.find((s) => s.key === key);
   if (!spec) return null;
 
-  const dir = path.resolve(path.join(THUMBS_ROOT, episodeId));
-  const file = path.resolve(spec.path);
-  if (path.dirname(file) !== dir) return null;
-  if (path.basename(file) !== `${key}.jpg`) return null;
+  const root = path.resolve(THUMBS_ROOT);
+  const dir = path.resolve(root, episodeId);
+  if (path.dirname(dir) !== root) return null;
 
-  return { ...spec, path: file };
+  return { ...spec, path: path.join(dir, `${key}.jpg`) };
 }

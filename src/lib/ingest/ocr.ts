@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import { createWorker, type Worker } from "tesseract.js";
-import { IngestFailed, OcrTimeoutError, AppError } from "../errors";
+import { IngestFailed, OcrTimeoutError, AppError, isAppError } from "../errors";
 import { OCR_CACHE_DIR } from "../paths";
 
 /**
@@ -37,10 +37,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, imagePath: string): Pro
         ),
       );
     }, ms);
-    // Never let this bookkeeping timer hold the process open on its own —
-    // a live tesseract.js worker already does that deliberately (see
-    // `disposeOcr`'s doc comment); this timer is not meant to add to it.
-    timer.unref?.();
+    // Deliberately NOT unref'd. It used to be, on the reasoning that a live
+    // tesseract.js worker already holds the process open (see `disposeOcr`) so
+    // this bookkeeping timer need not add to it. That reasoning fails in the one
+    // case this timeout exists for: if the worker stops holding the loop open
+    // without ever settling its promise, an unref'd timer can never fire, and
+    // the caller waits forever on the very hang it was supposed to escape. The
+    // cost of keeping it ref'd is bounded and tiny — both settle paths below
+    // clear it, so it can only hold the loop while a measure is genuinely still
+    // outstanding, which is exactly when the process should stay alive.
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -255,7 +260,7 @@ export async function measurePage(
   try {
     return await withTimeout(getEngine().measure(imagePath), timeoutMs, imagePath);
   } catch (err) {
-    if (err instanceof AppError) throw err;
+    if (isAppError(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     throw new IngestFailed(`OCR failed to measure ${imagePath}: ${message}`);
   }

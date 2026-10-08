@@ -13,7 +13,7 @@ import {
   isBookThemeId,
 } from "../src/lib/video/composition/themes";
 import { mix } from "../src/lib/video/composition/themes/color";
-import { buildComposition, AUDIO_OFFSET } from "../src/lib/video/composition/build";
+import { buildComposition, AUDIO_OFFSET, CARD_W } from "../src/lib/video/composition/build";
 import { VIDEO_THEMES } from "../src/lib/strings";
 
 /* ===========================================================================
@@ -348,6 +348,276 @@ test("every theme builds a composition that keeps the shared skeleton's guarante
     const fromTos = html.match(/fromTo\(/g) ?? [];
     const guarded = html.match(/immediateRender:\s*false/g) ?? [];
     assert.ok(guarded.length >= fromTos.length, `${id}: every non-zero fromTo must be guarded`);
+  }
+});
+
+/* ===========================================================================
+ * The theme engine (2026-10-05)
+ *
+ * Six themes were added, as `ThemeSpec` data compiled by `themes/compile.ts`
+ * rather than as six more 180-line modules. Every assertion above still applies
+ * to them — they are in `ALL` — and these are the extra ones the new shape
+ * makes possible to state.
+ * ======================================================================== */
+
+/** The six compiled from a spec. The five above predate the compiler. */
+const ENGINE_THEME_IDS = ["academia", "atelier", "dossier", "quiet", "storybook", "neon"] as const;
+
+test("the engine themes take every colour from their own palette too", async () => {
+  // Same rule as the §17 four, and for the same reason: a colour that does not
+  // trace back to a palette role is a colour the thumbnail renderer cannot know
+  // about. The palette literal itself sits above `export const` in each file,
+  // which is the slice this reads from — exactly as editorial.ts arranges it.
+  for (const id of ENGINE_THEME_IDS) {
+    const code = await codeOf(id);
+    const body = code.slice(code.indexOf("export const"));
+    assert.ok(body.length > 0, `${id} must export its theme`);
+    assert.deepEqual(body.match(/#[0-9a-f]{3,8}\b/gi) ?? [], [], `${id} paints a raw hex outside its palette`);
+    assert.deepEqual(body.match(/\brgba?\(/g) ?? [], [], `${id} paints a raw rgb()/rgba() outside its palette`);
+  }
+});
+
+test("no engine theme is a recolour of another", () => {
+  // The bar the operator set: "different palette AND typography AND motion AND
+  // grain, not recolours". Palette is covered by the ground/accent/marker test
+  // above; this is the other three. Any two themes must differ on at least
+  // THREE of these six axes — one or two is a variation, three is a different
+  // treatment.
+  const axes = (id: string) => {
+    const t = BOOK_THEMES[id as keyof typeof BOOK_THEMES];
+    return [
+      t.typography?.display ?? "(system)",
+      t.typography?.caption ?? "chip",
+      t.texture?.grain ?? "none",
+      t.marker?.shape ?? "highlighter",
+      String(t.optics?.perspective ?? 1700),
+      String(t.optics?.sweepAngle ?? -8) + "/" + String(t.optics?.sweepWidth ?? 42),
+    ];
+  };
+  for (let i = 0; i < ENGINE_THEME_IDS.length; i++) {
+    for (let j = i + 1; j < ENGINE_THEME_IDS.length; j++) {
+      const a = axes(ENGINE_THEME_IDS[i]);
+      const b = axes(ENGINE_THEME_IDS[j]);
+      const differing = a.filter((v, k) => v !== b[k]).length;
+      assert.ok(
+        differing >= 3,
+        `${ENGINE_THEME_IDS[i]} and ${ENGINE_THEME_IDS[j]} differ on only ${differing} of six treatment axes — that is a recolour`,
+      );
+    }
+  }
+});
+
+test("every engine theme introduces itself, and the picker's copy has not drifted from it", () => {
+  // `strings.ts` cannot import a theme (the inspector is "use client" and a
+  // theme module reaches build.ts), so its two lines per theme are a hand-copy.
+  // A copy is only safe if something notices when it drifts — this is that,
+  // the same guard the voice catalogue already has.
+  for (const id of ENGINE_THEME_IDS) {
+    const meta = BOOK_THEMES[id as keyof typeof BOOK_THEMES].meta;
+    assert.ok(meta, `${id} has no meta — the picker would show an id and nothing else`);
+    assert.ok(meta!.name.length > 0 && meta!.description.length > 0 && meta!.bestFor.length > 0);
+
+    const option = VIDEO_THEMES.find((t) => t.id === id);
+    assert.ok(option, `${id} is in the registry but not in the picker`);
+    assert.equal(option!.label, meta!.name, `${id}'s picker label has drifted from its meta.name`);
+    assert.equal(option!.description, meta!.description, `${id}'s picker description has drifted from its meta`);
+    assert.equal(option!.bestFor, meta!.bestFor, `${id}'s picker best-for line has drifted from its meta`);
+  }
+
+  // Every theme the picker offers says what it looks like and what it is for,
+  // including the five with no `meta` of their own.
+  for (const option of VIDEO_THEMES) {
+    assert.ok(option.description && option.description.length > 0, `${option.id} has no preview description`);
+    assert.ok(option.bestFor && option.bestFor.length > 0, `${option.id} has no best-for line`);
+  }
+});
+
+/**
+ * A caption long enough to need two rows and to trip `captionFontSize`'s
+ * step-down (anything over 34 characters is emitted at an inline 52px rather
+ * than 60px). This is the sentence the defect was found on: at the inline size
+ * Atelier and Quiet overflowed the two-row clamp and lost their last word.
+ */
+const LONG_CAPTION = "Successful entrepreneurs embrace uncertainty";
+
+/** The same fixture, with a caption that actually stresses the clamp. */
+function longCaptionFixture(theme: BookTheme) {
+  const base = fixture(theme);
+  return {
+    ...base,
+    pkg: { ...base.pkg, beats: base.pkg.beats.map((b) => ({ ...b, voiceover: LONG_CAPTION })) },
+    beats: base.beats.map((b) => ({ ...b, text: LONG_CAPTION })),
+    captions: [{ text: LONG_CAPTION, start: 0.1, end: 1.9, beatIndex: 0, words: [] }],
+  };
+}
+
+/** First family in a stack, unquoted — what a computed `font-family` resolves to. */
+const firstFamily = (stack: string) => stack.split(",")[0].trim().replace(/^["']|["']$/g, "").toLowerCase();
+
+test("every typography and optics field a theme declares actually lands in the browser", async () => {
+  /* This test exists because of a measured hole. The previous browser check
+   * only read `font-family`, and so it passed while `typography.captionSize`
+   * did nothing at all: `captionMarkup` writes `style="font-size:52px"` INLINE
+   * on every `.caption-line`, an inline style beats a stylesheet rule, and all
+   * eleven themes computed to 52px regardless of what they declared. A field
+   * that is declared, documented and ignored is exactly the "do not fake
+   * features" failure, so every declared value is now read back from the
+   * document rather than trusted.
+   *
+   * `.cine-bokeh`, `.bokeh-dot` and `.cine-vignette` only appear on a render
+   * that has a scene plan, so they are injected here rather than building a
+   * whole cinematic composition per theme. That is sound for exactly one
+   * reason, asserted below before it is relied on: `build.ts` gives those
+   * elements no inline style for the properties a theme sets. */
+  const scened = buildComposition({ ...fixture(BOOK_THEMES.marginalia) });
+  assert.doesNotMatch(
+    scened,
+    /class="cine-bokeh"[^>]*style=|class="cine-vignette"[^>]*style=/,
+    "build.ts now writes an inline style on a cinematic layer a theme restyles — injecting it below would stop proving anything",
+  );
+  assert.doesNotMatch(
+    buildComposition({ ...fixture(BOOK_THEMES.marginalia) }),
+    /class="bokeh-dot"[^>]*style="[^"]*(filter|opacity)/,
+    "a bokeh dot now carries an inline filter/opacity, which would beat the theme's rule",
+  );
+
+  const browser = await chromium.launch();
+  try {
+    for (const id of ENGINE_THEME_IDS) {
+      const theme = BOOK_THEMES[id as keyof typeof BOOK_THEMES];
+      const t = theme.typography!;
+      const o = theme.optics ?? {};
+      const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+      try {
+        await page.setContent(buildComposition(longCaptionFixture(theme)), { waitUntil: "load" });
+        await page.waitForFunction(() => Boolean((window as unknown as { __tl?: unknown }).__tl));
+        await page.evaluate(() => document.fonts.ready);
+
+        // No named inner function anywhere in this callback: tsx compiles the
+        // test with esbuild's keepNames, which wraps a named arrow in a `__name`
+        // helper that does not exist inside the page — the evaluate then fails
+        // with "__name is not defined" rather than with anything about themes.
+        const seen = await page.evaluate(() => {
+          const stage = document.querySelector(".stage")!;
+          // Built node by node rather than from a markup string: there is no
+          // untrusted input here, but a test that reaches for innerHTML is a
+          // pattern that gets copied into code where there is.
+          const bokeh = document.createElement("div");
+          bokeh.className = "cine-bokeh";
+          const dot = document.createElement("div");
+          dot.className = "bokeh-dot";
+          bokeh.appendChild(dot);
+          const cineVignette = document.createElement("div");
+          cineVignette.className = "cine-vignette";
+          stage.appendChild(bokeh);
+          stage.appendChild(cineVignette);
+
+          const wanted: [string, string, string[]][] = [
+            ["caption", ".caption-line", ["font-family", "font-size", "font-weight", "letter-spacing", "text-transform", "border-radius", "padding-top"]],
+            ["hook", ".hook-text", ["font-family", "font-size", "font-weight", "letter-spacing"]],
+            ["byline", "#byline", ["font-family", "font-size", "font-weight", "letter-spacing", "font-style"]],
+            ["stage", ".card-stage", ["perspective", "perspective-origin"]],
+            ["sweep", ".card-sweep", ["transform", "mix-blend-mode"]],
+            ["band", ".card-sweep-band", ["width", "filter"]],
+            ["bokeh", ".cine-bokeh", ["opacity"]],
+            ["dot", ".bokeh-dot", ["filter"]],
+            ["cineVignette", ".cine-vignette", ["background-image"]],
+          ];
+          const out: Record<string, Record<string, string> | null> = {};
+          for (const [name, sel, props] of wanted) {
+            const el = document.querySelector(sel);
+            if (!el) {
+              out[name] = null;
+              continue;
+            }
+            const cs = getComputedStyle(el);
+            const values: Record<string, string> = {};
+            for (const prop of props) values[prop] = cs.getPropertyValue(prop);
+            out[name] = values;
+          }
+          // Does the two-row clamp actually hold the whole sentence?
+          const cap = document.querySelector(".caption-line") as HTMLElement | null;
+          return { styles: out, captionFits: cap ? cap.scrollHeight <= cap.clientHeight + 1 : null };
+        });
+
+        const px = (v: string) => Math.round(parseFloat(v));
+        // Tracking is compared to 0.05px rather than rounded, so a declared
+        // 0.2px cannot pass by rounding to the same 0 as no tracking at all.
+        // `normal` IS zero: Storybook declares "0px" and the browser hands
+        // back "normal", which is the same type on screen.
+        const track = (v: string) => (v.trim() === "normal" ? 0 : parseFloat(v));
+
+        // --- typography -----------------------------------------------------
+        assert.equal(px(seen.styles.caption!["font-size"]), t.captionSize, `${id}: caption is not the size it declares`);
+        assert.equal(px(seen.styles.hook!["font-size"]), t.hookSize, `${id}: hook is not the size it declares`);
+        assert.equal(px(seen.styles.byline!["font-size"]), t.bylineSize ?? 28, `${id}: byline is not the size it declares`);
+        assert.equal(seen.styles.caption!["font-weight"], String(t.captionWeight), `${id}: caption weight`);
+        assert.equal(seen.styles.hook!["font-weight"], String(t.displayWeight), `${id}: hook weight`);
+        assert.equal(seen.styles.byline!["font-weight"], String(t.bodyWeight ?? 600), `${id}: byline weight`);
+        assert.ok(
+          Math.abs(track(seen.styles.caption!["letter-spacing"]) - track(t.captionTracking!)) < 0.05,
+          `${id}: caption tracking is ${seen.styles.caption!["letter-spacing"]}, not ${t.captionTracking!}`,
+        );
+        assert.ok(
+          Math.abs(track(seen.styles.hook!["letter-spacing"]) - track(t.displayTracking!)) < 0.05,
+          `${id}: hook tracking is ${seen.styles.hook!["letter-spacing"]}, not ${t.displayTracking!}`,
+        );
+        assert.ok(
+          Math.abs(track(seen.styles.byline!["letter-spacing"]) - track(t.bylineTracking!)) < 0.05,
+          `${id}: byline tracking is ${seen.styles.byline!["letter-spacing"]}, not ${t.bylineTracking!}`,
+        );
+        assert.equal(seen.styles.byline!["font-style"], t.bylineStyle ?? "normal", `${id}: byline style`);
+        assert.equal(
+          seen.styles.caption!["text-transform"],
+          t.captionCase === "uppercase" ? "uppercase" : "none",
+          `${id}: caption case`,
+        );
+        assert.equal(firstFamily(seen.styles.caption!["font-family"]), firstFamily(t.body!), `${id}: caption family`);
+        assert.equal(firstFamily(seen.styles.hook!["font-family"]), firstFamily(t.display!), `${id}: hook family`);
+        assert.equal(firstFamily(seen.styles.byline!["font-family"]), firstFamily(t.body!), `${id}: byline family`);
+        // The caption plate's shape, which is what `caption: "plate"` means.
+        assert.equal(
+          px(seen.styles.caption!["border-radius"]),
+          t.caption === "plate" ? 0 : t.caption === "rule" ? 3 : 20,
+          `${id}: caption plate shape`,
+        );
+
+        // The whole point of the declared sizes: a real sentence has to fit the
+        // two-row clamp. At the inline 52px, Atelier and Quiet did not.
+        assert.ok(seen.captionFits, `${id}: "${LONG_CAPTION}" overflows the two-line clamp and would be visibly cut`);
+
+        // --- optics ---------------------------------------------------------
+        assert.equal(px(seen.styles.stage!.perspective), o.perspective ?? 1700, `${id}: card-stage perspective`);
+        // Resolved to pixels by the browser, so compared as numbers: `50% 38%`
+        // of the 1080x1920 stage comes back as "540px 729.594px", not a tidy
+        // 729.6, and a string compare would fail on the rounding rather than on
+        // anything about the theme.
+        const originPct = (o.perspectiveOrigin ?? "50% 38%").split(/\s+/).map((v) => parseFloat(v) / 100);
+        const originPx = (seen.styles.stage!["perspective-origin"].match(/-?[\d.]+/g) ?? []).map(Number);
+        assert.ok(
+          Math.abs(originPx[0] - originPct[0] * 1080) < 1 && Math.abs(originPx[1] - originPct[1] * 1920) < 1,
+          `${id}: perspective origin is ${seen.styles.stage!["perspective-origin"]}, not ${o.perspectiveOrigin ?? "50% 38%"}`,
+        );
+        assert.equal(px(seen.styles.band!.width), Math.round((CARD_W * (o.sweepWidth ?? 42)) / 100), `${id}: sweep band width`);
+        assert.equal(seen.styles.band!.filter, `blur(${o.sweepBlur ?? 24}px)`, `${id}: sweep band blur`);
+        assert.equal(seen.styles.sweep!["mix-blend-mode"], o.sweepBlend ?? "screen", `${id}: sweep blend`);
+        // rotate(a) scale(s) composes to [s·cos a, s·sin a, -s·sin a, s·cos a].
+        const a = ((o.sweepAngle ?? -8) * Math.PI) / 180;
+        const s = o.sweepScale ?? 1.25;
+        const m = (seen.styles.sweep!.transform.match(/-?[\d.]+/g) ?? []).map(Number);
+        assert.ok(Math.abs(m[0] - s * Math.cos(a)) < 0.01 && Math.abs(m[1] - s * Math.sin(a)) < 0.01,
+          `${id}: sweep is not rotated ${o.sweepAngle ?? -8}deg at scale ${s} — got ${seen.styles.sweep!.transform}`);
+        assert.equal(Number(seen.styles.bokeh!.opacity), o.bokeh ?? 1, `${id}: bokeh intensity`);
+        assert.equal(seen.styles.dot!.filter, `blur(${o.bokehBlur ?? 8}px)`, `${id}: bokeh blur`);
+        if (o.cineVignette !== undefined) {
+          assert.match(seen.styles.cineVignette!["background-image"], /radial-gradient/, `${id}: cine vignette is not painted`);
+        }
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    await browser.close();
   }
 });
 

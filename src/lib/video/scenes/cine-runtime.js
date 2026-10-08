@@ -716,8 +716,34 @@
     var beacon = sprite(E, E.acc, 2.8, E.light ? 0.45 : 0.95); beacon.position.set(0, 2.45, -1.0); g.add(beacon);
     var beam = new T.Mesh(new T.PlaneGeometry(0.28, 5.5), new T.MeshBasicMaterial({ map: E.soft, color: E.acc, transparent: true, opacity: E.light ? 0.22 : 0.5, depthWrite: false, blending: E.light ? T.NormalBlending : T.AdditiveBlending, side: T.DoubleSide }));
     beam.geometry.clearGroups(); beam.position.set(0, 4.7, -1.0); g.add(beam);
-    var flag = new T.Mesh(poly(T, [[0, 0], [0.5, 0.18], [0, 0.36]]), new T.MeshBasicMaterial({ color: E.acc, side: T.DoubleSide }));
-    flag.position.set(0, 2.2, -1.0); g.add(flag);
+    /* The summit flag. It used to be a bare triangle hanging in the air with no
+       staff, spun about its own vertical axis by flag.rotation.y — so it read as
+       a rigid plate swivelling like a weather vane, which is the one thing cloth
+       never does. A real flag is pinned along its hoist edge and free at the fly,
+       so the motion has to GROW across the cloth from nothing at the pole to its
+       full throw at the far edge. That is the whole illusion, and a single
+       rotation cannot express it because a rotation moves every point at once.
+
+       So: a staff that does not move, and a cloth whose vertices are displaced by
+       a travelling wave whose amplitude rises with distance from the staff. Each
+       vertex is recomputed from its STORED base position every frame rather than
+       nudged from wherever it ended up last frame — the renderer seeks to
+       timestamps in a non-linear order, so anything that accumulates would paint
+       a different flag depending on which frames happened to be rendered first. */
+    var staff = new T.Mesh(new T.PlaneGeometry(0.045, 0.95), std(E, E.light ? 0x4a4336 : 0xc3cbdd, { metal: 0.65, rough: 0.35, double: true }));
+    staff.geometry.clearGroups();
+    staff.position.set(0, 2.55, -1.0); g.add(staff);
+
+    var FLAG_W = 0.66, FLAG_H = 0.38;
+    var flagGeo = new T.PlaneGeometry(FLAG_W, FLAG_H, 14, 7);
+    flagGeo.clearGroups();
+    // flatShading so each fold catches the light differently: without it the wave
+    // moves the silhouette but the surface stays one dead colour.
+    var flag = new T.Mesh(flagGeo, std(E, E.acc, { metal: 0.1, rough: 0.8, flat: true, double: true, emissive: E.acc, ei: E.light ? 0.15 : 0.4 }));
+    // Hoisted at the top of the staff and extending to one side, so the plane's
+    // own centre sits half a width out from the pole.
+    flag.position.set(FLAG_W / 2, 2.83, -1.0); g.add(flag);
+    var flagBase = Float32Array.from(flagGeo.attributes.position.array);
     var climber = points(E, 50, 0.05, E.acc, 0.95); g.add(climber);
     var dot = sprite(E, 0xffffff, 0.5, E.light ? 0.0 : 0.95); g.add(dot);
     var mist = [];
@@ -735,7 +761,34 @@
         for (var k = 0; k < 50; k++) { var w = trailAt(Math.max(0, u - k * 0.012)); cp.setXYZ(k, w[0], w[1] + 0.1, w[2]); }
         cp.needsUpdate = true;
         beacon.material.opacity = (E.light ? 0.45 : 0.95) * (0.82 + 0.18 * Math.sin(t * 2.4));
-        flag.rotation.y = Math.sin(t * 3) * 0.25;
+        // The cloth. u runs 0 at the hoist (pinned to the staff) to 1 at the fly
+        // (free), and every displacement is scaled by u^1.6 — so the pinned edge
+        // is exactly still, the middle ripples, and the free corner throws hardest.
+        var fp = flagGeo.attributes.position;
+        for (var f = 0; f < fp.count; f++) {
+          var bx = flagBase[f * 3], by = flagBase[f * 3 + 1];
+          // clamp is load-bearing: the hoist column's bx is -FLAG_W/2, but it was
+          // stored through a Float32Array, so it comes back a hair LARGER in
+          // magnitude and (bx + FLAG_W/2) lands at about -1e-8 instead of 0.
+          // Math.pow of a negative base with a fractional exponent is NaN, which
+          // would hand WebGL a whole column of NaN vertices along the edge that
+          // is supposed to be pinned to the staff — the one part of the flag that
+          // must be exact. Caught by reading the vertex buffer back, not by
+          // looking at it: the frame still appeared to render.
+          var fu = clamp((bx + FLAG_W / 2) / FLAG_W, 0, 1);
+          var amp = Math.pow(fu, 1.6);
+          var ph = fu * 7.4 - t * 4.2;
+          fp.setXYZ(
+            f,
+            // Drawn in slightly as the wave deepens: cloth gathers, it does not stretch.
+            bx - (1 - Math.cos(ph)) * 0.022 * amp,
+            // A vertical ripple plus a little gravity droop toward the free edge.
+            by + Math.sin(ph + 0.9) * 0.055 * amp - 0.035 * amp,
+            Math.sin(ph) * 0.17 * amp,
+          );
+        }
+        fp.needsUpdate = true;
+        flagGeo.computeVertexNormals();
         mist.forEach(function (m2, j) { m2.position.x = Math.sin(t * 0.12 + j) * 2.4; });
       },
       cam: function (t, p, cam) { var e = ease(p); cam.position.set(Math.sin(p * 0.9 - 0.4) * 2.4, lerp(-0.2, 1.8, e), lerp(12.0, 8.4, e)); cam.lookAt(0, lerp(0.4, 1.5, e), -1); },

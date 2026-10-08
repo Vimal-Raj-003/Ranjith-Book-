@@ -29,7 +29,8 @@ import type { Embedder } from "../../analysis/embed";
 import { resolveIcon, MIN_SCORE } from "./icons";
 import { emphasizeWords } from "./emphasis";
 import { heroForTextSync, heroMatch, isHeroId, type HeroId, type HeroRanker } from "./heroes";
-import { BOOK_KINDS, PAGE_KINDS, SHOT_SCALE } from "./types";
+import { resolveEnvironment } from "./environment";
+import { BOOK_KINDS, PAGE_KINDS, SHOT_SCALE, isEnvironment } from "./types";
 import type { Scene, SceneIcon, ScenePlanReport, SceneSpec, SceneTone, Sentence, ShotSize, VisualKind } from "./types";
 
 /**
@@ -78,6 +79,9 @@ export const CINEMATIC_SHARE = 0.4;
 export const MAX_QUOTES = 2;
 export const MAX_ICON_SCENES = 2;
 export const MAX_HERO_USES = 2;
+/** A video of this many scenes should visit at least MIN_ENVIRONMENTS worlds, or its plan says the background is flat. */
+const MIN_SCENES_FOR_VARIETY_NOTE = 6;
+const MIN_ENVIRONMENTS = 3;
 
 function contentWords(s: string): string[] {
   return s
@@ -289,6 +293,9 @@ async function resolveScene(
     source: { pageIndex: first.sourcePage, startWord: first.startWord, endWord: first.endWord },
     reason: (spec.reason ?? "").trim(),
     concept,
+    // The director's world for this stretch of narration, kept only if it is one of ours. Whatever
+    // the repairs below do to the scene's kind, this is a judgement about the SENTENCE and survives them.
+    ...(isEnvironment(spec.environment) ? { environment: spec.environment } : {}),
   };
 
   const kinetic = (why?: string): { scene: Scene; note?: string } => ({
@@ -659,6 +666,15 @@ export async function validateScenes(
       usedIcons.add(icon.name);
       s.icon = icon;
     }
+  }
+
+  // The world behind each scene (environment.ts), settled last so a scene with none of its own gets the
+  // one its FINAL kind implies: its hero's when it ended up a hero scene, otherwise its tone's. The
+  // director's choice, when valid, is never overridden, so the background follows the meaning it read.
+  for (const s of scenes) s.environment = resolveEnvironment(s.environment, s);
+  const worlds = new Set(scenes.map((s) => s.environment));
+  if (scenes.length >= MIN_SCENES_FOR_VARIETY_NOTE && worlds.size < MIN_ENVIRONMENTS) {
+    notes.push(`Only ${worlds.size} environment${worlds.size === 1 ? "" : "s"} across ${scenes.length} scenes — the background will barely change with the story.`);
   }
 
   const used: Record<string, number> = {};

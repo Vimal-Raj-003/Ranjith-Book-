@@ -1,7 +1,8 @@
 import type { BookTheme } from "./theme-contract";
 import { embed, esc } from "./escape";
-import { renderScene, sceneCss, isLightPalette, cineRuntimeSource, CINE_BUFFER, SCENE_FADE, type SceneAnim } from "../scenes/render";
-import { PAGE_KINDS, type Scene, type SceneTone } from "../scenes/types";
+import { renderScene, sceneCss, environmentCss, isLightPalette, cineRuntimeSource, CINE_BUFFER, SCENE_FADE, type SceneAnim } from "../scenes/render";
+import { resolveEnvironment } from "../scenes/environment";
+import { ENVIRONMENTS, PAGE_KINDS, type Environment, type Scene, type SceneTone } from "../scenes/types";
 import type { SweepStep, CameraKey } from "../sweep";
 import type { CaptionLine } from "../../media/captions";
 import type { ContentPackage } from "../../content/schema";
@@ -1532,6 +1533,22 @@ const TIMELINE_JS = `
     });
   }
 
+  // The world behind each scene (scenes/environment.ts). One STATIC layer per environment in use, each
+  // tweened on opacity and nothing else. A change fades the old world out and the new one in over the
+  // same window: two tweens on two different elements, so no element ever has two at once, and
+  // environmentKeys clips every window to end before the next change begins. A layer's look is its CSS
+  // and never changes, so which world is showing at any instant is a pure function of the playhead and
+  // not of the order the playhead got there in. (Swapping one layer's class from tween to tween would
+  // not be: a class assigned while the timeline is built is build-time state, not playhead state.)
+  (data.env || []).forEach(function (k) {
+    var fromEl = document.getElementById("env-" + k.from);
+    var toEl = document.getElementById("env-" + k.env);
+    if (!fromEl || !toEl) return;
+    var envDur = Math.max(0.001, k.d);
+    tl.to(fromEl, { opacity: 0, duration: envDur, ease: "power1.inOut" }, k.t);
+    tl.to(toEl, { opacity: 1, duration: envDur, ease: "power1.inOut" }, k.t);
+  });
+
   // An explicit tail marker: a zero-duration, no-op set at the declared end of
   // the composition. Without it, when the last camera key is skipped (the
   // ordinary "camera settles, then holds for the CTA" shape — see the
@@ -1600,6 +1617,53 @@ export function glowKeys(scenes: Scene[], shift: number): (Keyed & { o: number; 
     const g = GLOW_BY_TONE[scene.tone] ?? GLOW_BY_TONE.neutral;
     return { t: Math.max(0, shift + scene.start - SCENE_FADE), d: SCENE_FADE * 1.6, ...g };
   });
+}
+
+/** How long one world takes to give way to the next: slow enough to read as weather changing, not as a cut. */
+export const ENV_FADE = 1.1;
+/** The least a crossfade may last, and the least two may start apart, so none is ever zero-length or stacked. */
+const ENV_MIN = 0.05;
+
+/** The world a scene sits in: its own, or the one its hero or tone implies. Never undefined. */
+function environmentOf(scene: Scene): Environment {
+  return resolveEnvironment(scene.environment, scene);
+}
+
+/**
+ * When the world behind the scenes changes, and from what to what: one entry per CHANGE, not per
+ * scene, so a run of scenes in one world costs nothing. The opening scene sets the opening look
+ * (the layer that rests visible), so it has no entry of its own.
+ *
+ * Each crossfade is centred on the cut, so half of it is spent in the pause before the next scene
+ * starts, and is clipped to end before the next begins: one tween per element per window, never
+ * overlapping, the discipline `cardZooms` and `dimKeys` hold. Times are rounded to the millisecond
+ * BEFORE the clip is computed, so rounding cannot push a window past its neighbour.
+ */
+export function environmentKeys(scenes: Scene[], shift: number): (Keyed & { env: Environment; from: Environment })[] {
+  const out: (Keyed & { env: Environment; from: Environment })[] = [];
+  if (scenes.length === 0) return out;
+  let current = environmentOf(scenes[0]);
+  for (let i = 1; i < scenes.length; i++) {
+    const env = environmentOf(scenes[i]);
+    if (env === current) continue;
+    const previous = out[out.length - 1];
+    let t = Math.max(0, Math.round((shift + scenes[i].start - ENV_FADE / 2) * 1000) / 1000);
+    if (previous) t = Math.max(t, Math.round((previous.t + ENV_MIN) * 1000) / 1000);
+    out.push({ t, d: ENV_FADE, env, from: current });
+    current = env;
+  }
+  for (let i = 0; i + 1 < out.length; i++) out[i].d = Math.min(out[i].d, Math.floor((out[i + 1].t - out[i].t) * 1000) / 1000);
+  return out;
+}
+
+/** One static layer per environment that is ever on screen, in catalogue order; the opening one rests visible. */
+function environmentLayers(scenes: Scene[], keys: { env: Environment }[]): string {
+  if (scenes.length === 0) return "";
+  const first = environmentOf(scenes[0]);
+  const used = new Set<Environment>([first, ...keys.map((k) => k.env)]);
+  return ENVIRONMENTS.filter((e) => used.has(e))
+    .map((e) => `<div class="env env-${e}${e === first ? " env-first" : ""}" id="env-${e}"></div>`)
+    .join("");
 }
 
 /**
@@ -1804,6 +1868,7 @@ export function buildComposition(input: CompositionInput): string {
   const zooms = scenes.length ? cardZooms(scenes, AUDIO_OFFSET, cardViewportHeight(columnWidth)) : [];
   const dim = scenes.length ? dimKeys(scenes, AUDIO_OFFSET) : [];
   const glow = scenes.length ? glowKeys(scenes, AUDIO_OFFSET) : [];
+  const env = environmentKeys(scenes, AUDIO_OFFSET);
 
   const data = embed({
     strokes,
@@ -1820,6 +1885,7 @@ export function buildComposition(input: CompositionInput): string {
     zooms,
     dim,
     glow,
+    env,
     // The theme's accent colour, read by the Three.js shared material
     // (TIMELINE_JS) exactly once per render — every icon-concept accent in
     // one composition shares one theme, so this is one field, not one per
@@ -1910,13 +1976,14 @@ ${
     : ""
 }
 ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
-<style>${sharedCss(theme)}${sceneCss(theme, rect)}${theme.css()}</style>
+<style>${sharedCss(theme)}${sceneCss(theme, rect)}${scenes.length ? environmentCss(theme) : ""}${theme.css()}</style>
 </head>
 <body>
 <div id="root" class="stage" data-composition-id="main" data-start="0" data-width="${FRAME.width}" data-height="${FRAME.height}" data-duration="${duration.toFixed(3)}" data-fps="${FPS}">
   <div class="clip" id="scene" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="0">
     ${theme.backdrop()}
     ${scenes.length ? `<div class="scene-glow" id="scene-glow"></div>` : ""}
+    ${environmentLayers(scenes, env)}
     ${
       scenes.length
         ? `<div class="cine-bokeh">${bokeh

@@ -7,7 +7,18 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as inspectorModule from "../src/components/Inspector";
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../src/lib/media/pocket-tts";
-import { VOICES, DEFAULT_VOICE_ID, VIDEO_THEMES, strings, recordedVoiceName } from "../src/lib/strings";
+import {
+  VOICES,
+  DEFAULT_VOICE_ID,
+  VIDEO_THEMES,
+  strings,
+  recordedVoiceName,
+  AUTO_MUSIC_MOOD,
+  MUSIC_MOOD_OPTIONS,
+  MUSIC_INTENSITIES,
+  MUSIC_DUCKS,
+  MUSIC_LEVEL_RANGE,
+} from "../src/lib/strings";
 
 const COMPONENTS = fileURLToPath(new URL("../src/components/", import.meta.url));
 
@@ -90,6 +101,21 @@ test("the voice picker is enabled and lists every voice, grouped by gender", () 
   }
 });
 
+test("the voice picker has a Preview button, and the cold-start wait is explained beside it", () => {
+  const html = renderInspector(null);
+  const button = html.match(/<button[^>]*>\s*Preview\s*<\/button>/)?.[0] ?? "";
+  assert.ok(button, "a Preview button is rendered");
+  // aria-disabled, never disabled: a button that disables itself while it waits drops keyboard
+  // focus, and the slow first preview is exactly when someone is sitting on it.
+  assert.doesNotMatch(button, /\sdisabled[\s=>]/, "it must not use the disabled attribute");
+  assert.match(button, /aria-disabled="true"/, "and until the setting is read there is no voice to play");
+  const hintId = button.match(/aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(hintId, "the button points at its hint");
+  const hint = html.match(new RegExp(`<p class="hint" id="${hintId}">([^<]*)</p>`))?.[1] ?? "";
+  assert.match(hint, /twenty-five seconds/, "the hint says the first preview is slow, and why");
+  assert.match(hint, /model loads/);
+});
+
 test("a finished episode's voice summary says what narrated it, never a blank name", () => {
   assert.equal(voiceSummary(renderInspector({ ...FINISHED, voiceId: "vera", voiceProvider: "pocket" })), "Voice · Narrated by Vera");
   // A non-Pocket id is shown as recorded, not looked up in the Pocket catalogue.
@@ -101,6 +127,83 @@ test("a finished episode's voice summary says what narrated it, never a blank na
   // An episode that is still being made has no narrator yet; the line is the setting (not read yet here).
   assert.equal(voiceSummary(renderInspector({ ...FINISHED, status: "RUNNING" })), "Voice");
   assert.equal(voiceSummary(renderInspector(null)), "Voice");
+});
+
+/** The music panel's markup: from its own `<details>` to the one that follows it. */
+function musicPanel(html: string): string {
+  const m = html.match(/<details[^>]*><summary>Music[^<]*<\/summary>[\s\S]*?<\/details>/);
+  assert.ok(m, "the music panel is rendered");
+  return m[0];
+}
+
+test("the music panel writes: a mood picker, three layers, a level slider and a duck picker", () => {
+  const panel = musicPanel(renderInspector(null));
+  // Not read-only any more: nothing here may be the old StatRow rows.
+  assert.doesNotMatch(panel, /there is nothing to choose separately/);
+
+  const selects = [...panel.matchAll(/<select[^>]*>([\s\S]*?)<\/select>/g)];
+  assert.equal(selects.length, 2, "a mood select and a duck select");
+  for (const s of selects) assert.doesNotMatch(s[0].match(/<select[^>]*>/)![0], /disabled/, "a select that disables itself drops keyboard focus");
+
+  const options = (select: string) => [...select.matchAll(/<option value="([^"]*)"/g)].map((o) => o[1]).filter(Boolean);
+  assert.deepEqual(options(selects[0][1]), [AUTO_MUSIC_MOOD.id, ...MUSIC_MOOD_OPTIONS.map((m) => m.id)], "Follows the theme first, then every mood");
+  assert.deepEqual(options(selects[1][1]), MUSIC_DUCKS.map((d) => d.id));
+  // Until the settings are read neither has a value, and says so rather than naming a default.
+  assert.match(selects[0][1], /<option value="" disabled="" selected="">Choose a mood<\/option>/);
+});
+
+test("every control in the music panel is described by a hint a screen reader can reach", () => {
+  const panel = musicPanel(renderInspector(null));
+  // The mood and duck selects point at the panel's hint; without that, a screen-reader
+  // user never hears what the panel says about when a change applies and what the
+  // level means. (The voice select does the same with its hint.)
+  const selects = [...panel.matchAll(/<select[^>]*>/g)].map((m) => m[0]);
+  assert.equal(selects.length, 2);
+  const hintId = selects[0].match(/aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(hintId, "the mood select names a hint");
+  assert.equal(selects[1].match(/aria-describedby="([^"]+)"/)?.[1], hintId, "and the duck select names the same one");
+  const hint = panel.match(new RegExp(`<p class="hint" id="${hintId}">([^<]*)</p>`))?.[1];
+  assert.ok(hint, "which exists, with that id");
+  assert.equal(hint.replace(/&#x27;/g, "'"), strings.musicPanel.hint, "and says the panel's hint, whole");
+  // The layers group is described by the note for the tier it is on; the slider by its own value text.
+  const group = panel.match(/<div role="group"[^>]*aria-describedby="([^"]+)"/)?.[1];
+  assert.ok(group && panel.includes(`id="${group}"`), "the layers group names a note that exists");
+});
+
+test("the layers control is a labelled group of three toggle buttons", () => {
+  const panel = musicPanel(renderInspector(null));
+  const group = panel.match(/<div role="group" aria-labelledby="([^"]+)"[^>]*>([\s\S]*?)<\/div>/);
+  assert.ok(group, "a role=group");
+  assert.match(panel, new RegExp(`id="${group[1]}">Layers<`), "named by its visible label");
+  const buttons = [...group[2].matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*><span class="truncate">([^<]*)<\/span><\/button>/g)];
+  assert.deepEqual(buttons.map((b) => b[2]), MUSIC_INTENSITIES.map((o) => o.label));
+  assert.ok(buttons.every((b) => b[1] === "false"), "none pressed until the setting is read");
+  for (const b of group[2].matchAll(/<button[^>]*>/g)) assert.doesNotMatch(b[0], /\sdisabled[\s=>]/);
+});
+
+test("the level slider spans the dB range the setting accepts and waits for a value", () => {
+  const panel = musicPanel(renderInspector(null));
+  const slider = panel.match(/<input[^>]*type="range"[^>]*>/)?.[0] ?? "";
+  assert.ok(slider, "a range input");
+  assert.match(slider, new RegExp(`min="${MUSIC_LEVEL_RANGE.min}"`));
+  assert.match(slider, new RegExp(`max="${MUSIC_LEVEL_RANGE.max}"`));
+  assert.match(slider, /step="1"/, "whole dB: the server refuses a fraction");
+  assert.match(slider, /disabled=""/, "no thumb position is claimed before the setting is read");
+  const id = slider.match(/id="([^"]+)"/)![1];
+  assert.match(panel, new RegExp(`<label[^>]*for="${id}">Bed level</label>`), "and it has a label");
+});
+
+test("a music summary names what a render will use, and says nothing before it is known", () => {
+  // Effects have not run in a server render, so no setting has been read.
+  assert.match(renderInspector(null), /<summary>Music<\/summary>/);
+  assert.equal(strings.musicPanel.summary(AUTO_MUSIC_MOOD.label), "Music · Follows the theme");
+  assert.equal(strings.musicPanel.summary("Vista"), "Music · Vista");
+});
+
+test("the level reading says where the bed sits against the narration", () => {
+  assert.equal(strings.musicPanel.levelValue(-22), "−22 dB · about 6 dB under the narration");
+  assert.equal(strings.musicPanel.levelValue(-16), "−16 dB · level with the narration");
+  assert.equal(strings.musicPanel.levelValue(-10), "−10 dB · about 6 dB over the narration");
 });
 
 /**
@@ -143,6 +246,25 @@ const CLIENT_SAFE_LIBS = new Set([
   // The state machine behind the inspector's optimistic setting writes. Pure, and
   // held to having no imports by the test below, for the same reason.
   "@/lib/setting-writes",
+  // Which cover sizes exist and the URL a book card asks for. Pure, and held to
+  // having no imports by `tests/covers.test.mts` -- the derivation (sharp, the
+  // work root) is `@/lib/covers/derive`, which no component may import.
+  "@/lib/covers/sizes",
+  // The Publish Center's three: the platform limits and status vocabulary, the
+  // readiness verdict, and the wire shape of `GET .../publish`. All three are
+  // pure, and `tests/publish.test.mts` holds the whole folder-minus-three to
+  // having no node, Prisma or `@/lib` imports -- so none of these can quietly
+  // become a route to `state.ts`, which DOES import Prisma and the work root
+  // and which no component may ever import.
+  "@/lib/publish/limits",
+  "@/lib/publish/readiness",
+  "@/lib/publish/view",
+  // The connection card's fourth: the wire shape of a platform OAuth grant and
+  // the words said about it. Import-free, and held to that by
+  // `tests/publish-youtube.test.mts` -- which also proves it has no field a
+  // token could be put in, so nothing in `youtube/` (Prisma, node:crypto, the
+  // client secret) can reach the browser through it.
+  "@/lib/publish/connect",
 ]);
 
 test("the poster helpers the client imports have no imports of their own", async () => {

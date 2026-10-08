@@ -101,3 +101,45 @@ export function requestCancel(episodeId: string): boolean {
   controller.abort(new CancelledError());
   return true;
 }
+
+/** What `POST /api/episodes/[id]/cancel` answers. */
+export type CancelOutcome =
+  | { ok: true; status: "cancelling" }
+  | { ok: false; httpStatus: number; code: "not_running" | "not_active_here"; error: string };
+
+/**
+ * The whole of that route's decision, once the caller is known to be allowed
+ * to see the episode — deliberately NOT a second cancellation path: this is
+ * the only one, moved to where a test can reach it. The route itself cannot
+ * be called from a test (`requireUser()` reads `cookies()`, which throws
+ * outside a request scope), which is the same split `episodes-api.test.mts`
+ * and `publish.test.mts` already make.
+ *
+ * Note what the `not_active_here` message promises. It was false for a run
+ * that died BETWEEN steps until `reap.ts` grew its third branch: nothing
+ * would ever have marked that row interrupted. `tests/stale-run.test.mts`
+ * holds this message and the reaper to each other.
+ */
+export function cancelEpisode(episodeId: string, episodeStatus: string): CancelOutcome {
+  if (episodeStatus !== "RUNNING") {
+    return {
+      ok: false,
+      httpStatus: 409,
+      code: "not_running",
+      error: `This episode is not running (it is ${episodeStatus.toLowerCase()}), so there is nothing to cancel.`,
+    };
+  }
+  if (!requestCancel(episodeId)) {
+    // Never fake it: if there is no live controller for this episode in this
+    // process, nothing was actually signalled, so nothing has actually
+    // stopped — the honest answer is failure, not a status flip.
+    return {
+      ok: false,
+      httpStatus: 409,
+      code: "not_active_here",
+      error:
+        "No active run was found for this episode on this server. If it still shows as running, the server likely restarted mid-run — it will be marked interrupted automatically within a few minutes.",
+    };
+  }
+  return { ok: true, status: "cancelling" };
+}

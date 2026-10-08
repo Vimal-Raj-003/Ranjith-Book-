@@ -61,6 +61,55 @@ const MOODS: Record<string, MusicMood> = {
     chordSeconds: 4.5,
     root: 138.59, // C#3
   },
+
+  // The six below were added with the intensity layers. The four above ship in
+  // every video made so far and are never edited: a re-render of an old episode
+  // must come out in the same key, so a change to one of them is a change to the
+  // sound of work already delivered. `tests/settings-keys.test.mts` pins them.
+
+  // Wide, cinematic, unhurried. Major with a suspended 2nd — the "establishing
+  // shot" of the set.
+  vista: {
+    id: "vista",
+    progression: [[0, 5, 7], [5, 9, 12], [7, 12, 14], [0, 4, 7]],
+    chordSeconds: 5.5,
+    root: 110.0, // A2
+  },
+  // Tense, forward-leaning. Minor seconds held against the root.
+  tension: {
+    id: "tension",
+    progression: [[0, 3, 7], [1, 5, 8], [0, 3, 7], [-1, 3, 6]],
+    chordSeconds: 3.5,
+    root: 123.47, // B2
+  },
+  // Resolute, hymn-like. Root-position major triads, slow.
+  resolve: {
+    id: "resolve",
+    progression: [[0, 4, 7], [5, 9, 12], [3, 7, 10], [0, 4, 7]],
+    chordSeconds: 5,
+    root: 130.81, // C3
+  },
+  // Nocturnal and intimate. Minor 7ths, very low movement.
+  nocturne: {
+    id: "nocturne",
+    progression: [[0, 3, 10], [-2, 3, 7], [0, 3, 10], [5, 8, 12]],
+    chordSeconds: 6,
+    root: 98.0, // G2
+  },
+  // Bright and propulsive, for lighter books. Major, fastest harmonic rhythm.
+  momentum: {
+    id: "momentum",
+    progression: [[0, 4, 7], [9, 12, 16], [5, 9, 12], [7, 11, 14]],
+    chordSeconds: 2.5,
+    root: 146.83, // D3
+  },
+  // Austere. Open fifths only, no third, so it states no mood of its own.
+  stark: {
+    id: "stark",
+    progression: [[0, 7, 12], [5, 12, 17], [0, 7, 12], [3, 10, 15]],
+    chordSeconds: 4.5,
+    root: 116.54, // A#2
+  },
 };
 
 export { MOODS };

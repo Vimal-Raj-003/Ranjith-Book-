@@ -127,12 +127,22 @@ export default function EpisodeCard({
       aria-label={title}
       style={active ? { borderColor: "color-mix(in srgb, var(--amber) 55%, transparent)" } : undefined}
     >
-      <header className="panel-head">
+      {/* The badge and the clock wrap under the title when the card is narrow.
+          These cards moved into a 320px aside, which left roughly 120px for a
+          title that is a whole sentence — "Why Your Brain Won't Switch Off
+          at…". `flex-wrap` plus a 180px basis is content-driven: one row where
+          both fit, two where they do not, at any width. */}
+      <header className="panel-head episode-head">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
             {strings.run.episodeLabel(episode.partNumber, episode.seriesTotal)}
           </span>
-          <span className="truncate font-display text-[15px] font-semibold" style={{ color: "var(--ink)" }}>
+          {/* Clamped to two lines, not truncated to one. An episode title is a
+              whole sentence ("Why Your Brain Won't Switch Off at Night") and in
+              a 320px aside one line shows about 199px of the 296px it needs —
+              measured. Two lines show all of it, and the clamp still stops a
+              pathological title from owning the card. */}
+          <span className="line-clamp-2 font-display text-[15px] font-semibold leading-snug" style={{ color: "var(--ink)" }}>
             {title}
           </span>
         </div>

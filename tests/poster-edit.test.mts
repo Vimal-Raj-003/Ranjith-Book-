@@ -12,6 +12,7 @@ import { listEpisodes } from "../src/lib/episodes/list";
 import { posterFields } from "../src/lib/episode-view";
 import { generateThumbnails, parseThumbnails, serializeThumbnails, thumbsDir, type ThumbSpec } from "../src/lib/thumbnails";
 import { gridDir, THUMB_KEYS } from "../src/lib/thumbnails/types";
+import { requireIsolation } from "./setup/isolation";
 
 /**
  * `editPoster` is tested rather than the route handler, for the reason
@@ -43,6 +44,12 @@ interface Seed {
  * `withPages: false` is an old episode whose work directory was cleaned up.
  */
 async function seed(opts: { withPages?: boolean; real?: boolean; row?: Record<string, unknown> } = {}): Promise<Seed> {
+  // Fails closed before the first row. A bare `tsx --test` of this file creates
+  // User, Book, Upload, Page and Episode rows in whatever `DATABASE_URL` points
+  // at -- which, without the `npm test` preload, is the operator's real
+  // `dev.db` -- and writes page images and posters into their real
+  // `.bookreel/`. Nothing about that run would look wrong.
+  requireIsolation("these tests create episodes and write posters");
   const { withPages = true, real = false, row = {} } = opts;
   const user = await prisma.user.create({ data: { email: `poster-${randomUUID()}@example.test` } });
   const book = await prisma.book.create({ data: { title: `Poster ${randomUUID()}`, rightsStatus: "in-copyright" } });
@@ -196,6 +203,40 @@ test("another account's episode is a 404, and nothing is written", async () => {
     assert.equal(res.status, 404);
     assert.equal((await row(s.episodeId)).thumbChoice, null);
     assert.equal((await editPoster(s.userId, "no-such-episode", { choice: "9x16-bold" })).status, 404);
+  } finally {
+    await prisma.user.delete({ where: { id: stranger.id } });
+    await s.cleanup();
+  }
+});
+
+test("an episode with no owner can have its poster chosen, by any signed-in account", async () => {
+  // The library lists it, so its card must be able to do what every other card
+  // does. `findFirst({ userId })` never matches a NULL owner, so selection and
+  // retitling answered 404 for exactly the episodes whose posters 404'd too.
+  const s = await seed({ row: { userId: null } });
+  try {
+    const res = await editPoster(s.userId, s.episodeId, { choice: "9x16-bold" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.thumbChoice, "9x16-bold");
+    assert.equal((await row(s.episodeId)).thumbChoice, "9x16-bold");
+    assert.equal((await row(s.episodeId)).userId, null, "choosing does not claim the episode for whoever chose");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a poster belonging to a different account is still refused, and an ownerless one is not confused with it", async () => {
+  const s = await seed();
+  const stranger = await prisma.user.create({ data: { email: `stranger-${randomUUID()}@example.test` } });
+  try {
+    // Owned by someone else: refused, nothing written. This is the half of the
+    // rule that must not loosen when the other half was fixed.
+    assert.equal((await editPoster(stranger.id, s.episodeId, { choice: "9x16-bold" })).status, 404);
+    assert.equal((await row(s.episodeId)).thumbChoice, null);
+    // Take the owner away and the same stranger may now act on it: the only
+    // thing that changed is that nobody owns it.
+    await prisma.episode.update({ where: { id: s.episodeId }, data: { userId: null } });
+    assert.equal((await editPoster(stranger.id, s.episodeId, { choice: "9x16-bold" })).status, 200);
   } finally {
     await prisma.user.delete({ where: { id: stranger.id } });
     await s.cleanup();

@@ -279,15 +279,18 @@ function quote(scene: Scene, i: number): RenderedScene {
   const size = fitSize(text.length, 74, 38, 0.13);
   const times = stagger(2, scene.start, scene.end - scene.start);
   return {
+    // No page-number label. It read on screen as "PAGE 17" beside the quotation — a piece of
+    // apparatus the viewer did not ask for, competing with the book's own words for the one
+    // thing this scene exists to show. The page a quote came from is still recorded on the
+    // scene (`scene.quote.page`) and still checked by the grounding tests; it is simply not
+    // painted. `times` keeps its two stops so the quote mark and the line still stagger.
     markup: `<div class="sc-quote" data-drift>
       <div class="sc-quote-mark" data-el="0">&ldquo;</div>
       <blockquote class="sc-quote-text" data-el="1" style="font-size:${size}px">${esc(text)}</blockquote>
-      <div class="sc-quote-ref" data-el="2">page ${(scene.quote?.page ?? 0) + 1}</div>
     </div>`,
     anims: [
       { s: i, e: 0, k: "pop", t: times[0], d: ENTER, v: 0.7 },
       { s: i, e: 1, k: "rise", t: times[0] + 0.12, d: ENTER, v: 26 },
-      { s: i, e: 2, k: "in", t: times[1] + 0.2, d: ENTER },
       // A quote card can be on screen for ten seconds while the line is read: it drifts closer the whole time.
       { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: DRIFT_SCALE },
     ],
@@ -310,12 +313,18 @@ function iconConcept(scene: Scene, i: number): RenderedScene {
   // different, overlapping windows (the cell pops in once; the shape keeps
   // turning for as long as the scene holds).
   const threeEl = (k: number) => icons.length + k;
+  // Only the cells whose icon has a shape of its own get a canvas. An icon that
+  // matches no shape group keeps its flat Tabler picture, which is specific to
+  // the concept, instead of having it covered by a generic solid — see
+  // `shapeForIcon`, where a real render showed three different concepts all
+  // painting the same blob.
+  const shapes = icons.map((icon) => shapeForIcon(icon));
   const cells = icons
     .map(
       (icon, k) => `<div class="sc-cell" data-el="${k}">
         <div class="sc-icon-well" style="--sz:${size}px">
           ${iconSvg(icon, Math.round(size * 0.56))}
-          <canvas class="sc-three" data-el="${threeEl(k)}" width="${THREE_SIZE}" height="${THREE_SIZE}"></canvas>
+          ${shapes[k] ? `<canvas class="sc-three" data-el="${threeEl(k)}" width="${THREE_SIZE}" height="${THREE_SIZE}"></canvas>` : ""}
         </div>
         ${labels[k] ? `<div class="sc-cell-label">${esc(labels[k])}</div>` : ""}
       </div>`,
@@ -332,10 +341,12 @@ function iconConcept(scene: Scene, i: number): RenderedScene {
   // This tween's OWN window is not the icon's brief pop-in: it runs from the
   // icon's own arrival to the scene's end, so the shape keeps a slow, subtle
   // turn for as long as it holds the frame, not just for its entrance.
-  icons.forEach((icon, k) => {
+  icons.forEach((_icon, k) => {
+    const shape = shapes[k];
+    if (!shape) return; // no canvas was emitted for this cell
     const start = times[k];
     const dur = Math.max(0.5, scene.end - start);
-    anims.push({ s: i, e: threeEl(k), k: "three", t: start, d: dur, shape: shapeForIcon(icon) });
+    anims.push({ s: i, e: threeEl(k), k: "three", t: start, d: dur, shape });
   });
   return {
     markup: `<div class="sc-icons sc-cols-${icons.length}">${cells}</div>`,
@@ -585,7 +596,18 @@ export function renderScene(scene: Scene, rect: SceneRect, accent: string): Rend
   const entrance = cine ? { k: "in" as const, v: undefined } : entranceFor(i);
   const layerAnims: SceneAnim[] = [
     ...(first ? [] : [{ s: i, e: -1, k: entrance.k, t: scene.start, d: SCENE_FADE, v: entrance.v } as SceneAnim]),
-    { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end - SCENE_FADE), d: SCENE_FADE },
+    // The exit begins where the scene ENDS, not SCENE_FADE before it, so that it
+    // overlaps the next layer's entrance instead of finishing just as that
+    // entrance starts. Measured on the fixture before this change: the outgoing
+    // layer reached zero at exactly the instant the incoming one began, so 2 of
+    // 11 boundaries showed a frame with no scene and no page card on it at all —
+    // a blink of bare backdrop between two scenes. Book boundaries never showed
+    // it because the page card carries those (it is already at 0.50 mid-
+    // transition); this makes the scene layers behave the way the card already
+    // does. The `max` keeps the exit from overlapping this layer's OWN entrance
+    // on a very short scene, which would put two tweens on one element's opacity
+    // at once and break the seek-safety rule the whole composition is built on.
+    { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end), d: SCENE_FADE },
   ];
   const r = cine ? FULL_FRAME : rect;
 
@@ -630,6 +652,11 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   const light = isLightPalette(p.backdropDeep);
   const ink = light ? p.ink : p.hookInk;
   const key = light ? p.accent : p.hookKey;
+  // Ink for text printed ON a card face, chosen from that face's own lightness
+  // rather than the backdrop's — the two disagree in three of the five themes,
+  // which is exactly how .sc-step-t and .sc-side-label ended up invisible. See
+  // the note above .sc-side below.
+  const cardInk = isLightPalette(p.cardFace) ? p.ink : p.hookInk;
   return `
   /* --- scene stack (Phase 3C) ---------------------------------------------
      One layer per non-book scene, in the card's own rectangle. Layers rest
@@ -686,8 +713,6 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-quote-mark { font-size:190px; line-height:0.6; color:${p.accent}; font-family:Georgia, serif; }
   .sc-quote-text { margin:34px 0 0; font-weight:600; line-height:1.3; font-family:Georgia, "Times New Roman", serif;
                    font-style:italic; }
-  .sc-quote-ref { margin-top:34px; font-size:28px; font-weight:700; letter-spacing:3px;
-                  text-transform:uppercase; color:${p.bylineInk}; }
 
   /* icon concept — one to three pictures with their labels */
   .sc-icons { display:flex; align-items:center; justify-content:center; gap:58px; }
@@ -714,14 +739,21 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
 
   /* comparison — two sides */
   .sc-compare { display:flex; align-items:center; justify-content:center; gap:30px; }
-  /* On paper, so its text is paper ink. The scene layer's own colour is the
-     light ink that reads on the dark backdrop, and inheriting it here paints
-     cream on cream — measured on a real render, the comparison panels came
-     out blank. Every surface below that sits on cardFace sets its own ink. */
+  /* Text on a card face picks its ink from the FACE, not from a fixed role.
+     Inheriting the scene layer's light ink painted cream on cream on the light
+     themes (measured: the comparison panels came out blank), and the fix for
+     that — hard-coding paper ink — then painted near-black on near-black
+     everywhere the face is dark. Measured on a real render afterwards:
+     .sc-step-t and .sc-side-label resolved to 1.01:1 contrast in terminal,
+     spotlight and blueprint, which is not "low contrast", it is invisible, and
+     a whole steps scene rendered as numbered chips beside empty boxes.
+     The card face is a pale sheet in two themes and a near-black pane in three,
+     so no single palette role can read on it; asking which it is here is the
+     only answer that holds for a theme nobody has written yet. */
   .sc-side { flex:1 1 0; display:flex; flex-direction:column; align-items:center; gap:26px;
              padding:46px 22px; border-radius:34px; background:${p.cardFace};
              box-shadow:0 30px 70px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
-  .sc-side-label { font-size:44px; font-weight:800; text-align:center; line-height:1.18; color:${p.ink}; }
+  .sc-side-label { font-size:44px; font-weight:800; text-align:center; line-height:1.18; color:${cardInk}; }
   .sc-vs { font-size:34px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
            color:${p.accent}; flex:0 0 auto; }
 
@@ -734,7 +766,7 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-step-n { flex:0 0 auto; width:76px; height:76px; border-radius:24px; background:${p.accent};
                color:${p.ctaFace}; font-size:40px; font-weight:800;
                display:flex; align-items:center; justify-content:center; }
-  .sc-step-t { font-size:42px; font-weight:700; line-height:1.2; color:${p.ink}; }
+  .sc-step-t { font-size:42px; font-weight:700; line-height:1.2; color:${cardInk}; }
   /* A diagram connector joining the step numbers, the same idea as the
      timeline's own axis (below) but scoped to this list. It only shows in the
      gaps between the opaque step cards, which reads as a line running behind
@@ -746,8 +778,25 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-timeline { position:relative; padding-left:86px; display:flex; flex-direction:column; gap:54px; }
   .sc-tl-axis { position:absolute; left:32px; top:12px; bottom:12px; width:5px; border-radius:3px;
                 background:${p.accent}; transform:scaleY(0); transform-origin:top center; }
-  .sc-tl-row { display:flex; align-items:center; gap:30px; }
-  .sc-tl-dot { position:absolute; left:20px; width:29px; height:29px; border-radius:50%;
+  /* position:relative is load-bearing, not tidiness. The dot below is
+     absolutely positioned, and it used to resolve against .sc-timeline —
+     correct until the row's own entrance tween ran. A transformed element
+     becomes the containing block for its absolutely positioned descendants,
+     so the moment GSAP wrote a transform here (and it leaves the identity
+     matrix(1,0,0,1,0,0) behind even after the tween settles, so this is
+     permanent, not a flicker) every dot re-resolved its left against THIS box
+     instead — 86px further right, the timeline's own padding-left — and
+     landed on top of the second letter of its label. Measured in a real
+     episode and reproduced in the fixture: dot x=80 while transform was
+     "none", x=166 for every frame after. Pinning the containing block here
+     makes the dot's position independent of whether anything is animating,
+     which is the only version of this that cannot come back. */
+  .sc-tl-row { position:relative; display:flex; align-items:center; gap:30px; }
+  /* Measured from the row, which starts at the timeline's content edge, so
+     -66px puts the dot back at 20px from the timeline — centred on the axis
+     (left:32 + half of its 5px width = 34.5; dot 20 + half of 29 = 34.5). */
+  .sc-tl-dot { position:absolute; left:-66px; top:50%; margin-top:-14.5px;
+               width:29px; height:29px; border-radius:50%;
                background:${p.accent}; box-shadow:0 0 0 10px ${p.hookScrim}; }
   .sc-tl-label { font-size:44px; font-weight:700; line-height:1.2; }
 
@@ -801,5 +850,82 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
                letter-spacing:-0.5px; font-family: Inter, system-ui, sans-serif; color:${ink};
                ${light ? "" : `text-shadow:0 4px 32px ${alpha(p.backdropDeep, 0.85)};`} }
   .cine-hook .sc-word-emph { color:${key}; ${light ? "" : `text-shadow:0 0 36px ${alpha(p.accent, 0.5)};`} }
+`;
+}
+
+/**
+ * The world behind a scene (scenes/environment.ts), as one CSS class per environment.
+ *
+ * Why this exists: before it, `theme.backdrop()` was emitted once for the whole video, from a
+ * global app setting rather than from content — so across forty finished episodes the library
+ * held exactly two distinct backgrounds, and the background could not follow meaning because
+ * there was no code path for it. These layers are that path.
+ *
+ * Every colour is a palette role put through `alpha`, never a literal. That is what keeps a
+ * theme looking like itself while its world changes with the story: the environments differ in
+ * where the light comes from and how heavy the dark is, not in hue. `tests/scenes.test.mts`
+ * enforces it by setting every role to one hue and refusing any output colour that is neutral
+ * or of another hue — a literal anywhere would survive that substitution and be caught.
+ *
+ * Each rule matches its entry in `ENVIRONMENT_GUIDE`, whose prose is what the director is given
+ * to choose from, so what the model is promised is what the frame actually paints.
+ */
+export function environmentCss(theme: BookTheme): string {
+  const p = theme.palette;
+  const light = isLightPalette(p.backdropDeep);
+  /** Dark themes carry the atmosphere; light ones tint rather than shade, or the page goes muddy. */
+  const w = (dark: number, pale: number) => (light ? pale : dark);
+
+  return `
+  /* --- the world behind the scene (environment.ts) ----------------------- */
+  /* One static layer per environment in use, stacked behind everything and crossfaded on
+     opacity alone. Static because a layer whose look never changes makes "which world is
+     showing" a pure function of the playhead, which is what the renderer's non-linear
+     seeking requires. Positioned with inset, never with a bottom edge. */
+  .env { position:absolute; inset:0; opacity:0; pointer-events:none; }
+  .env-first { opacity:1; }
+
+  /* still — an even ground, one soft light high up, nothing pulling at the eye. */
+  .env-still { background:
+      radial-gradient(130% 86% at 50% 16%, ${alpha(p.bloomA, w(0.3, 0.42))} 0%, transparent 62%),
+      radial-gradient(120% 100% at 50% 100%, ${alpha(p.backdropDeep, w(0.52, 0.2))} 0%, transparent 70%),
+      linear-gradient(180deg, ${alpha(p.backdropBase, w(0.5, 0.72))} 0%, ${alpha(p.backdropDeep, w(0.72, 0.26))} 100%); }
+
+  /* dawn — warm light rising from the lower edge and widening as it climbs. */
+  .env-dawn { background:
+      radial-gradient(150% 92% at 50% 112%, ${alpha(p.accent, w(0.46, 0.34))} 0%, ${alpha(p.bloomA, w(0.26, 0.2))} 34%, transparent 72%),
+      radial-gradient(90% 60% at 50% 104%, ${alpha(p.bloomB, w(0.4, 0.26))} 0%, transparent 60%),
+      linear-gradient(180deg, ${alpha(p.backdropDeep, w(0.8, 0.24))} 0%, ${alpha(p.backdropBase, w(0.3, 0.6))} 100%); }
+
+  /* dusk — a heavy sky above, a low band of light fading along the horizon. */
+  .env-dusk { background:
+      linear-gradient(180deg, ${alpha(p.backdropDeep, w(0.92, 0.4))} 0%, ${alpha(p.backdropDeep, w(0.52, 0.16))} 56%, transparent 78%),
+      radial-gradient(160% 26% at 50% 76%, ${alpha(p.accent, w(0.38, 0.3))} 0%, ${alpha(p.bloomB, w(0.18, 0.14))} 40%, transparent 74%),
+      linear-gradient(180deg, transparent 60%, ${alpha(p.vignette, w(0.6, 0.22))} 100%); }
+
+  /* storm — a tense ground, slanting rain, one hard flash off to the side. */
+  .env-storm { background:
+      radial-gradient(60% 46% at 22% 28%, ${alpha(p.accent, w(0.5, 0.36))} 0%, transparent 58%),
+      repeating-linear-gradient(74deg, ${alpha(p.ink, w(0.16, 0.1))} 0px, ${alpha(p.ink, w(0.16, 0.1))} 1px, transparent 1px, transparent 13px),
+      radial-gradient(140% 110% at 70% 8%, ${alpha(p.backdropDeep, w(0.9, 0.34))} 0%, ${alpha(p.backdropDeep, w(0.5, 0.14))} 54%, transparent 84%); }
+
+  /* deep — a tunnel closing in on a faint pool of light, rings spreading from the centre. */
+  .env-deep { background:
+      radial-gradient(42% 30% at 50% 46%, ${alpha(p.bloomA, w(0.34, 0.3))} 0%, transparent 70%),
+      repeating-radial-gradient(circle at 50% 46%, transparent 0px, transparent 54px, ${alpha(p.accent, w(0.1, 0.08))} 54px, transparent 56px),
+      radial-gradient(118% 92% at 50% 46%, transparent 24%, ${alpha(p.backdropDeep, w(0.86, 0.3))} 72%, ${alpha(p.vignette, w(0.94, 0.4))} 100%); }
+
+  /* warm — a wide, soft, enveloping glow lit from the middle of the frame. */
+  .env-warm { background:
+      radial-gradient(108% 78% at 50% 48%, ${alpha(p.accent, w(0.3, 0.24))} 0%, ${alpha(p.bloomA, w(0.24, 0.26))} 42%, transparent 80%),
+      radial-gradient(70% 54% at 34% 62%, ${alpha(p.bloomB, w(0.26, 0.2))} 0%, transparent 66%),
+      linear-gradient(180deg, ${alpha(p.backdropBase, w(0.38, 0.58))} 0%, ${alpha(p.backdropDeep, w(0.6, 0.2))} 100%); }
+
+  /* grid — a faint ruled plan under a spotlight, like drafting paper. */
+  .env-grid { background:
+      radial-gradient(72% 52% at 50% 34%, ${alpha(p.bloomA, w(0.3, 0.34))} 0%, transparent 70%),
+      repeating-linear-gradient(0deg, ${alpha(p.marker, w(0.14, 0.12))} 0px, ${alpha(p.marker, w(0.14, 0.12))} 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, ${alpha(p.marker, w(0.14, 0.12))} 0px, ${alpha(p.marker, w(0.14, 0.12))} 1px, transparent 1px, transparent 64px),
+      linear-gradient(180deg, ${alpha(p.backdropBase, w(0.4, 0.6))} 0%, ${alpha(p.backdropDeep, w(0.68, 0.22))} 100%); }
 `;
 }

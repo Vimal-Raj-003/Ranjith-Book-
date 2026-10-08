@@ -27,16 +27,19 @@ import type { RightsStatus } from "./content/quotation";
 import { synthesizeVoiceover } from "./media/tts";
 import { voiceFields } from "./episode-view";
 import { generateMusicBed } from "./media/ffmpeg";
+import { readMusicSettings, bedStyle } from "./settings/music";
 import { toSrt } from "./media/captions";
 import { timeNarration, serializeTiming } from "./media/narration-timing";
 import { sweepForBeat, timedSweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
 import { planScenes, describePlan, type ScenePlan } from "./video/scenes";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
-import { bookThemeById, isBookThemeId, DEFAULT_BOOK_THEME_ID } from "./video/composition/themes";
+import { bookThemeById, isBookThemeId } from "./video/composition/themes";
+import { themeRanker } from "./video/composition/themes/choose";
 import { writeProject, checkProject, renderProject } from "./video/render";
 import { renderPagesAt, HI_LONG_EDGE } from "./pdf/render-pages";
 import type { BookTheme } from "./video/composition/theme-contract";
+import { themeMusicStyle } from "./video/composition/themes/music";
 import { beginCancellable, endCancellable, throwIfCancelled, wasCancelled } from "./cancel";
 
 /**
@@ -46,6 +49,13 @@ import { beginCancellable, endCancellable, throwIfCancelled, wasCancelled } from
  * `media/ffmpeg.ts`). This is the one place that translates between them.
  * `editorial` for `warm` is not an arbitrary pick: its own doc comment reads
  * "Warm paper, magazine feature" — Marginalia's palette, in one sentence.
+ *
+ * It is now the FALLBACK rather than the whole answer. `media/moods.ts` holds
+ * ten beds; this table can only ever reach four of them, so a theme that wants
+ * `nocturne` names it directly in `BookTheme.musicMood` and `themeMusicStyle`
+ * prefers that. A theme with no `musicMood` — which is every theme that shipped
+ * before the field existed — still gets exactly the string below, so re-rendering
+ * an old episode cannot change its key, tempo or progression.
  */
 const MOOD_TO_STYLE: Record<BookTheme["mood"], string> = {
   warm: "editorial",
@@ -233,6 +243,34 @@ function buildPlanPrompt(
 
 // --- runIngest ---------------------------------------------------------------
 
+/** How much of a planned episode's own pages describe it well enough to pick a theme. */
+const THEME_SAMPLE_WORDS = 150;
+
+/**
+ * What a planned episode is ABOUT, in the only words available at the moment its
+ * row is created: the planner's title, the chapter heading it sits under, and the
+ * opening of the stretch of book it covers.
+ *
+ * This path has no idea brief (that is the other episode kind), and the script
+ * does not exist yet — the theme has to be stamped now so that the file on disk
+ * and the row always agree. So the pages themselves are the content, capped: a
+ * page or two of real prose says what the part is about, while the whole range
+ * would just dilute it with whatever else the chapter covers, and the chooser
+ * truncates past 1000 characters anyway.
+ */
+function planEpisodeThemeText(ep: EpisodePlan, texts: PageText[]): string {
+  const words: string[] = [];
+  const headings: string[] = [];
+  for (const page of texts) {
+    if (page.pageIndex < ep.startPage || page.pageIndex > ep.endPage) continue;
+    if (page.chapterHeading) headings.push(page.chapterHeading);
+    const own = wordsOf(page);
+    words.push(...(page.pageIndex === ep.startPage ? own.slice(ep.startWord) : own));
+    if (words.length >= THEME_SAMPLE_WORDS) break;
+  }
+  return [ep.title, ...headings, ...words.slice(0, THEME_SAMPLE_WORDS)].join(" ");
+}
+
 /**
  * Turns one uploaded batch of photographs into one or more `Episode` rows,
  * ready for `runEpisode`. Every step here is recorded on the `Upload` row
@@ -375,15 +413,31 @@ export async function runIngest(uploadId: string): Promise<string[]> {
     // whole-upload fallback IS the planner-failure recovery path.
     const plan = validatePlan(rawPlan, upload.pages.length, wordsPerPage);
 
-    // The theme the operator picked in Settings, stamped onto each episode at
-    // creation so a later change never silently re-skins an episode that has
-    // already been rendered with a different one.
+    // The theme, stamped onto each episode at creation so a later change never
+    // silently re-skins an episode that has already been rendered with a
+    // different one.
+    //
+    // A specific theme in Settings is still an instruction and is obeyed exactly.
+    // Otherwise — "auto", nothing stored, or an id this build does not have — the
+    // theme is derived from what each episode is about. It used to fall back to
+    // `DEFAULT_BOOK_THEME_ID` here, which is why a 40-episode sample came out
+    // marginalia 16, editorial 20, spotlight 3, terminal 1: the look tracked when
+    // the operator last touched the setting and nothing about the book.
+    //
+    // The ranker rather than the keyword floor because this is a background job
+    // that has already spent minutes on vision and OCR, so the sentence model's
+    // load is free here in a way it is not in `createIdeaEpisodes`; it degrades
+    // to that same floor when the model is unavailable, so no ingest can fail
+    // over a theme. Asked once per episode, inside the loop, because the whole
+    // point is that a book's parts may differ from each other.
     const settingTheme = await getSetting("theme");
-    const chosenTheme = isBookThemeId(settingTheme) ? settingTheme : DEFAULT_BOOK_THEME_ID;
+    const fixedTheme = isBookThemeId(settingTheme) ? settingTheme : null;
+    const ranker = fixedTheme ? null : await themeRanker();
 
     const episodeIds: string[] = [];
     for (let i = 0; i < plan.length; i++) {
       const ep = plan[i];
+      const theme = fixedTheme ?? (await ranker!.pick(planEpisodeThemeText(ep, texts)));
       const created = await prisma.episode.create({
         data: {
           bookId: upload.book.id,
@@ -391,7 +445,7 @@ export async function runIngest(uploadId: string): Promise<string[]> {
           userId: upload.userId,
           partNumber: i + 1,
           seriesTotal: plan.length,
-          theme: chosenTheme,
+          theme,
           ideaKey: ep.ideaKey,
           title: ep.title,
           status: "QUEUED",
@@ -976,17 +1030,32 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     // a model call, so they are independent and the bed costs no wall clock.
     // It is awaited before the composition is built, which is the first thing
     // that needs to know whether there is one.
-    const musicJob = generateMusicBed(compositionDuration, musicPath, {
-      style: MOOD_TO_STYLE[theme.mood],
-      voicePath: voice.audioPath,
-      voiceOffsetSec: AUDIO_OFFSET,
-    }).then(
-      () => true,
-      async (err: unknown) => {
-        await appendNotes(episodeId, [`Music bed generation failed (${message(err)}) — rendering without one.`]);
-        return false;
-      },
-    );
+    //
+    // The four music settings are read here, at render time, and inside the same
+    // best-effort chain: a settings read that fails must cost the bed and not the
+    // video, exactly as a failed synthesis does. `auto` (the default) keeps the
+    // theme's own mood, so an operator who has chosen nothing gets the bed they
+    // always had: `themeMusicStyle` prefers a bed the theme names outright and
+    // falls back to `MOOD_TO_STYLE` otherwise, and no theme that has rendered a
+    // video names one.
+    const musicJob = readMusicSettings(getSetting)
+      .then((music) =>
+        generateMusicBed(compositionDuration, musicPath, {
+          style: bedStyle(music.mood, themeMusicStyle(theme, MOOD_TO_STYLE[theme.mood])),
+          voicePath: voice.audioPath,
+          voiceOffsetSec: AUDIO_OFFSET,
+          intensity: music.intensity,
+          level: music.level,
+          duck: music.duck,
+        }),
+      )
+      .then(
+        () => true,
+        async (err: unknown) => {
+          await appendNotes(episodeId, [`Music bed generation failed (${message(err)}) — rendering without one.`]);
+          return false;
+        },
+      );
 
     // --- the scene plan (§3C) -----------------------------------------------
     // What is on screen, sentence by sentence. Best-effort in the same sense
