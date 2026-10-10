@@ -18,13 +18,18 @@ import {
   PLATFORM_LIMITS,
   PUBLISH_STATUSES,
   SANE_DURATION,
+  YOUTUBE_TAGS_LIMIT,
   hashtagLine,
+  hasIndependentInstagram,
   instagramCaption,
+  instagramHashtags,
   isInFlight,
   isPlatformId,
   isPublishStatus,
   isPublished,
   normaliseHashtags,
+  normaliseTags,
+  tagsLine,
   variantFor,
   variantProblems,
   type PublishMetadata,
@@ -194,14 +199,30 @@ test("the Instagram caption is the old panel's own composition, unchanged", () =
   assert.equal(instagramCaption({ title: "t", description: "", hashtags: [], hook: "" }), "");
 });
 
-test("a YouTube variant is title, description and tags, each measured against YouTube's limit", () => {
+test("a YouTube variant is title, description, keyword tags and hashtags, each measured against YouTube's limit", () => {
   const fields = variantFor("youtube", META);
-  assert.deepEqual(fields.map((f) => f.key), ["title", "description", "hashtags"]);
+  assert.deepEqual(fields.map((f) => f.key), ["title", "description", "tags", "hashtags"]);
   assert.equal(fields[0].limit, 100);
   assert.equal(fields[0].length, META.title.length);
   assert.ok(!fields[0].over);
-  assert.equal(fields[2].count, 2);
-  assert.equal(fields[2].countLimit, PLATFORM_LIMITS.youtube.hashtags);
+  // The keyword-tags field is a character measure against the 500-char line.
+  assert.equal(fields[2].key, "tags");
+  assert.equal(fields[2].limit, YOUTUBE_TAGS_LIMIT);
+  assert.equal(fields[2].value, tagsLine(META.tags));
+  // Hashtags stay a count measure, now in the fourth slot.
+  assert.equal(fields[3].count, 2);
+  assert.equal(fields[3].countLimit, PLATFORM_LIMITS.youtube.hashtags);
+});
+
+test("YouTube keyword tags: comma-split, no '#', de-duplicated, measured whole against 500 chars", () => {
+  assert.deepEqual(normaliseTags("deep work, #Focus, focus , attention"), ["deep work", "Focus", "attention"]);
+  assert.deepEqual(normaliseTags(["Focus", "focus", "  ", 7 as unknown as string]), ["Focus"]);
+  assert.equal(tagsLine(["deep work", "focus"]), "deep work, focus");
+  assert.equal(tagsLine(undefined), "");
+  const long = Array.from({ length: 40 }, (_, i) => `keyword-number-${i}`);
+  const field = variantFor("youtube", { ...META, tags: long }).find((f) => f.key === "tags")!;
+  assert.equal(field.limit, 500);
+  assert.equal(field.over, [...tagsLine(long)].length > 500);
 });
 
 test("an Instagram variant is a caption and tags, with no title field at all", () => {
@@ -210,6 +231,36 @@ test("an Instagram variant is a caption and tags, with no title field at all", (
   assert.equal(fields[0].limit, 2200);
   assert.equal(fields[0].value, instagramCaption(META));
   assert.equal(fields[1].countLimit, 30);
+});
+
+test("Instagram is composed from its OWN copy when it has any, and falls back otherwise", () => {
+  // No independent copy: the caption is the historical YouTube-derived block.
+  assert.equal(hasIndependentInstagram(META), false);
+  assert.equal(
+    instagramCaption(META),
+    [META.hook, META.description, "#focus #deepwork"].join("\n\n"),
+    "with nothing of its own, Instagram still reads the derived caption",
+  );
+  assert.deepEqual(instagramHashtags(META), META.hashtags);
+
+  // Independent copy present: the caption is composed from THAT, not the YouTube
+  // description — the operator's explicit requirement.
+  const indie: PublishMetadata = {
+    ...META,
+    igHook: "Stop scrolling — this one is different.",
+    igCaption: "A punchy Instagram-first caption.",
+    igHashtags: ["#reels", "#books"],
+  };
+  assert.equal(hasIndependentInstagram(indie), true);
+  assert.equal(
+    instagramCaption(indie),
+    "Stop scrolling — this one is different.\n\nA punchy Instagram-first caption.\n\n#reels #books",
+  );
+  assert.doesNotMatch(instagramCaption(indie), /What the book actually says/, "it does not reuse the YouTube description");
+  assert.deepEqual(instagramHashtags(indie), ["#reels", "#books"], "and its own hashtags, not the shared ones");
+
+  // A single independent field is enough to flip it: a hook alone makes it independent.
+  assert.equal(hasIndependentInstagram({ ...META, igHook: "Just a hook." }), true);
 });
 
 test("an over-limit value is reported whole, never truncated", () => {
@@ -592,6 +643,29 @@ test("regenerated hashtags are normalised and capped", async () => {
   assert.deepEqual(out.value, ["#focus", "#deepwork", "#attention"], "de-duplicated and prefixed");
 });
 
+test("YouTube tags regenerate as keywords — no '#', comma-world, de-duplicated", async () => {
+  const fake = fakeCall({ tags: ["Deep Work", "deep work", "focus", "attention span", "productivity", "habits"] });
+  const out = await regenerateField("tags", SOURCE, { call: fake.call, provider: "claude-cli" });
+  assert.deepEqual(out.value, ["Deep Work", "focus", "attention span", "productivity", "habits"], "case-insensitive de-dup, no '#'");
+  assert.match(fake.seen[0].user, /keyword tags/i, "the writer is asked for keyword tags, not hashtags");
+});
+
+test("Instagram fields regenerate from the script and are told NOT to reuse the YouTube description", async () => {
+  const hook = fakeCall({ igHook: "  Stop scrolling.  " });
+  const outHook = await regenerateField("igHook", SOURCE, { call: hook.call, provider: "claude-cli" });
+  assert.equal(outHook.value, "Stop scrolling.", "trimmed, and no purchase link appended");
+  assert.equal(await (async () => (await import("../src/lib/content/cli-metrics")).callKind(hook.seen[0].system))(), "other");
+
+  const cap = fakeCall({ igCaption: "A punchy, Instagram-first caption." });
+  const outCap = await regenerateField("igCaption", SOURCE, { call: cap.call, provider: "claude-cli" });
+  assert.equal(outCap.value, "A punchy, Instagram-first caption.", "an Instagram caption gets no appended book link");
+  assert.match(cap.seen[0].user, /NOT the YouTube description/, "the brief forbids reusing the YouTube description");
+
+  const tags = fakeCall({ igHashtags: ["focus", "deepwork", "reels", "books", "mindset", "#Focus"] });
+  const outTags = await regenerateField("igHashtags", SOURCE, { call: tags.call, provider: "claude-cli" });
+  assert.deepEqual(outTags.value, ["#focus", "#deepwork", "#reels", "#books", "#mindset"], "normalised and de-duped like hashtags");
+});
+
 test("an episode with no script cannot be regenerated from, and says so", async () => {
   const fake = fakeCall({ title: "t" });
   await assert.rejects(
@@ -848,7 +922,7 @@ test("an edit is stored and marked as the operator's words", async () => {
   const s = await seed();
   try {
     const before = await publishView(s.userId, s.episodeId);
-    assert.deepEqual(before.edits, { title: null, description: null, hashtags: null }, "nothing is hand-edited yet");
+    assert.deepEqual(before.edits, { title: null, description: null, hashtags: null, tags: null, igHook: null, igCaption: null, igHashtags: null }, "nothing is hand-edited yet");
 
     const after = await saveMetadata(s.userId, s.episodeId, { title: "  Busy Is Not Focused  " });
     assert.equal(after.metadata.title, "Busy Is Not Focused", "trimmed");
@@ -872,7 +946,7 @@ test("re-saving identical text is not an edit and does not start demanding confi
       description: view.metadata.description,
       hashtags: view.metadata.hashtags,
     });
-    assert.deepEqual(same.edits, { title: null, description: null, hashtags: null });
+    assert.deepEqual(same.edits, { title: null, description: null, hashtags: null, tags: null, igHook: null, igCaption: null, igHashtags: null });
   } finally {
     await s.cleanup();
   }
@@ -919,7 +993,7 @@ test("the editor refuses an unknown field, a wrong type and an absurd length", a
     // And nothing was written by any of them.
     const view = await publishView(s.userId, s.episodeId);
     assert.equal(view.metadata.title, "Productivity Isn't Hustle");
-    assert.deepEqual(view.edits, { title: null, description: null, hashtags: null });
+    assert.deepEqual(view.edits, { title: null, description: null, hashtags: null, tags: null, igHook: null, igCaption: null, igHashtags: null });
   } finally {
     await s.cleanup();
   }
@@ -1012,6 +1086,147 @@ test("a handoff of an episode that is not ready is refused, and records nothing"
     assert.equal(await prisma.publishJob.count({ where: { episodeId: s.episodeId } }), 0);
   } finally {
     await s.cleanup();
+  }
+});
+
+test("YouTube tags save, survive a reload, and carry a hand-edited mark", async () => {
+  const s = await seed();
+  try {
+    const before = await publishView(s.userId, s.episodeId);
+    assert.deepEqual(before.metadata.tags, [], "no tags until the operator sets them");
+    assert.equal(before.edits.tags, null);
+
+    const saved = await saveMetadata(s.userId, s.episodeId, { tags: "deep work, #Focus, focus, attention" });
+    assert.deepEqual(saved.metadata.tags, ["deep work", "Focus", "attention"], "comma-split, #-stripped, de-duped");
+    assert.ok(saved.edits.tags, "and marked as the operator's words");
+
+    // A fresh read is exactly what a page reload does — the value survives
+    // because it is in the database, not in client state.
+    const reread = await publishView(s.userId, s.episodeId);
+    assert.deepEqual(reread.metadata.tags, ["deep work", "Focus", "attention"]);
+    assert.ok(reread.edits.tags);
+    const row = await prisma.episode.findUniqueOrThrow({ where: { id: s.episodeId } });
+    assert.equal(row.youtubeTags, '["deep work","Focus","attention"]', "stored as JSON string[]");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("Instagram's own copy saves independently, and makes the caption independent of YouTube", async () => {
+  const s = await seed();
+  try {
+    const before = await publishView(s.userId, s.episodeId);
+    const derived = before.platforms
+      .find((p) => p.platform === "instagram")!
+      .variant.find((f) => f.key === "caption")!.value;
+    assert.match(derived, /What the book says about attention/, "the caption starts out derived from YouTube");
+
+    const saved = await saveMetadata(s.userId, s.episodeId, {
+      igHook: "Stop scrolling.",
+      igCaption: "Written for Instagram.",
+      igHashtags: ["#reels", "#books"],
+    });
+    assert.equal(saved.metadata.igHook, "Stop scrolling.");
+    assert.equal(saved.metadata.igCaption, "Written for Instagram.");
+    assert.deepEqual(saved.metadata.igHashtags, ["#reels", "#books"]);
+    assert.ok(saved.edits.igHook && saved.edits.igCaption && saved.edits.igHashtags, "each independent field is marked");
+    assert.equal(saved.edits.title, null, "editing Instagram does not mark YouTube's title");
+    assert.equal(saved.edits.description, null);
+
+    const caption = saved.platforms
+      .find((p) => p.platform === "instagram")!
+      .variant.find((f) => f.key === "caption")!.value;
+    assert.equal(caption, "Stop scrolling.\n\nWritten for Instagram.\n\n#reels #books");
+    assert.doesNotMatch(caption, /What the book says about attention/, "no longer the YouTube description");
+
+    // And it survives a reload.
+    const reread = await publishView(s.userId, s.episodeId);
+    assert.equal(reread.metadata.igCaption, "Written for Instagram.");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a per-platform cover choice is stored, validated, and kept apart from the other platform", async () => {
+  const s = await seed();
+  try {
+    const before = await publishView(s.userId, s.episodeId);
+    assert.equal(before.thumbnails.length, 6, "all six posters are offered to the picker");
+    assert.deepEqual(before.thumbChoices, { youtube: null, instagram: null, default: null });
+
+    const saved = await saveMetadata(s.userId, s.episodeId, { thumbChoiceYouTube: "16x9-quote" });
+    assert.equal(saved.thumbChoices.youtube, "16x9-quote");
+    assert.equal(saved.thumbChoices.instagram, null, "Instagram's cover is untouched");
+
+    const both = await saveMetadata(s.userId, s.episodeId, { thumbChoiceInstagram: "9x16-bold" });
+    assert.equal(both.thumbChoices.youtube, "16x9-quote", "the YouTube choice persists");
+    assert.equal(both.thumbChoices.instagram, "9x16-bold");
+
+    await assert.rejects(
+      () => saveMetadata(s.userId, s.episodeId, { thumbChoiceYouTube: "not-a-real-key" }),
+      (err: unknown) => {
+        assert.equal((err as { status: number }).status, 400, "a key the episode does not have is refused");
+        return true;
+      },
+    );
+
+    const cleared = await saveMetadata(s.userId, s.episodeId, { thumbChoiceYouTube: null });
+    assert.equal(cleared.thumbChoices.youtube, null, "clearing falls back to the episode-wide choice");
+
+    // The reload reads it back from the database.
+    const reread = await publishView(s.userId, s.episodeId);
+    assert.equal(reread.thumbChoices.instagram, "9x16-bold");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("the per-platform cover is consumed: it is the card's cover AND the handoff's download", async () => {
+  const s = await seed();
+  try {
+    // With no override, each platform resolves to the aspect it favours.
+    const before = await publishView(s.userId, s.episodeId);
+    const ytBefore = before.platforms.find((p) => p.platform === "youtube")!;
+    const igBefore = before.platforms.find((p) => p.platform === "instagram")!;
+    assert.equal(ytBefore.cover?.aspect, "16:9", "YouTube defaults to a 16:9 cover");
+    assert.equal(igBefore.cover?.aspect, "9:16", "Instagram defaults to a 9:16 cover");
+
+    // Choose explicit, different covers per platform.
+    await saveMetadata(s.userId, s.episodeId, { thumbChoiceYouTube: "16x9-bold", thumbChoiceInstagram: "9x16-split" });
+    const v = await publishView(s.userId, s.episodeId);
+    const yt = v.platforms.find((p) => p.platform === "youtube")!;
+    const ig = v.platforms.find((p) => p.platform === "instagram")!;
+
+    // The card surfaces the chosen per-platform cover…
+    assert.equal(yt.cover?.key, "16x9-bold");
+    assert.equal(ig.cover?.key, "9x16-split");
+
+    // …and the "Download selected poster" handoff downloads that SAME cover —
+    // the pointer is no longer cosmetic.
+    const ytDl = yt.handoff.find((h) => h.label === "Download selected poster")!;
+    const igDl = ig.handoff.find((h) => h.label === "Download selected poster")!;
+    assert.match(ytDl.href ?? "", /\/thumbnail\/16x9-bold\?/, "YouTube hands off the YouTube cover");
+    assert.match(igDl.href ?? "", /\/thumbnail\/9x16-split\?/, "Instagram hands off the Instagram cover");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("two episodes keep separate metadata — no cross-episode bleed", async () => {
+  const a = await seed({ row: { title: "Episode A" } });
+  const b = await seed({ row: { title: "Episode B" } });
+  try {
+    await saveMetadata(a.userId, a.episodeId, { tags: "a-tag", igHook: "A hook" });
+    await saveMetadata(b.userId, b.episodeId, { tags: "b-tag", igHook: "B hook" });
+    const va = await publishView(a.userId, a.episodeId);
+    const vb = await publishView(b.userId, b.episodeId);
+    assert.deepEqual(va.metadata.tags, ["a-tag"]);
+    assert.deepEqual(vb.metadata.tags, ["b-tag"]);
+    assert.equal(va.metadata.igHook, "A hook");
+    assert.equal(vb.metadata.igHook, "B hook");
+  } finally {
+    await a.cleanup();
+    await b.cleanup();
   }
 });
 

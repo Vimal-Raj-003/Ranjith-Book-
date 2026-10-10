@@ -300,6 +300,11 @@ export const strings = {
     allSteps: "All steps",
     notesSummary: (n: number) => (n === 1 ? "1 note" : `${n} notes`),
     videoReady: "Your video is ready.",
+    /** The Publish button on a finished episode card, and the dialog it opens. */
+    publish: "Publish",
+    publishTitle: (title: string) => `Publish — ${title}`,
+    publishDisabledHint: "Publishing opens once the video has finished rendering.",
+    publishClose: "Close",
     episodeLabel: (part: number, total: number) => (total > 1 ? `Episode ${part} of ${total}` : "Episode"),
     failed: "This run failed.",
     cancelled: "This run was cancelled.",
@@ -457,6 +462,55 @@ export const strings = {
     noConfirmation:
       "Nothing here can tell you whether a post went live: that needs a connection to the platform, which this build does not have.",
     openInNewTab: "Opens in a new tab",
+
+    /* --- the metadata is now grouped by platform (2026-10-10) ---------------
+     * The YouTube package gains a keyword-tags field distinct from hashtags,
+     * and Instagram gains its own hook, caption and hashtags written for
+     * Instagram rather than lifted from the YouTube description. */
+    youtubePackageHeading: "YouTube",
+    instagramPackageHeading: "Instagram",
+
+    /** YouTube keyword tags — search keywords, not the `#` tags shown under a video. */
+    tagsLabel: "Tags (keywords)",
+    tagsHint:
+      "Search keywords, comma-separated — not #hashtags. YouTube counts the whole line against a 500-character limit. A leading # is dropped for you.",
+    copyTags: "Copy tags",
+
+    /** The independent Instagram fields. */
+    instagramIntro:
+      "Written for Instagram, not copied from the YouTube description. Leave these blank to fall back to the caption composed from the hook, description and hashtags.",
+    /** Shown while the episode has no Instagram copy of its own and the caption is still the derived one. */
+    instagramDerivedNote:
+      "No Instagram copy of its own yet — the caption below is composed from the YouTube hook, description and hashtags. Edit or regenerate a field to make Instagram independent.",
+    igHookLabel: "Reel hook",
+    igHookHint: "The scroll-stopping opening line, written for a Reels audience.",
+    igCaptionLabel: "Caption",
+    igHashtagsLabel: "Hashtags",
+
+    /** Per-field copy buttons. */
+    copyTitle: "Copy title",
+    copyDescription: "Copy description",
+    copyHashtags: "Copy hashtags",
+    copyHook: "Copy hook",
+    copyCaption: "Copy caption",
+    copyFullCaption: "Copy full caption",
+    copyField: "Copy",
+    copyAll: "Copy all metadata",
+
+    /* --- per-platform cover picker (reuses the six existing posters) -------- */
+    thumbnailsHeading: "Thumbnails",
+    thumbnailsHint:
+      "Choose the cover for each platform. YouTube favours the wide 16:9 crops, Instagram the tall 9:16. Nothing new is generated here — these are this episode's existing posters.",
+    thumbnailsEmpty:
+      "This episode has no posters yet. They are drawn during the render; retitle or re-render the episode to make them.",
+    thumbnailsLoadFailed: "The posters for this episode could not be loaded.",
+    thumbUseYouTube: "Use for YouTube",
+    thumbUseInstagram: "Use for Instagram",
+    thumbYouTubeBadge: "YouTube",
+    thumbInstagramBadge: "Instagram",
+    thumbDownload: "Download",
+    thumbAspect: (aspect: string) => `${aspect} crop`,
+    thumbAlt: (aspect: string) => `${aspect} poster for this episode`,
   },
   library: {
     heading: "Library",

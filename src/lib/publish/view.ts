@@ -63,6 +63,23 @@ export interface MetadataEdits {
   title: string | null;
   description: string | null;
   hashtags: string | null;
+  /** YouTube keyword tags. */
+  tags: string | null;
+  /** The three independent Instagram fields. */
+  igHook: string | null;
+  igCaption: string | null;
+  igHashtags: string | null;
+}
+
+/** One poster the operator may choose, as the browser needs it. No disk path crosses the wire. */
+export interface PublicThumb {
+  key: string;
+  /** "9:16" or "16:9" — YouTube favours 16:9, Instagram 9:16. */
+  aspect: string;
+  /** Session-guarded, versioned URL — used for both the preview and the download. */
+  url: string;
+  width: number;
+  height: number;
 }
 
 /** How one platform stands. */
@@ -79,6 +96,14 @@ export interface PlatformState {
   problems: string[];
   /** The metadata shaped for this platform, with its counters. */
   variant: VariantField[];
+  /**
+   * The cover this platform will actually use — the per-platform choice when the
+   * operator set one, else the episode-wide `thumbChoice`, else the first poster
+   * of the aspect this platform favours. It is the SAME poster the handoff hands
+   * off and (for YouTube) the upload sets as the thumbnail, so what the card
+   * shows and what goes out cannot disagree. Null when the episode has no poster.
+   */
+  cover: { key: string; url: string; aspect: string; width: number; height: number } | null;
   /** What the operator does by hand. Empty when readiness or validation refuses. */
   handoff: HandoffStep[];
   requires: string[];
@@ -95,6 +120,15 @@ export interface PublishView {
   videoUrl: string | null;
   videoBytes: number | null;
   poster: { key: string; url: string; width: number; height: number } | null;
+  /** Every poster the episode has, for the per-platform cover picker. Empty when none are on disk. */
+  thumbnails: PublicThumb[];
+  /**
+   * The poster chosen for each platform. `youtube`/`instagram` are the
+   * platform-specific overrides (null when none), `default` is the episode-wide
+   * `thumbChoice` every other surface uses. A reader picks the override, else
+   * the default, else the first poster of the platform's preferred aspect.
+   */
+  thumbChoices: { youtube: string | null; instagram: string | null; default: string | null };
   metadata: PublishMetadata;
   edits: MetadataEdits;
   readiness: Readiness;
@@ -117,12 +151,32 @@ export interface PublishView {
   owned: boolean;
 }
 
-export type MetadataField = "title" | "description" | "hashtags";
+export type MetadataField =
+  | "title"
+  | "description"
+  | "hashtags"
+  | "tags"
+  | "igHook"
+  | "igCaption"
+  | "igHashtags";
 
-export const METADATA_FIELDS: MetadataField[] = ["title", "description", "hashtags"];
+export const METADATA_FIELDS: MetadataField[] = [
+  "title",
+  "description",
+  "hashtags",
+  "tags",
+  "igHook",
+  "igCaption",
+  "igHashtags",
+];
 
 export function isMetadataField(v: unknown): v is MetadataField {
-  return v === "title" || v === "description" || v === "hashtags";
+  return typeof v === "string" && (METADATA_FIELDS as string[]).includes(v);
+}
+
+/** The fields stored and measured as a list of tags rather than as prose. */
+export function isListField(field: MetadataField): field is "hashtags" | "tags" | "igHashtags" {
+  return field === "hashtags" || field === "tags" || field === "igHashtags";
 }
 
 /**

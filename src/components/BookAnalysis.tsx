@@ -241,7 +241,7 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
               <h2 id="videos-heading" className="font-display text-[15px] font-semibold" style={{ color: "var(--ink)" }}>
                 {strings.books.videosHeading}
               </h2>
-              <div className="grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 300px), 1fr))" }}>
+              <div className="books-videos grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
                 <div className="flex flex-col gap-2">
                   {videoIds.map((id) => (
                     <EpisodeCard
@@ -250,6 +250,7 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
                       active={id === activeVideo}
                       onSelect={setSelectedVideo}
                       onState={handleEpisodeState}
+                      showPublish
                     />
                   ))}
                 </div>

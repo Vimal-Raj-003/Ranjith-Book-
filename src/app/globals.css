@@ -667,6 +667,61 @@ body {
 }
 
 /* ==========================================================================
+   Book-PDF stationary panels
+   --------------------------------------------------------------------------
+   Only inside the Book-PDF pane, and only once the shell is the window
+   (>=1200px, where `.app-work` is the single scrolling box). Below that the
+   document scrolls the ordinary way and these must stay in normal flow, or a
+   phone gets a panel pinned to the top of a scrolling page.
+
+   Two things hold their place while the centre video list scrolls:
+
+   1. "Your books" (the left `work-split` column). Its containing block is the
+      split, which is as tall as the taller right column, so sticky has room to
+      travel. It is capped to the viewport and scrolls inside itself if the
+      book list ever outgrows the screen — only it, never the clamped page. The
+      pane heading above it is a sibling that scrolls away, so `top: 0` is
+      measured from the pane, not from under a header.
+
+   2. The Preview. It is the second cell of the Videos grid (its `.panel`); the
+      episode-card column is the first. The grid is `align-items: start`, so the
+      preview is its own height inside a row as tall as the card list and can
+      stick as the cards scroll past. Targeting the existing `.panel` keeps the
+      `<video>` in the same JSX position — nothing is re-parented, so playback
+      survives a scroll.
+
+   Scoped to `.books-split` / `.books-videos` on purpose: the Studio view uses
+   the same `work-split`/`work-col` primitives and must not be made sticky. */
+@media (min-width: 1200px) {
+  .books-split > .work-col:first-child {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    /* `overflow-y: auto` computes `overflow-x` to auto too, which would clip the
+       2px focus ring (+2px offset) on the disclosure summary that sits ~1px
+       inside the column edge. Hide the horizontal axis (as `.app-work` does)
+       and draw the ring inside, the same fix `.theme-group .chip-grid` uses. */
+    overflow-x: hidden;
+  }
+  .books-split > .work-col:first-child :focus-visible {
+    outline-offset: -2px;
+  }
+  /* Capped to the viewport like the aside. Pinned, the panel is as tall as its
+     content (video + meta + Download); on a short screen (~760px, a laptop)
+     that overruns the bottom and strands the Download link off-screen. With the
+     cap it scrolls inside itself instead, so every control stays reachable. */
+  .books-videos > .panel {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+  }
+}
+
+/* ==========================================================================
    Disclosures
    --------------------------------------------------------------------------
    Real <details>/<summary>, never a div that toggles a class: the summary is
@@ -786,14 +841,20 @@ body {
   text-align: left;
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.nav-item:hover:not(:disabled):not([aria-disabled="true"]) {
+.nav-item:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current="page"]) {
   color: var(--ink);
   background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
+/* The selected row. A solid accent border is the house signal for "this one is
+   chosen" (`.library-card[aria-current="true"]` uses the same `var(--amber)`),
+   carried here over a subtle accent fill so a selection reads at a glance and
+   never relies on colour alone — `aria-current` is still what a screen reader
+   hears. One rule for the whole nav convention: the sidebar's current section
+   and the open book in the Book-PDF list are the same kind of "you are here". */
 .nav-item[aria-current="page"] {
   color: var(--ink);
-  background: color-mix(in srgb, var(--amber) 14%, transparent);
-  border-color: color-mix(in srgb, var(--amber) 38%, transparent);
+  background: color-mix(in srgb, var(--amber) 18%, transparent);
+  border-color: var(--amber);
 }
 /* `aria-disabled`, never `disabled`: a disabled button drops out of the tab
    order, so the one row that explains where the app is going becomes
@@ -1470,6 +1531,28 @@ body {
   justify-content: space-between;
   gap: 8px;
 }
+/* The small per-platform cover preview: the poster this platform's handoff
+   downloads and (for YouTube) its upload sets. Sized to its own aspect. */
+.pub-platform-cover {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pub-platform-cover img {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 8%, var(--slab-2));
+  object-fit: cover;
+  display: block;
+}
+.pub-platform-cover[data-aspect="16:9"] img {
+  width: 96px;
+  aspect-ratio: 16 / 9;
+}
+.pub-platform-cover[data-aspect="9:16"] img {
+  width: 48px;
+  aspect-ratio: 9 / 16;
+}
 .pub-measures {
   display: flex;
   flex-direction: column;
@@ -1553,6 +1636,129 @@ body {
   .pub-progress > span {
     transition: none;
   }
+}
+
+/* A platform package — the YouTube or Instagram group of editable fields.
+   A labelled box so the two sets read as separate even though they edit the
+   one episode. */
+.pub-package {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: color-mix(in srgb, var(--slab-2) 30%, transparent);
+}
+
+/* The per-platform cover picker: the six existing posters, tall and wide
+   together, each with its own actions. `auto-fill` so narrow and wide posters
+   both lay out without stretching. */
+.pub-thumbs {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pub-thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.pub-thumb-frame {
+  border-radius: var(--r-panel);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 8%, var(--slab-2));
+}
+.pub-thumb[data-aspect="16:9"] .pub-thumb-frame {
+  aspect-ratio: 16 / 9;
+}
+.pub-thumb[data-aspect="9:16"] .pub-thumb-frame {
+  aspect-ratio: 9 / 16;
+  /* A 9:16 poster is tall; cap it so the grid row stays scannable. */
+  max-height: 220px;
+  margin-inline: auto;
+}
+.pub-thumb-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.pub-thumb-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.pub-thumb .pub-actions .chip,
+.pub-thumb .pub-actions a.chip {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* The accessible modal the Publish panel opens in from an episode card. A
+   fixed scrim with a centred, internally scrolling panel — tall content (the
+   whole Publish Center) scrolls inside the panel, never the page behind it.
+   Portaled to <body>, so no card transform can trap it. */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(12px, 4vh, 48px) 16px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.55);
+}
+.dialog-panel {
+  width: min(960px, 100%);
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - clamp(24px, 8vh, 96px));
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: var(--slab);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+.dialog-panel:focus {
+  outline: none;
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--slab-2);
+  color: var(--mute);
+  cursor: pointer;
+}
+.dialog-close:hover {
+  color: var(--ink);
+  border-color: var(--line-soft);
+}
+.dialog-body {
+  overflow-y: auto;
+  padding: 12px 14px;
 }
 
 @media (prefers-reduced-motion: reduce) {

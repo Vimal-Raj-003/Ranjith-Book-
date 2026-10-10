@@ -35,7 +35,7 @@ import { appendBookLink } from "@/lib/content/book-link";
 import { runCliJson } from "@/lib/content/cli-provider";
 import type { CliProvider } from "@/lib/content/cli";
 import type { Beat } from "@/lib/content/schema";
-import { normaliseHashtags } from "./limits";
+import { normaliseHashtags, normaliseTags } from "./limits";
 import type { MetadataField } from "./state";
 
 /**
@@ -61,33 +61,50 @@ async function contentProvider(): Promise<CliProvider> {
  * 100 for a title (which is also YouTube's ceiling), 1,200 for a description
  * (far inside YouTube's 5,000), and 3–12 hashtags (inside Instagram's 30).
  */
-const ASK = {
-  title: { maxLength: 100 },
-  description: { maxLength: 1200 },
-  hashtags: { min: 3, max: 12 },
-} as const;
+/** The character ceiling each prose field is asked to respect. */
+const PROSE_CAP: Record<"title" | "description" | "igHook" | "igCaption", number> = {
+  title: 100, // also YouTube's own title ceiling
+  description: 1200, // far inside YouTube's 5,000
+  igHook: 150, // a punchy opening line, not a paragraph
+  igCaption: 800, // Instagram reads shorter than a YouTube description
+};
 
-const SCHEMAS: Record<MetadataField, object> = {
-  title: {
+/** The item band each list field is asked to produce. */
+const LIST_ASK: Record<"hashtags" | "tags" | "igHashtags", { min: number; max: number }> = {
+  hashtags: { min: 3, max: 12 },
+  tags: { min: 5, max: 15 }, // YouTube keyword tags lean plentiful
+  igHashtags: { min: 5, max: 20 }, // Instagram leans on more tags than YouTube
+};
+
+function proseSchema(field: "title" | "description" | "igHook" | "igCaption") {
+  return {
     type: "object",
-    required: ["title"],
+    required: [field],
     additionalProperties: false,
-    properties: { title: { type: "string", maxLength: ASK.title.maxLength } },
-  },
-  description: {
+    properties: { [field]: { type: "string", maxLength: PROSE_CAP[field] } },
+  };
+}
+
+function listSchema(field: "hashtags" | "tags" | "igHashtags") {
+  const ask = LIST_ASK[field];
+  return {
     type: "object",
-    required: ["description"],
-    additionalProperties: false,
-    properties: { description: { type: "string", maxLength: ASK.description.maxLength } },
-  },
-  hashtags: {
-    type: "object",
-    required: ["hashtags"],
+    required: [field],
     additionalProperties: false,
     properties: {
-      hashtags: { type: "array", items: { type: "string" }, minItems: ASK.hashtags.min, maxItems: ASK.hashtags.max },
+      [field]: { type: "array", items: { type: "string" }, minItems: ask.min, maxItems: ask.max },
     },
-  },
+  };
+}
+
+const SCHEMAS: Record<MetadataField, object> = {
+  title: proseSchema("title"),
+  description: proseSchema("description"),
+  igHook: proseSchema("igHook"),
+  igCaption: proseSchema("igCaption"),
+  hashtags: listSchema("hashtags"),
+  tags: listSchema("tags"),
+  igHashtags: listSchema("igHashtags"),
 };
 
 /**
@@ -109,9 +126,13 @@ const RULES = [
 ];
 
 const FIELD_BRIEF: Record<MetadataField, string> = {
-  title: `Write ONE title for this video: at most ${ASK.title.maxLength} characters, specific to this idea, no clickbait question, no ALL CAPS, no trailing hashtags.`,
-  description: `Write the description for this video: ${ASK.description.maxLength} characters at most, two or three short paragraphs. Open with what the viewer gets from it, then name the book it came from. Do not list hashtags here and do not add any link — a purchase link is appended separately, in code.`,
-  hashtags: `Write between ${ASK.hashtags.min} and ${ASK.hashtags.max} hashtags for this video, each starting with '#', lowercase, no spaces inside a tag, specific before generic, no duplicates and no near-duplicates.`,
+  title: `Write ONE title for this video: at most ${PROSE_CAP.title} characters, specific to this idea, no clickbait question, no ALL CAPS, no trailing hashtags.`,
+  description: `Write the description for this video: ${PROSE_CAP.description} characters at most, two or three short paragraphs. Open with what the viewer gets from it, then name the book it came from. Do not list hashtags here and do not add any link — a purchase link is appended separately, in code.`,
+  hashtags: `Write between ${LIST_ASK.hashtags.min} and ${LIST_ASK.hashtags.max} hashtags for this video, each starting with '#', lowercase, no spaces inside a tag, specific before generic, no duplicates and no near-duplicates.`,
+  tags: `Write between ${LIST_ASK.tags.min} and ${LIST_ASK.tags.max} YouTube SEO keyword tags for this video. These are search keywords, NOT hashtags: plain words or short phrases, lower case, NO '#', a multi-word phrase is allowed ("deep work"), specific before generic, no duplicates.`,
+  igHook: `Write ONE short Instagram Reel opening line for this video: at most ${PROSE_CAP.igHook} characters, punchy and scroll-stopping, written for Instagram. Do NOT copy the YouTube title or description — write it fresh for a Reels audience.`,
+  igCaption: `Write an Instagram caption body for this video: at most ${PROSE_CAP.igCaption} characters, one or two short punchy paragraphs written for Instagram, NOT the YouTube description reused. Open with the payoff, keep it conversational. Do not list hashtags here (they are a separate field) and do not add any link.`,
+  igHashtags: `Write between ${LIST_ASK.igHashtags.min} and ${LIST_ASK.igHashtags.max} Instagram hashtags for this video, each starting with '#', lower case, no spaces inside a tag, a mix of specific and reach tags as suits Instagram, no duplicates and no near-duplicates.`,
 };
 
 export interface RegenerateSource {
@@ -214,12 +235,21 @@ export async function regenerateField(
     throw new AppError("regenerate_failed", `The writer could not be reached: ${detail}`, 502);
   }
 
-  if (field === "hashtags") {
-    const tags = normaliseHashtags(reply.hashtags);
-    if (tags.length < ASK.hashtags.min) {
+  if (field === "hashtags" || field === "igHashtags") {
+    const tags = normaliseHashtags(reply[field]);
+    const ask = LIST_ASK[field];
+    if (tags.length < ask.min) {
       throw new AppError("regenerate_failed", "The writer returned too few hashtags, so nothing was changed.", 502);
     }
-    return { field, value: tags.slice(0, ASK.hashtags.max) };
+    return { field, value: tags.slice(0, ask.max) };
+  }
+
+  if (field === "tags") {
+    const tags = normaliseTags(reply.tags);
+    if (tags.length < LIST_ASK.tags.min) {
+      throw new AppError("regenerate_failed", "The writer returned too few tags, so nothing was changed.", 502);
+    }
+    return { field, value: tags.slice(0, LIST_ASK.tags.max) };
   }
 
   const raw = reply[field];
@@ -227,7 +257,7 @@ export async function regenerateField(
     throw new AppError("regenerate_failed", `The writer returned no ${field}, so nothing was changed.`, 502);
   }
   const value = raw.trim();
-  const cap = field === "title" ? ASK.title.maxLength : ASK.description.maxLength;
+  const cap = PROSE_CAP[field];
   if ([...value].length > cap) {
     // Refused, not truncated: a title cut mid-word is not a title the operator
     // asked for, and the honest answer is "try again".

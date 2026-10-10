@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as inspectorModule from "../src/components/Inspector";
+import { selectOnCardClick, CARD_SELECT_IGNORE, publishEnabled } from "../src/components/EpisodeCard";
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../src/lib/media/pocket-tts";
 import {
   VOICES,
@@ -318,4 +319,196 @@ test("the shell's copy is in the strings module", () => {
   assert.equal(typeof strings.queue.body, "string");
   assert.equal(typeof strings.preview.none, "string");
   assert.equal(typeof strings.thumbnails.empty, "string");
+});
+
+/**
+ * The open book in the "Your books" list is highlighted by the shared nav
+ * convention, `.nav-item[aria-current="page"]` — the same rule the sidebar's
+ * current section uses. The book list once wrote `aria-current="true"`, a value
+ * that selector does not match, so the selected book showed no highlight at
+ * all. This pins the attribute value to the one the stylesheet actually targets
+ * so the markup and the CSS can never drift back apart. The highlight itself is
+ * layout, verified in the browser pass, not here.
+ */
+test("the open book's aria-current is the value the highlight selector targets", async () => {
+  const booksView = await fs.readFile(path.join(COMPONENTS, "BooksView.tsx"), "utf8");
+  const written = booksView.match(/aria-current=\{[^}]*\?\s*"([^"]+)"/);
+  assert.ok(written, "BooksView sets aria-current on the open book");
+  assert.equal(written[1], "page", 'a navigational selection uses aria-current="page", the nav convention');
+
+  const css = await fs.readFile(fileURLToPath(new URL("../src/app/globals.css", import.meta.url)), "utf8");
+  assert.ok(
+    css.includes(`.nav-item[aria-current="${written[1]}"]`),
+    `BooksView writes aria-current="${written[1]}" but no .nav-item rule highlights that value — the open book would show nothing`,
+  );
+});
+
+/**
+ * The whole episode card selects its episode, not only the "Show … in the
+ * preview" button — but a click that began on a nested control (the Show /
+ * Cancel buttons, a disclosure's <summary>/<details>, a link, a field) is that
+ * control's alone. `selectOnCardClick` is the single gate the card's <article>
+ * runs on every click; it is exported so the decision is pinned here without a
+ * browser. No DOM is installed in this runner, so a tiny faithful `closest` +
+ * `contains` over a hand-built node tree stands in for one — the real pointer
+ * behaviour, and that the preview's <video> keeps playing (never remounts) when
+ * the already-selected card is clicked, are verified in the browser pass.
+ */
+type FakeEl = {
+  tagName: string;
+  role?: string;
+  parent: FakeEl | null;
+  closest(sel: string): FakeEl | null;
+  contains(other: FakeEl | null): boolean;
+};
+function fakeEl(tag: string, opts: { role?: string; parent?: FakeEl | null } = {}): FakeEl {
+  const node: FakeEl = {
+    tagName: tag.toUpperCase(),
+    role: opts.role,
+    parent: opts.parent ?? null,
+    closest(sel: string) {
+      const parts = sel.split(",").map((s) => s.trim());
+      for (let cur: FakeEl | null = node; cur; cur = cur.parent) {
+        for (const part of parts) {
+          const role = part.match(/^\[role="([^"]+)"\]$/);
+          if (role ? cur.role === role[1] : cur.tagName === part.toUpperCase()) return cur;
+        }
+      }
+      return null;
+    },
+    // True when `node` is `other` itself or one of its ancestors — the DOM's
+    // `Node.contains`, which the gate uses to bound `closest` to this card.
+    contains(other: FakeEl | null) {
+      for (let cur = other; cur; cur = cur.parent) if (cur === node) return true;
+      return false;
+    },
+  };
+  return node;
+}
+
+test("the whole episode card selects it; a click on a nested control does not", () => {
+  // The card's own structure: an <article> with a title, the two action
+  // buttons, and the "All steps" disclosure whose body holds a step list.
+  const card = fakeEl("article");
+  const title = fakeEl("span", { parent: fakeEl("header", { parent: card }) });
+  const showBtn = fakeEl("button", { parent: card });
+  const cancelBtn = fakeEl("button", { parent: card });
+  const details = fakeEl("details", { parent: card });
+  const summary = fakeEl("summary", { parent: details });
+  const stepInDisclosure = fakeEl("li", { parent: fakeEl("ol", { parent: details }) });
+
+  const picks: string[] = [];
+  const opts = { active: false, episodeId: "e9", onSelect: (id: string) => picks.push(id) };
+  const click = (el: FakeEl) => selectOnCardClick(el as unknown as Element, card as unknown as Element, opts);
+
+  // Title and the card's own empty area — the whole bug this fixes.
+  click(title);
+  click(card);
+  assert.deepEqual(picks, ["e9", "e9"], "a click on the card's chrome selects, with the episode's id");
+
+  // Every nested control keeps its own job and does not also select the card.
+  for (const el of [showBtn, cancelBtn, summary, stepInDisclosure]) click(el);
+  assert.deepEqual(picks, ["e9", "e9"], "no click on a button, a <summary>, or inside the disclosure selected the card");
+});
+
+test("an interactive ANCESTOR of the card does not suppress selection (closest is bounded to the card)", () => {
+  // The whole episode list could one day be wrapped in a <details>, exactly as
+  // BooksView already wraps its book list. The gate must not treat that ancestor
+  // as the card's own control and swallow every click.
+  const outerDetails = fakeEl("details");
+  const card = fakeEl("article", { parent: outerDetails });
+  const title = fakeEl("span", { parent: fakeEl("header", { parent: card }) });
+
+  const picks: string[] = [];
+  selectOnCardClick(title as unknown as Element, card as unknown as Element, {
+    active: false,
+    episodeId: "e9",
+    onSelect: (id: string) => picks.push(id),
+  });
+  assert.deepEqual(picks, ["e9"], "an ancestor <details> must not suppress a click on the card body");
+});
+
+test("the already-shown card does not re-select, so the preview <video> is never remounted", () => {
+  const card = fakeEl("article");
+  const picks: string[] = [];
+  selectOnCardClick(card as unknown as Element, card as unknown as Element, {
+    active: true,
+    episodeId: "e9",
+    onSelect: (id: string) => picks.push(id),
+  });
+  assert.deepEqual(picks, [], "clicking the active card fires no selection — the same reason the Show button is disabled");
+});
+
+test("the card's ignore-gate lists every interactive control it renders, as its own selector", () => {
+  // Split-and-compare, not `includes`: "a" is a substring of "textarea" and
+  // "details", so a substring check would pass even if the `a` selector were
+  // deleted. Each token must be a selector in its own right.
+  const selectors = CARD_SELECT_IGNORE.split(",").map((s) => s.trim());
+  for (const token of ["button", "a", "summary", "details", "input", "select", "textarea", '[role="button"]']) {
+    assert.ok(selectors.includes(token), `the gate must list ${token} as its own selector, or clicking it would wrongly select the card`);
+  }
+});
+
+test("the Publish button is enabled only for a finished episode with a usable video", () => {
+  assert.equal(publishEnabled({ status: "DONE", hasVideo: true }), true);
+  assert.equal(publishEnabled({ status: "DONE", hasVideo: false }), false, "DONE but the render is not on disk");
+  assert.equal(publishEnabled({ status: "RUNNING", hasVideo: true }), false, "still generating");
+  assert.equal(publishEnabled({ status: "RUNNING", hasVideo: false }), false);
+  assert.equal(publishEnabled({ status: "QUEUED", hasVideo: false }), false);
+  assert.equal(publishEnabled({ status: "FAILED", hasVideo: false }), false);
+  assert.equal(publishEnabled({ status: "CANCELLED", hasVideo: false }), false);
+});
+
+test("EpisodeCard's Publish button is gated by showPublish, uses publishEnabled, and opens a sibling dialog", async () => {
+  const src = await fs.readFile(path.join(COMPONENTS, "EpisodeCard.tsx"), "utf8");
+  // The button is behind `showPublish` so Studio (which already mounts a
+  // permanent PublishCenter) gets no duplicate; only the Book-PDF view passes it.
+  assert.match(src, /showPublish\s*&&/, "the button and dialog render only when showPublish is set");
+  // A <button>, so CARD_SELECT_IGNORE already stops it selecting the card; its
+  // enabled state is the one exported, unit-tested predicate.
+  assert.match(src, /publishEnabled\(episode\)/, "the button's enabled state comes from the exported predicate");
+  assert.match(src, /strings\.run\.publish\b/, "it uses the Publish label from strings");
+  assert.match(src, /setPublishOpen\(true\)/, "clicking the enabled button opens the panel");
+  assert.match(src, /<PublishCenter episode=\{episode\} \/>/, "the panel body is the reused PublishCenter, handed THIS card's episode");
+  // The dialog is a SIBLING of the <article>, not a child: React routes a
+  // portal's events through the component tree, so a child would send every
+  // click inside the panel to the card's selection gate.
+  const afterArticle = src.slice(src.indexOf("</article>"));
+  assert.match(afterArticle, /<Dialog/, "the Dialog is rendered after </article>, as a sibling");
+});
+
+test("the Publish button is on the Book-PDF card only, not duplicated in Studio", async () => {
+  const book = await fs.readFile(path.join(COMPONENTS, "BookAnalysis.tsx"), "utf8");
+  assert.match(book, /<EpisodeCard[\s\S]*?showPublish/, "BookAnalysis opts its cards into the Publish button");
+  const studio = await fs.readFile(path.join(COMPONENTS, "Studio.tsx"), "utf8");
+  assert.doesNotMatch(studio, /showPublish/, "Studio must NOT show the button — its inspector already has a permanent PublishCenter");
+});
+
+test("the accessible dialog carries the modal semantics a reader needs, and does not steal focus on a parent re-render", async () => {
+  const src = await fs.readFile(path.join(COMPONENTS, "ui.tsx"), "utf8");
+  assert.match(src, /role="dialog"/);
+  assert.match(src, /aria-modal="true"/);
+  assert.match(src, /aria-labelledby=\{titleId\}/, "labelled by its own heading");
+  assert.match(src, /e\.key === "Escape"/, "Escape closes it");
+  assert.match(src, /openerRef\.current/, "focus is restored to whatever opened it");
+  assert.match(src, /createPortal/, "portaled to the body so no ancestor transform can trap a fixed overlay");
+  // The focus/trap effect must be MOUNT-ONLY (`[]`) and call the latest onClose
+  // through a ref — otherwise a RUNNING sibling episode's poll re-renders the
+  // card, re-runs the effect, and yanks focus mid-keystroke.
+  assert.match(src, /onCloseRef\.current/, "Escape calls the latest onClose via a ref, not a captured closure");
+  assert.match(src, /onCloseRef\.current = onClose/, "the ref is kept current every render");
+});
+
+test("EpisodeCard wires the whole <article> to the gate and keeps the button as the keyboard selector", async () => {
+  const src = await fs.readFile(path.join(COMPONENTS, "EpisodeCard.tsx"), "utf8");
+  assert.match(src, /<article\b/, "the card is still an <article> (a <button> cannot wrap the buttons it contains)");
+  assert.match(
+    src,
+    /onClick=\{\(e\)\s*=>\s*selectOnCardClick\(e\.target as Element,\s*e\.currentTarget/,
+    "the <article> runs the gate bounded to itself via currentTarget",
+  );
+  assert.ok(
+    src.includes("onClick={() => onSelect(episode.id)}"),
+    "the Show button stays the focusable, keyboard-accessible selector — the pointer affordance adds no second tab stop",
+  );
 });

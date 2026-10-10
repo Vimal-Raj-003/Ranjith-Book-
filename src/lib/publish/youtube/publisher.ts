@@ -35,7 +35,9 @@ import {
   PLATFORM_LABELS,
   PLATFORM_LIMITS,
   normaliseHashtags,
+  normaliseTags,
   variantProblems,
+  type PublishMetadata,
 } from "../limits";
 import { PublishRefused, type PublishHooks } from "../contract";
 import type {
@@ -87,6 +89,19 @@ export interface YouTubeContext {
 /** `#deep-work` → `deep-work`: `snippet.tags` are words, not hashtags. */
 export function tagsFrom(hashtags: string[]): string[] {
   return normaliseHashtags(hashtags).map((t) => t.replace(/^#/, ""));
+}
+
+/**
+ * The keyword tags actually sent to YouTube's `snippet.tags`.
+ *
+ * The operator's dedicated keyword-tags field is the real source; it is distinct
+ * from the `#hashtags` shown under the video. Only when they have set none does
+ * this fall back to deriving tags from the hashtags, so an episode made before
+ * the tags field existed still uploads something sensible rather than nothing.
+ */
+export function uploadTags(metadata: PublishMetadata): string[] {
+  const keywords = normaliseTags(metadata.tags ?? []);
+  return keywords.length > 0 ? keywords : tagsFrom(metadata.hashtags);
 }
 
 /** How many characters YouTube counts against the 500-character tag budget. */
@@ -143,11 +158,11 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
     // refusal and a red number can never disagree.
     problems.push(...variantProblems(platform, request.metadata));
 
-    const tags = tagsFrom(request.metadata.hashtags);
+    const tags = uploadTags(request.metadata);
     const length = tagsLength(tags);
     if (length > TAGS_MAX_CHARS) {
       problems.push(
-        `The hashtags come to ${length} characters as YouTube tags, and it allows ${TAGS_MAX_CHARS}. Remove a few.`,
+        `The YouTube tags come to ${length} characters, and YouTube allows ${TAGS_MAX_CHARS}. Remove a few.`,
       );
     }
     // YouTube refuses angle brackets outright, with a generic 400 that says
@@ -225,7 +240,7 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
           {
             title: prepared.metadata.title,
             description: prepared.metadata.description,
-            tags: tagsFrom(prepared.metadata.hashtags),
+            tags: uploadTags(prepared.metadata),
             categoryId: categoryId(env),
           },
           {

@@ -6,14 +6,27 @@ import YouTubePublish from "./YouTubePublish";
 import { Badge, Disclosure, EmptyState, Hint, Panel, Skeleton, StatRow } from "./ui";
 import { useToast } from "./Toast";
 import { strings } from "@/lib/strings";
-import { hashtagLine, instagramCaption, normaliseHashtags, type PublishMetadata } from "@/lib/publish/limits";
-import type {
-  HandoffStep,
-  MetadataField,
-  PlatformState,
-  PublishStatus,
-  PublishView,
-  VariantField,
+import {
+  PLATFORM_LIMITS,
+  hashtagLine,
+  hasIndependentInstagram,
+  instagramCaption,
+  normaliseHashtags,
+  normaliseTags,
+  tagsLine,
+  type PublishMetadata,
+  type VariantFieldKey,
+} from "@/lib/publish/limits";
+import { pickPosterFor } from "@/lib/thumbnails/choose";
+import {
+  isListField,
+  type HandoffStep,
+  type MetadataField,
+  type PlatformState,
+  type PublicThumb,
+  type PublishStatus,
+  type PublishView,
+  type VariantField,
 } from "@/lib/publish/view";
 import type { BadgeTone } from "./ui";
 import type { EpisodeState } from "./types";
@@ -177,6 +190,17 @@ function PlatformCard({
 
       <p className="hint">{c.statusNote[state.status] ?? ""}</p>
 
+      {/* The cover THIS platform will use — the one its handoff downloads and
+          (for YouTube) its upload sets as the thumbnail. Chosen in the picker
+          above; shown here so the card and what goes out cannot disagree. */}
+      {state.cover && (
+        <div className="pub-platform-cover" data-aspect={state.cover.aspect}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={state.cover.url} alt={c.thumbAlt(state.cover.aspect)} />
+          <span className="hint">{c.thumbAspect(state.cover.aspect)}</span>
+        </div>
+      )}
+
       {/* Said plainly rather than left to be inferred from a missing button. */}
       {!state.capabilities.canUpload && <p className="hint">{c.cannotUpload}</p>}
 
@@ -277,8 +301,8 @@ function PlatformCard({
  * API is already enforcing rather than the enforcement itself.
  */
 function FieldEditor({
-  field,
   label,
+  name,
   value,
   measure,
   edited,
@@ -287,14 +311,18 @@ function FieldEditor({
   busy,
   dirty,
   confirming,
+  copyText,
+  copyLabel,
   onChange,
   onSave,
   onRegenerate,
   onConfirm,
   onCancelConfirm,
 }: {
-  field: MetadataField;
   label: string;
+  /** A friendly name for prose sentences (the overwrite confirmation), when the
+   *  visible label reads awkwardly inside one ("Tags (keywords)" → "tags"). */
+  name?: string;
   value: string;
   measure: VariantField | null;
   edited: boolean;
@@ -303,6 +331,9 @@ function FieldEditor({
   busy: "save" | "regen" | null;
   dirty: boolean;
   confirming: boolean;
+  /** When set, a Copy button for this field's text sits beside Save/Regenerate. */
+  copyText?: string;
+  copyLabel?: string;
   onChange: (next: string) => void;
   onSave: () => void;
   onRegenerate: () => void;
@@ -365,11 +396,12 @@ function FieldEditor({
         >
           <span className="truncate">{busy === "regen" ? c.regenerating : c.regenerate}</span>
         </button>
+        {copyText !== undefined && <CopyButton label={copyLabel ?? c.copyField} text={copyText} />}
       </div>
 
       {confirming && (
         <div className="pub-confirm" role="alert">
-          <p>{c.confirmBody(field)}</p>
+          <p>{c.confirmBody(name ?? label)}</p>
           <div className="pub-actions">
             <button type="button" className="chip" data-state="on" onClick={onConfirm}>
               <span className="truncate">{c.confirmYes}</span>
@@ -415,6 +447,105 @@ function CopyBlocks({ meta, status }: { meta: PublishMetadata; status: string })
   );
 }
 
+/**
+ * The per-platform cover picker: the six posters the episode already has, with
+ * the one chosen for each platform marked and a Download beside each.
+ *
+ * It GENERATES NOTHING — every image here is an existing poster served by the
+ * thumbnail route, and choosing one only writes a pointer. The effective choice
+ * is resolved by `pickPosterFor`: the platform's own override, else the
+ * episode-wide choice, else the first poster of the aspect that platform
+ * favours (YouTube wide, Instagram tall). When the episode has no posters yet it
+ * says so rather than showing an empty grid.
+ */
+function ThumbnailPicker({
+  thumbnails,
+  choices,
+  busy,
+  onChoose,
+}: {
+  thumbnails: PublicThumb[];
+  choices: { youtube: string | null; instagram: string | null; default: string | null };
+  busy: "youtube" | "instagram" | null;
+  onChoose: (platform: "youtube" | "instagram", key: string) => void;
+}) {
+  const c = strings.publishCenter;
+  const ytKey = pickPosterFor(thumbnails, choices.youtube, choices.default, "16:9")?.key ?? null;
+  const igKey = pickPosterFor(thumbnails, choices.instagram, choices.default, "9:16")?.key ?? null;
+
+  return (
+    <section className="flex flex-col gap-2" aria-labelledby="pub-thumbs">
+      <h3 id="pub-thumbs" className="eyebrow">
+        {c.thumbnailsHeading}
+      </h3>
+      <Hint>{c.thumbnailsHint}</Hint>
+      {thumbnails.length === 0 ? (
+        <EmptyState>{c.thumbnailsEmpty}</EmptyState>
+      ) : (
+        <ul className="pub-thumbs" role="list">
+          {thumbnails.map((t) => {
+            const isYT = t.key === ytKey;
+            const isIG = t.key === igKey;
+            return (
+              <li key={t.key} className="pub-thumb" data-aspect={t.aspect}>
+                <div className="pub-thumb-frame">
+                  {/* A plain <img>: the bytes come from a session-guarded route,
+                      so `next/image` has nothing to optimise. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={t.url} alt={c.thumbAlt(t.aspect)} />
+                </div>
+                <div className="pub-thumb-meta">
+                  <span className="hint">{c.thumbAspect(t.aspect)}</span>
+                  <div className="flex items-center gap-1">
+                    {isYT && <Badge tone="done">{c.thumbYouTubeBadge}</Badge>}
+                    {isIG && <Badge tone="done">{c.thumbInstagramBadge}</Badge>}
+                  </div>
+                </div>
+                <div className="pub-actions">
+                  <button
+                    type="button"
+                    className="chip"
+                    data-state={isYT ? "on" : undefined}
+                    aria-pressed={isYT}
+                    aria-disabled={busy !== null ? "true" : undefined}
+                    onClick={() => busy === null && onChoose("youtube", t.key)}
+                  >
+                    <span className="truncate">{c.thumbUseYouTube}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chip"
+                    data-state={isIG ? "on" : undefined}
+                    aria-pressed={isIG}
+                    aria-disabled={busy !== null ? "true" : undefined}
+                    onClick={() => busy === null && onChoose("instagram", t.key)}
+                  >
+                    <span className="truncate">{c.thumbUseInstagram}</span>
+                  </button>
+                  <a className="chip" href={t.url} download>
+                    <span className="truncate">{c.thumbDownload}</span>
+                  </a>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** Friendly names for the fields, for the toast and the overwrite confirmation. */
+const FIELD_NAMES: Record<MetadataField, string> = {
+  title: "title",
+  description: "description",
+  hashtags: "hashtags",
+  tags: "tags",
+  igHook: "Instagram hook",
+  igCaption: "Instagram caption",
+  igHashtags: "Instagram hashtags",
+};
+
 type Busy = { kind: "save" | "regen"; field: MetadataField } | { kind: "record"; platform: string } | null;
 
 export default function PublishCenter({ episode }: { episode: EpisodeState | null }) {
@@ -431,6 +562,8 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
   const [drafts, setDrafts] = useState<Partial<Record<MetadataField, string>>>({});
   const [busy, setBusy] = useState<Busy>(null);
   const [confirming, setConfirming] = useState<MetadataField | null>(null);
+  /** The platform whose cover is being saved right now (`youtube`/`instagram`), or null. */
+  const [thumbBusy, setThumbBusy] = useState<"youtube" | "instagram" | null>(null);
   /** Bumped by the Retry button to ask the effect for another go. */
   const [reloads, setReloads] = useState(0);
 
@@ -520,8 +653,23 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
 
   const stored = (field: MetadataField): string => {
     if (!view) return "";
-    if (field === "hashtags") return hashtagLine(view.metadata.hashtags);
-    return view.metadata[field];
+    const m = view.metadata;
+    switch (field) {
+      case "title":
+        return m.title;
+      case "description":
+        return m.description;
+      case "hashtags":
+        return hashtagLine(m.hashtags);
+      case "tags":
+        return tagsLine(m.tags);
+      case "igHook":
+        return m.igHook ?? "";
+      case "igCaption":
+        return m.igCaption ?? "";
+      case "igHashtags":
+        return hashtagLine(m.igHashtags ?? []);
+    }
   };
 
   const shown = (field: MetadataField): string => drafts[field] ?? stored(field);
@@ -529,8 +677,9 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
   const dirty = (field: MetadataField): boolean => {
     const draft = drafts[field];
     if (draft === undefined) return false;
-    if (field === "hashtags") {
-      return JSON.stringify(normaliseHashtags(draft)) !== JSON.stringify(normaliseHashtags(stored(field)));
+    if (isListField(field)) {
+      const norm = field === "tags" ? normaliseTags : normaliseHashtags;
+      return JSON.stringify(norm(draft)) !== JSON.stringify(norm(stored(field)));
     }
     return draft.trim() !== stored(field).trim();
   };
@@ -592,7 +741,7 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
     setConfirming(null);
     accept(body);
     setDrafts((d) => ({ ...d, [field]: undefined }));
-    toast.show(c.regeneratedToast(field), "ok");
+    toast.show(c.regeneratedToast(FIELD_NAMES[field]), "ok");
   }
 
   async function record(platform: string) {
@@ -608,6 +757,26 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
     toast.show(c.recordedToast, "ok");
   }
 
+  /**
+   * Choose the cover for one platform. A PUT to the same publish endpoint the
+   * metadata edits use, carrying only the platform's choice column — it writes
+   * a pointer to one of this episode's existing posters and generates nothing.
+   * The answer is the whole view, taken the same way a save's is.
+   */
+  async function chooseThumbnail(platform: "youtube" | "instagram", key: string) {
+    if (!id) return;
+    const column = platform === "youtube" ? "thumbChoiceYouTube" : "thumbChoiceInstagram";
+    setThumbBusy(platform);
+    const { ok, body } = await send(`/api/episodes/${id}/publish`, { [column]: key }, "PUT");
+    setThumbBusy(null);
+    if (!ok) {
+      toast.show(typeof body.error === "string" ? body.error : c.saveFailed, "error");
+      return;
+    }
+    accept(body);
+    toast.show(c.savedToast, "ok");
+  }
+
   const fieldBusy = (field: MetadataField): "save" | "regen" | null =>
     busy && (busy.kind === "save" || busy.kind === "regen") && busy.field === field ? busy.kind : null;
 
@@ -617,6 +786,45 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
   const instagram = view?.platforms.find((p) => p.platform === "instagram") ?? null;
   const measureOf = (key: string): VariantField | null =>
     youtube?.variant.find((f) => f.key === key) ?? instagram?.variant.find((f) => f.key === key) ?? null;
+
+  /** A live character counter for a field the platform variants do not measure on their own. */
+  const charMeasure = (key: VariantFieldKey, value: string, limit: number): VariantField => {
+    const length = [...value].length;
+    return { key, label: "", value, length, limit, over: length > limit };
+  };
+  /** A live tag counter, measured the same way `variantFor` measures hashtags. */
+  const tagMeasure = (value: string, limit: number): VariantField => {
+    const tags = normaliseHashtags(value);
+    const line = tags.join(" ");
+    return { key: "hashtags", label: "", value: line, length: [...line].length, limit: null, count: tags.length, countLimit: limit, over: tags.length > limit };
+  };
+
+  /** One metadata editor, wired to this component's draft/save/regenerate/copy plumbing. */
+  const renderField = (
+    field: MetadataField,
+    label: string,
+    opts: { rows?: number; hint?: string; measure: VariantField | null; copyLabel: string },
+  ) => (
+    <FieldEditor
+      label={label}
+      name={FIELD_NAMES[field]}
+      value={shown(field)}
+      measure={opts.measure}
+      edited={view ? view.edits[field] !== null : false}
+      rows={opts.rows}
+      hint={opts.hint}
+      busy={fieldBusy(field)}
+      dirty={dirty(field)}
+      confirming={confirming === field}
+      copyText={shown(field)}
+      copyLabel={opts.copyLabel}
+      onChange={(next) => setDrafts((d) => ({ ...d, [field]: next }))}
+      onSave={() => void save(field)}
+      onRegenerate={() => void regenerate(field, false)}
+      onConfirm={() => void regenerate(field, true)}
+      onCancelConfirm={() => setConfirming(null)}
+    />
+  );
 
   const ready = view?.readiness.ready ?? false;
   const issues = view?.readiness.issues ?? [];
@@ -720,65 +928,72 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
                 </div>
               </section>
 
-              <section className="flex flex-col gap-2" aria-labelledby="pub-meta">
+              <section className="flex flex-col gap-3" aria-labelledby="pub-meta">
                 <h3 id="pub-meta" className="eyebrow">
                   {c.metadataHeading}
                 </h3>
                 <Hint>{c.metadataHint}</Hint>
 
-                <FieldEditor
-                  field="title"
-                  label={c.titleLabel}
-                  value={shown("title")}
-                  measure={measureOf("title")}
-                  edited={view.edits.title !== null}
-                  busy={fieldBusy("title")}
-                  dirty={dirty("title")}
-                  confirming={confirming === "title"}
-                  onChange={(next) => setDrafts((d) => ({ ...d, title: next }))}
-                  onSave={() => void save("title")}
-                  onRegenerate={() => void regenerate("title", false)}
-                  onConfirm={() => void regenerate("title", true)}
-                  onCancelConfirm={() => setConfirming(null)}
-                />
+                {/* The YouTube package: title, description, the keyword tags
+                    (distinct from hashtags) and the hashtags. */}
+                <div className="pub-package" aria-labelledby="pub-yt-pkg">
+                  <h4 id="pub-yt-pkg" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+                    {c.youtubePackageHeading}
+                  </h4>
+                  {renderField("title", c.titleLabel, { measure: measureOf("title"), copyLabel: c.copyTitle })}
+                  {renderField("description", c.descriptionLabel, { rows: 6, measure: measureOf("description"), copyLabel: c.copyDescription })}
+                  {renderField("tags", c.tagsLabel, { rows: 2, hint: c.tagsHint, measure: measureOf("tags"), copyLabel: c.copyTags })}
+                  {renderField("hashtags", c.hashtagsLabel, { rows: 2, hint: c.hashtagsHint, measure: measureOf("hashtags"), copyLabel: c.copyHashtags })}
+                  <div className="pub-actions">
+                    <CopyButton
+                      label={c.copyAll}
+                      text={[
+                        view.metadata.title,
+                        "",
+                        view.metadata.description,
+                        "",
+                        `${c.tagsLabel}: ${tagsLine(view.metadata.tags)}`,
+                        hashtagLine(view.metadata.hashtags),
+                      ].join("\n")}
+                    />
+                  </div>
+                </div>
 
-                <FieldEditor
-                  field="description"
-                  label={c.descriptionLabel}
-                  value={shown("description")}
-                  measure={measureOf("description")}
-                  edited={view.edits.description !== null}
-                  rows={6}
-                  busy={fieldBusy("description")}
-                  dirty={dirty("description")}
-                  confirming={confirming === "description"}
-                  onChange={(next) => setDrafts((d) => ({ ...d, description: next }))}
-                  onSave={() => void save("description")}
-                  onRegenerate={() => void regenerate("description", false)}
-                  onConfirm={() => void regenerate("description", true)}
-                  onCancelConfirm={() => setConfirming(null)}
-                />
-
-                <FieldEditor
-                  field="hashtags"
-                  label={c.hashtagsLabel}
-                  value={shown("hashtags")}
-                  measure={measureOf("hashtags")}
-                  edited={view.edits.hashtags !== null}
-                  rows={2}
-                  hint={c.hashtagsHint}
-                  busy={fieldBusy("hashtags")}
-                  dirty={dirty("hashtags")}
-                  confirming={confirming === "hashtags"}
-                  onChange={(next) => setDrafts((d) => ({ ...d, hashtags: next }))}
-                  onSave={() => void save("hashtags")}
-                  onRegenerate={() => void regenerate("hashtags", false)}
-                  onConfirm={() => void regenerate("hashtags", true)}
-                  onCancelConfirm={() => setConfirming(null)}
-                />
+                {/* The Instagram package, written for Instagram rather than
+                    derived from the YouTube description. While it is empty the
+                    caption still falls back to the composed one, and the note
+                    says so. */}
+                <div className="pub-package" aria-labelledby="pub-ig-pkg">
+                  <h4 id="pub-ig-pkg" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+                    {c.instagramPackageHeading}
+                  </h4>
+                  <Hint>{c.instagramIntro}</Hint>
+                  {!hasIndependentInstagram(view.metadata) && <Hint>{c.instagramDerivedNote}</Hint>}
+                  {renderField("igHook", c.igHookLabel, { hint: c.igHookHint, measure: null, copyLabel: c.copyHook })}
+                  {renderField("igCaption", c.igCaptionLabel, {
+                    rows: 5,
+                    measure: charMeasure("caption", shown("igCaption"), PLATFORM_LIMITS.instagram.body),
+                    copyLabel: c.copyCaption,
+                  })}
+                  {renderField("igHashtags", c.igHashtagsLabel, {
+                    rows: 2,
+                    measure: tagMeasure(shown("igHashtags"), PLATFORM_LIMITS.instagram.hashtags),
+                    copyLabel: c.copyHashtags,
+                  })}
+                  <div className="pub-actions">
+                    <CopyButton label={c.copyFullCaption} text={instagramCaption(view.metadata)} />
+                  </div>
+                </div>
 
                 <Hint>{c.regenerateHint}</Hint>
               </section>
+
+              <ThumbnailPicker
+                thumbnails={view.thumbnails}
+                choices={view.thumbChoices}
+                busy={thumbBusy}
+                onChoose={(platform, key) => void chooseThumbnail(platform, key)}
+              />
 
               <section className="flex flex-col gap-2" aria-labelledby="pub-platforms">
                 <h3 id="pub-platforms" className="eyebrow">

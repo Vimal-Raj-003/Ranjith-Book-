@@ -71,7 +71,10 @@ export function ToastHost({ children }: { children: React.ReactNode }) {
       {children}
       <div
         aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-5 z-[70] flex flex-col items-center gap-2 px-4"
+        // Above the Publish dialog overlay (.dialog-overlay is z-index:100), so a
+        // Save/Regenerate/cover toast fired from inside the modal is visible, not
+        // trapped behind the scrim. The aria-live announcement is unaffected.
+        className="pointer-events-none fixed inset-x-0 bottom-5 z-[120] flex flex-col items-center gap-2 px-4"
       >
         {toasts.map((t) => (
           <div

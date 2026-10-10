@@ -3,13 +3,68 @@
 import { useEffect, useState } from "react";
 import PipelineRail from "./PipelineRail";
 import RunClock from "./RunClock";
-import { Disclosure, StatusBadge } from "./ui";
+import PublishCenter from "./PublishCenter";
+import { Dialog, Disclosure, StatusBadge } from "./ui";
 import { strings } from "@/lib/strings";
 import { EPISODE_STEPS } from "@/lib/pipeline-steps";
 import type { EpisodeState } from "./types";
 
 export const POLL_MS = 1500;
 const TERMINAL = new Set(["DONE", "FAILED", "CANCELLED"]);
+
+/**
+ * A click that began on one of these — the Show / Cancel buttons, a disclosure's
+ * <summary>/<details> ("All steps", "N notes"), a link or a form field — belongs
+ * to that control alone and must not also select the card. Gating once here, at
+ * the card, is why no child needs a `stopPropagation`: that approach is fragile
+ * and silently misses the next control someone adds.
+ */
+export const CARD_SELECT_IGNORE = 'button, a, summary, details, input, select, textarea, [role="button"]';
+
+/**
+ * Whether the Publish button is live for this episode.
+ *
+ * Publishing prepares a finished video and its metadata, so it is offered ONLY
+ * for a DONE episode whose render is actually available (`hasVideo`) — never
+ * while a run is queued, running, failed or cancelled, and never for a DONE row
+ * whose video is missing. Exported and pure so the rule is pinned by a unit
+ * test without a browser, the same way `selectOnCardClick` is; the readiness
+ * check inside the panel is the deeper gate, this only decides the button.
+ */
+export function publishEnabled(episode: Pick<EpisodeState, "status" | "hasVideo">): boolean {
+  return episode.status === "DONE" && episode.hasVideo === true;
+}
+
+/**
+ * Decide a pointer click on the card, and select its episode when it should.
+ *
+ * Exported so the gate is unit-tested without a browser
+ * (`tests/client-ui.test.mts`). The click-anywhere affordance is a convenience
+ * for pointer users only; keyboard users already select with the
+ * "Show … in the preview" button, which stays the semantic, focusable control —
+ * so the card deliberately takes no `role`/`tabIndex`, adding no second tab stop.
+ *
+ * `card` is the click's `currentTarget` — the `<article>` — and bounds the
+ * `closest` search to this card. Without it, an interactive ANCESTOR of the card
+ * (say, a future `<details>` wrapping the episode list, as `BooksView` already
+ * wraps its book list) would match and silently swallow every card click.
+ */
+export function selectOnCardClick(
+  target: Element | null,
+  card: Element | null,
+  { active, episodeId, onSelect }: { active: boolean; episodeId: string; onSelect: (id: string) => void },
+): void {
+  // Already the shown episode: do nothing. Re-selecting is a no-op upstream (the
+  // parent passes a useState setter, so an identical id bails the render), so this
+  // is defence-in-depth against re-firing on the active card; the real guarantee
+  // that the preview <video> is not torn down is its stable `key={episode.id}`.
+  if (active) return;
+  // Ignore clicks on a nested control, bounded to this card: an interactive
+  // element OUTSIDE the card (an ancestor) must not suppress selection.
+  const hit = target?.closest(CARD_SELECT_IGNORE);
+  if (hit && card?.contains(hit)) return;
+  onSelect(episodeId);
+}
 
 /**
  * One episode's rail, polled every 1.5s until it reaches a terminal state.
@@ -24,17 +79,30 @@ export default function EpisodeCard({
   active,
   onSelect,
   onState,
+  showPublish = false,
 }: {
   episodeId: string;
   active: boolean;
   onSelect: (id: string) => void;
   /** Called with every snapshot. MUST be referentially stable. */
   onState: (state: EpisodeState) => void;
+  /**
+   * Whether this card shows the Publish button + panel dialog. Only the
+   * Book-PDF view (`BookAnalysis`) passes `true`. The Studio view already mounts
+   * a permanent `PublishCenter` in its stage, so a second one in a dialog here
+   * would be a duplicate instance with colliding static DOM ids — this flag is
+   * what keeps the panel to exactly one place per view.
+   */
+  showPublish?: boolean;
 }) {
   const [episode, setEpisode] = useState<EpisodeState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Whether this card's Publish panel is open. Per-card, so opening episode A's
+  // panel never shows episode B's — the dialog is always handed THIS card's
+  // polled `episode`.
+  const [publishOpen, setPublishOpen] = useState(false);
 
   // `cancelling` is this component's own optimistic "the click landed" flag,
   // not a status the server tracks — the poll above is what actually moves
@@ -45,6 +113,9 @@ export default function EpisodeCard({
   useEffect(() => {
     setCancelling(false);
     setCancelError(null);
+    // A fresh episode in this slot must never inherit the previous one's open
+    // panel — belt-and-braces, since each card is keyed by its id.
+    setPublishOpen(false);
   }, [episodeId]);
 
   async function handleCancel() {
@@ -122,10 +193,20 @@ export default function EpisodeCard({
   const title = episode.title || strings.studio.untitled;
 
   return (
+    <>
     <article
       className="panel"
       aria-label={title}
-      style={active ? { borderColor: "color-mix(in srgb, var(--amber) 55%, transparent)" } : undefined}
+      onClick={(e) => selectOnCardClick(e.target as Element, e.currentTarget, { active, episodeId: episode.id, onSelect })}
+      style={
+        active
+          ? // A solid accent border over a ~18% accent fill — the house signal
+            // for "this one is chosen", matching the book list and the nav. The
+            // old 55% border alone read as too subtle to find at a glance.
+            { borderColor: "var(--amber)", background: "color-mix(in srgb, var(--amber) 18%, var(--slab))" }
+          : // Clicking an inactive card anywhere selects it; the cursor says so.
+            { cursor: "pointer" }
+      }
     >
       {/* The badge and the clock wrap under the title when the card is narrow.
           These cards moved into a 320px aside, which left roughly 120px for a
@@ -212,6 +293,32 @@ export default function EpisodeCard({
               {strings.run.videoReady}
             </span>
           )}
+          {/* Publish — bottom-right. A <button>, so the card's CARD_SELECT_IGNORE
+              gate already keeps clicking it from selecting the card (verified in
+              client-ui.test.mts). Enabled only for a finished episode with a
+              usable video; disabled while generating or when there is no video,
+              with the reason given through `title` rather than left to guess. */}
+          {showPublish &&
+            (() => {
+              const canPublish = publishEnabled(episode);
+              return (
+                <button
+                  type="button"
+                  onClick={() => canPublish && setPublishOpen(true)}
+                  disabled={!canPublish}
+                  aria-haspopup="dialog"
+                  title={canPublish ? undefined : strings.run.publishDisabledHint}
+                  className="ml-auto rounded-lg px-3 py-1 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                  style={
+                    canPublish
+                      ? { background: "var(--cyan)", color: "var(--on-accent)" }
+                      : { border: "1px solid var(--line)", color: "var(--mute)" }
+                  }
+                >
+                  {strings.run.publish}
+                </button>
+              );
+            })()}
         </div>
         {cancelError && (
           <p role="alert" className="text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
@@ -220,5 +327,21 @@ export default function EpisodeCard({
         )}
       </div>
     </article>
+
+      {/* A SIBLING of the card, not a child: the dialog is portaled to the body,
+          and React propagates portal events through the component tree, so a
+          child here would route every click inside the panel to the card's
+          selection gate. As a sibling its clicks reach the fragment, never the
+          <article>. */}
+      {showPublish && publishOpen && (
+        <Dialog
+          title={strings.run.publishTitle(title)}
+          closeLabel={strings.run.publishClose}
+          onClose={() => setPublishOpen(false)}
+        >
+          <PublishCenter episode={episode} />
+        </Dialog>
+      )}
+    </>
   );
 }

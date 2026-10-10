@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * The small shared pieces every pane is built from. They exist so a panel
@@ -284,4 +285,150 @@ export function StatRow({ label, value }: { label: string; value: string }) {
 
 export function Skeleton({ height, className = "" }: { height: number | string; className?: string }) {
   return <div aria-hidden className={`skeleton ${className}`} style={{ height }} />;
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * One accessible modal, reused wherever a pane has to open over a scrolling
+ * list rather than inline — today the Publish panel launched from an episode
+ * card, in both the Studio and the Book-PDF views.
+ *
+ * It is MOUNTED when open and unmounted when closed: the caller renders
+ * `{open && <Dialog …>}`, so this component's own mount is the open event and
+ * its unmount is the close. That is why there is no `open` prop — a dialog that
+ * stayed mounted-but-hidden would keep its focus trap and its body-scroll lock
+ * running while invisible.
+ *
+ * The contract it keeps, so a reader is never stranded:
+ *  - `role="dialog"` + `aria-modal="true"`, labelled by its own heading.
+ *  - Focus moves INTO it on open (the panel, or the first focusable), and Tab
+ *    is trapped so it cannot wander behind the overlay.
+ *  - Escape closes it, and closing RESTORES focus to whatever opened it — the
+ *    Publish button — so a keyboard user is put back where they were.
+ *  - The background does not scroll underneath it.
+ *  - A click on the backdrop (not the panel) closes it.
+ *
+ * Rendered through a portal to `document.body` so no ancestor's `transform`
+ * (which would make a `position: fixed` overlay scroll with the card) can trap
+ * it — the containing-block hazard this codebase has hit before.
+ */
+export function Dialog({
+  title,
+  onClose,
+  children,
+  closeLabel = "Close",
+}: {
+  title: React.ReactNode;
+  onClose: () => void;
+  children: React.ReactNode;
+  closeLabel?: string;
+}) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Stored at mount so Escape / backdrop / close-button all return focus to the
+  // control that opened the dialog.
+  const openerRef = useRef<Element | null>(null);
+  // `onClose` is a fresh closure on every parent render, and the parent
+  // (EpisodeCard) re-renders whenever a SIBLING episode's poll reports state.
+  // If the focus/trap effect depended on `onClose` it would re-run on each of
+  // those renders and yank focus back to the panel mid-keystroke. The ref lets
+  // the effect run exactly once on mount while always calling the latest close.
+  const onCloseRef = useRef(onClose);
+  // Kept current in an effect, not during render (a ref write during render is
+  // both disallowed and unnecessary here).
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    openerRef.current = document.activeElement;
+    const panel = panelRef.current;
+    // Focus the first focusable control, else the panel itself (which carries
+    // tabIndex -1 for exactly this).
+    const first = panel?.querySelector<HTMLElement>(FOCUSABLE);
+    (first ?? panel)?.focus();
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab" || !panel) return;
+      const items = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
+      if (items.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const firstItem = items[0];
+      const lastItem = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === firstItem || active === panel)) {
+        e.preventDefault();
+        lastItem.focus();
+      } else if (!e.shiftKey && active === lastItem) {
+        e.preventDefault();
+        firstItem.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown, true);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = prevOverflow;
+      // Restore focus to the opener, if it is still in the document.
+      const opener = openerRef.current as HTMLElement | null;
+      if (opener && typeof opener.focus === "function" && document.contains(opener)) opener.focus();
+    };
+    // Mount-only: see `onCloseRef`. Re-running this on every parent render is
+    // the focus-steal bug it exists to prevent. It references only refs and
+    // module constants, so there is nothing to add to the dependency list.
+  }, []);
+
+  // No `document` during a server render; the dialog is only ever mounted by a
+  // client interaction, so this guard simply makes SSR a no-op.
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="dialog-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      // The dialog is portaled; React still bubbles its events through the
+      // component tree. Stop click here so a host that opened the dialog from
+      // inside a clickable region (an episode card) does not also receive it.
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div
+        ref={panelRef}
+        className="dialog-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
+        <header className="dialog-head">
+          <h2 id={titleId} className="font-display text-[15px] font-semibold" style={{ color: "var(--ink)" }}>
+            {title}
+          </h2>
+          <button type="button" className="dialog-close" onClick={onClose} aria-label={closeLabel}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </header>
+        <div className="dialog-body">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
 }

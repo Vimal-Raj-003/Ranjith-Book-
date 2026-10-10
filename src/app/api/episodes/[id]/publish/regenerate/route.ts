@@ -18,7 +18,9 @@ export const maxDuration = 700;
 /**
  * Re-derive ONE metadata field from the book and the script.
  *
- * `{ field }` names which: `title`, `description` or `hashtags`.
+ * `{ field }` names which: `title`, `description`, `hashtags`, `tags` (YouTube
+ * keyword tags), or the independent Instagram `igHook` / `igCaption` /
+ * `igHashtags`.
  *
  * THE CONFIRMATION. A field the operator has typed over is NOT overwritten on
  * the first ask. The route answers 409 `needs_confirmation` and the client puts
@@ -42,7 +44,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const field = body?.field;
     if (!isMetadataField(field)) {
       return NextResponse.json(
-        { error: "Name the field to regenerate: title, description or hashtags.", code: "bad_field" },
+        {
+          error:
+            "Name the field to regenerate: title, description, hashtags, tags, igHook, igCaption or igHashtags.",
+          code: "bad_field",
+        },
         { status: 400 },
       );
     }

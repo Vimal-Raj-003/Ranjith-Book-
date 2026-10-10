@@ -62,7 +62,7 @@ import {
   setThumbnail,
   uploadVideo,
 } from "../src/lib/publish/youtube/upload";
-import { tagsFrom, tagsLength, youTubePublisher, categoryId } from "../src/lib/publish/youtube/publisher";
+import { tagsFrom, tagsLength, uploadTags, youTubePublisher, categoryId } from "../src/lib/publish/youtube/publisher";
 import {
   accessTokenFor,
   beginFlow,
@@ -1035,6 +1035,30 @@ test("hashtags become YouTube tags, and a tag list over YouTube's budget is refu
   assert.ok(verdict.problems.some((p) => /500/.test(p)), verdict.problems.join(" | "));
 });
 
+test("the uploader sends the operator's keyword tags, falling back to hashtag-derived only when empty", () => {
+  // The dedicated keyword field is the real source of `snippet.tags`.
+  assert.deepEqual(
+    uploadTags({ title: "t", description: "d", hashtags: ["#focus"], hook: "h", tags: ["deep work", "attention"] }),
+    ["deep work", "attention"],
+    "the keyword tags are sent verbatim, not the hashtags",
+  );
+  // No keyword tags set: an episode made before the field existed still uploads
+  // something, derived from its hashtags.
+  assert.deepEqual(
+    uploadTags({ title: "t", description: "d", hashtags: ["#focus", "#deep-work"], hook: "h" }),
+    ["focus", "deep-work"],
+    "with no keyword tags, it derives from hashtags",
+  );
+  assert.deepEqual(uploadTags({ title: "t", description: "d", hashtags: [], hook: "h", tags: [] }), []);
+
+  // The tag-budget refusal measures the KEYWORD tags, and names them as tags.
+  const publisher = youTubePublisher({ userId: null, env: {} });
+  const bigTags = Array.from({ length: 60 }, (_, i) => `a-very-long-keyword-tag-number-${i}`);
+  const verdict = publisher.validate({ ...REQUEST, metadata: { ...REQUEST.metadata, tags: bigTags } });
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.problems.some((p) => /YouTube tags come to \d+ characters/.test(p)), verdict.problems.join(" | "));
+});
+
 test("the provider refuses what YouTube would, with the reason named", () => {
   const publisher = youTubePublisher({ userId: null, env: {} });
   assert.equal(publisher.validate(REQUEST).ok, true);
@@ -1535,6 +1559,7 @@ function renderCard(state: Partial<PlatformState>, owned = true): string {
     configured: false,
     problems: [],
     variant: [],
+    cover: null,
     handoff: [],
     requires: [],
     job: null,

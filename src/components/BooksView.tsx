@@ -104,7 +104,7 @@ export default function BooksView() {
           and a list of book titles are both finished well inside that, and
           everything past it was the empty space the operator complained
           about. The ideas for the open book get the rest. */}
-      <div className="work-split">
+      <div className="work-split books-split">
         <div className="work-col">
           {/* Both groups fold, because the operator asked for it and because
               on a run you are reading ideas, not uploading. `Panel` for the
@@ -138,7 +138,7 @@ export default function BooksView() {
                     <button
                       type="button"
                       onClick={() => setOpenId(b.id)}
-                      aria-current={b.id === active ? "true" : undefined}
+                      aria-current={b.id === active ? "page" : undefined}
                       aria-label={strings.books.open(b.bookTitle)}
                       className="nav-item w-full text-left"
                     >

@@ -83,3 +83,26 @@ export function pickPoster<T extends { key: string; aspect: string }>(
   const chosen = choice ? thumbs.find((t) => t.key === choice) : undefined;
   return chosen ?? thumbs.find((t) => t.aspect === "9:16") ?? thumbs[0] ?? null;
 }
+
+/**
+ * The poster for ONE platform: its own override when set, else the episode-wide
+ * choice, else the first poster of the aspect that platform favours (YouTube
+ * 16:9, Instagram 9:16), else any poster.
+ *
+ * Same degrade-silently rule as {@link pickPoster}: a stale key falls through
+ * rather than showing a broken image, because a retitle can drop a poster that
+ * failed to redraw. Import-free, like everything in this module — the Publish
+ * panel resolves the per-platform cover in the browser.
+ */
+export function pickPosterFor<T extends { key: string; aspect: string }>(
+  thumbs: T[],
+  choice: string | null | undefined,
+  fallback: string | null | undefined,
+  preferAspect: string,
+): T | null {
+  const explicit = choice ? thumbs.find((t) => t.key === choice) : undefined;
+  if (explicit) return explicit;
+  const shared = fallback ? thumbs.find((t) => t.key === fallback) : undefined;
+  if (shared) return shared;
+  return thumbs.find((t) => t.aspect === preferAspect) ?? thumbs.find((t) => t.aspect === "9:16") ?? thumbs[0] ?? null;
+}

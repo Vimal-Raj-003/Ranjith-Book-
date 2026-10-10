@@ -351,6 +351,44 @@ model Episode {
   hashtags     String? // JSON string[]
   cta          String?
 
+  /// YouTube keyword tags — comma-separated SEO keywords, distinct from the
+  /// `#hashtags` above and from any platform. JSON string[], null when the
+  /// operator has never set them (no backfill; every reader treats absent as
+  /// "none yet"). YouTube counts the comma-joined line against a ~500-character
+  /// ceiling, enforced in `limits.ts`, not here.
+  youtubeTags  String? // JSON string[]
+
+  /// Instagram copy, written INDEPENDENTLY of the YouTube description rather
+  /// than derived from it. Each is null until the operator (or a regenerate)
+  /// fills it, and while all three are absent the Instagram caption falls back
+  /// to the historical hook+description+hashtags composition (`instagramCaption`
+  /// in `limits.ts`) so nothing regresses for an episode made before these
+  /// existed. `igHashtags` is a JSON string[]; the other two are plain prose.
+  igHook       String?
+  igCaption    String?
+  igHashtags   String? // JSON string[]
+
+  /// When the operator last typed over each of the new copy fields by hand, or
+  /// NULL if never — the same protection the three columns below give
+  /// title/description/hashtags: Regenerate will not overwrite a hand-edit
+  /// without a second, explicit confirmation. Separate nullable timestamps for
+  /// the same reason the originals are (see the note on `titleEditedAt`): they
+  /// answer both "may Regenerate overwrite this?" and "when did that happen?",
+  /// and cost the same NULL on every existing row.
+  youtubeTagsEditedAt DateTime?
+  igHookEditedAt      DateTime?
+  igCaptionEditedAt   DateTime?
+  igHashtagsEditedAt  DateTime?
+
+  /// The poster the operator chose for one platform specifically, when it
+  /// differs from `thumbChoice`. YouTube favours a 16:9 cover and Instagram a
+  /// 9:16 one, and the six-poster set has both aspects, so the choice can differ
+  /// per platform. Null means "no platform-specific choice", and every reader
+  /// falls back to `thumbChoice` and then to the first poster of the platform's
+  /// preferred aspect — exactly how `thumbChoice` already degrades.
+  thumbChoiceYouTube   String?
+  thumbChoiceInstagram String?
+
   verification String? // JSON GroundingReport
   groundedness Int?
   revised      Boolean @default(false)

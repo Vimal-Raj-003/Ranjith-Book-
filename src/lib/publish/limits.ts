@@ -179,23 +179,100 @@ export interface PublishMetadata {
   hashtags: string[];
   /** The spoken opening line. Instagram's caption leads with it; YouTube does not use it. */
   hook: string;
+  /**
+   * YouTube keyword tags, distinct from `hashtags`. Comma-separated keywords
+   * YouTube uses for search, not `#` tags shown under the video. Optional so
+   * every existing `PublishMetadata` literal still type-checks; absent reads as
+   * "none set yet".
+   */
+  tags?: string[];
+  /**
+   * Instagram copy written for Instagram rather than derived from the YouTube
+   * fields. All optional: while every one is absent `instagramCaption` keeps
+   * composing the historical hook+description+hashtags block, so no episode
+   * made before this regresses.
+   */
+  igHook?: string;
+  igCaption?: string;
+  igHashtags?: string[];
 }
 
 /**
- * Instagram has no title field, so its caption is the hook, the description and
- * the hashtags in one block.
+ * YouTube's keyword-tags ceiling: 500 characters across the whole comma-joined
+ * line, which is the real limit the Data API enforces — not a per-tag count.
+ * Stated here as data, beside the other platform limits, for the same reason.
+ */
+export const YOUTUBE_TAGS_LIMIT = 500;
+
+/**
+ * Trim, split and de-duplicate keyword tags. Unlike {@link normaliseHashtags}
+ * these carry NO leading `#` and MAY contain spaces ("deep work" is one tag),
+ * so the only separator is the comma. De-duplicated case-insensitively, order
+ * kept — the same contract hashtags have.
+ */
+export function normaliseTags(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    // A stray leading '#' is dropped: a keyword tag is not a hashtag, and a
+    // pasted "#focus" means the word "focus".
+    const trimmed = item.trim().replace(/^#+/, "").trim();
+    if (trimmed === "") continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/** The one-line form the operator copies and YouTube's tags field accepts. */
+export function tagsLine(tags: string[] | undefined): string {
+  return normaliseTags(tags ?? []).join(", ");
+}
+
+/** Whether this episode has any Instagram-specific copy of its own yet. */
+export function hasIndependentInstagram(meta: PublishMetadata): boolean {
+  return (
+    (typeof meta.igHook === "string" && meta.igHook.trim() !== "") ||
+    (typeof meta.igCaption === "string" && meta.igCaption.trim() !== "") ||
+    (Array.isArray(meta.igHashtags) && normaliseHashtags(meta.igHashtags).length > 0)
+  );
+}
+
+/**
+ * Instagram has no title field, so its caption is a hook, a body and the
+ * hashtags in one block.
  *
- * This composition is byte-for-byte the one `PublishPanel` has always used
- * (`[hook, description, hashtags].filter(Boolean).join("\n\n")`), moved here
- * unchanged. An operator who has been pasting that text for months must get the
- * same text out of the new surface, so this is the one piece of the old panel
- * that was not allowed to be improved while it was being moved.
+ * TWO SOURCES, one of them historical. When the episode has Instagram copy of
+ * its own ({@link hasIndependentInstagram}) the caption is composed from THAT —
+ * the operator's `igHook`, `igCaption` and `igHashtags`, written for Instagram
+ * rather than lifted from YouTube. When it has none — every episode made before
+ * this surface, and any the operator has not touched — it falls back to the
+ * composition `PublishPanel` has always used
+ * (`[hook, description, hashtags].filter(Boolean).join("\n\n")`), byte for byte,
+ * so an operator who has been pasting that text for months still gets it.
  */
 export function instagramCaption(meta: PublishMetadata): string {
+  if (hasIndependentInstagram(meta)) {
+    return [meta.igHook, meta.igCaption, hashtagLine(meta.igHashtags ?? [])]
+      .map((part) => (typeof part === "string" ? part : ""))
+      .filter(Boolean)
+      .join("\n\n");
+  }
   return [meta.hook, meta.description, hashtagLine(meta.hashtags)].filter(Boolean).join("\n\n");
 }
 
-export type VariantFieldKey = "title" | "description" | "caption" | "hashtags";
+/** The hashtags Instagram will actually carry: the independent set when one exists, else the shared one. */
+export function instagramHashtags(meta: PublishMetadata): string[] {
+  return hasIndependentInstagram(meta) && Array.isArray(meta.igHashtags) && meta.igHashtags.length > 0
+    ? meta.igHashtags
+    : meta.hashtags;
+}
+
+export type VariantFieldKey = "title" | "description" | "tags" | "caption" | "hashtags";
 
 /**
  * One text field as one platform will receive it, with the measurement beside
@@ -250,12 +327,13 @@ export function variantFor(platform: PlatformId, meta: PublishMetadata): Variant
   if (platform === "instagram") {
     return [
       textField("caption", "Instagram caption", instagramCaption(meta), limits.body),
-      tagField("Hashtags", meta.hashtags, limits.hashtags),
+      tagField("Hashtags", instagramHashtags(meta), limits.hashtags),
     ];
   }
   return [
     textField("title", "YouTube title", meta.title, limits.title),
     textField("description", "YouTube description", meta.description, limits.body),
+    textField("tags", "YouTube tags", tagsLine(meta.tags), YOUTUBE_TAGS_LIMIT),
     tagField("Hashtags", meta.hashtags, limits.hashtags),
   ];
 }
@@ -279,4 +357,15 @@ export function variantProblems(platform: PlatformId, meta: PublishMetadata): st
  * be able to type 130 and then cut it while seeing the counter go red. These
  * are only there so a pasted megabyte never reaches the database.
  */
-export const FIELD_MAX = { title: 300, description: 10_000, hashtags: 60 } as const;
+export const FIELD_MAX = {
+  title: 300,
+  description: 10_000,
+  hashtags: 60,
+  /** Keyword tags: a generous ceiling above YouTube's 500-char line so the
+   *  operator can overrun and watch the counter go red, exactly as the title
+   *  cap sits above YouTube's 100. */
+  tags: 60,
+  igHook: 600,
+  igCaption: 4_000,
+  igHashtags: 60,
+} as const;
