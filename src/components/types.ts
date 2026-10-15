@@ -122,7 +122,23 @@ export interface AnalysisView {
   pageCount: number | null;
   stats: Record<string, number | boolean> | null;
   ideas: IdeaView[];
+  /** When the upload row was made. Only the fallback start of the analysis clock now. */
   createdAt: string;
+  /**
+   * When the current run was started (the first start and every retry set it).
+   * Null for a row from before the column; the clock then counts from `createdAt`.
+   * Optional so a server that predates the field still type-checks.
+   */
+  startedAt?: string | null;
+  /** The last write to the row; at a terminal status, when the run ended. */
+  updatedAt: string;
+  /**
+   * Per-stage timings in the shape `PipelineRail` already draws: a finished stage's measured
+   * `durationMs`, the running stage's `startedAt` with a null duration (the rail ticks it),
+   * and no entry at all for a stage that has not begun. Empty for a row from before the
+   * column. Optional so a server that predates the field still type-checks.
+   */
+  stepTimings?: StepTiming[];
 }
 
 export interface AnalysisSummary {

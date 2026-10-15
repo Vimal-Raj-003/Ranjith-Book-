@@ -78,6 +78,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       cta: row.cta,
       script: row.script,
       voScript: row.voScript,
+      // Not shown to the writer: only used to refuse an Instagram caption that is a copy of it.
+      description: row.description,
     });
 
     await storeRegenerated(id, field, result.value);

@@ -125,7 +125,13 @@ export const CONTENT_JSON_SCHEMA = {
       },
     },
     cta: { type: "string", maxLength: 160 },
-    description: { type: "string", maxLength: 1200 },
+    // 5,000 is YouTube's own ceiling for a description. It was 1,200 while a
+    // description was one short paragraph; the structured body the prompt now
+    // asks for (headline, hook, idea, source, bullets, takeaway, follow line —
+    // see `./metadata-rules`) does not fit in that. `DESCRIPTION_MAX` is the
+    // same number, stated where the prompt module can reach it without
+    // importing this one.
+    description: { type: "string", maxLength: 5000 },
     hashtags: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 12 },
     takeaway: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 6 },
   },

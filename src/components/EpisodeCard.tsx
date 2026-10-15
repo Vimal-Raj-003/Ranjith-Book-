@@ -36,6 +36,20 @@ export function publishEnabled(episode: Pick<EpisodeState, "status" | "hasVideo"
 }
 
 /**
+ * Whether the Regenerate button is shown for this episode.
+ *
+ * Only a FAILED run can be regenerated: a QUEUED or RUNNING one is already being
+ * worked on, a DONE one has nothing to redo, and a CANCELLED one was stopped on
+ * purpose. This is the same rule `prepareEpisodeRetry` enforces on the server
+ * (409 `not_failed` for anything else), so the button never offers what the
+ * server would refuse. Exported and pure for the same reason `publishEnabled`
+ * is: the rule is pinned by a unit test without a browser.
+ */
+export function canRegenerate(episode: Pick<EpisodeState, "status">): boolean {
+  return episode.status === "FAILED";
+}
+
+/**
  * Decide a pointer click on the card, and select its episode when it should.
  *
  * Exported so the gate is unit-tested without a browser
@@ -99,6 +113,14 @@ export default function EpisodeCard({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Regenerate's own optimistic "the click landed" flag, and its error — the same
+  // shape as `cancelling` / `cancelError` above, and reset the same way.
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  // Bumped when a regeneration is accepted. The poll below STOPS at a terminal
+  // status, and FAILED is terminal, so by the time the button is clicked there
+  // is no poll left running; this is what starts one again.
+  const [retryNonce, setRetryNonce] = useState(0);
   // Whether this card's Publish panel is open. Per-card, so opening episode A's
   // panel never shows episode B's — the dialog is always handed THIS card's
   // polled `episode`.
@@ -113,6 +135,10 @@ export default function EpisodeCard({
   useEffect(() => {
     setCancelling(false);
     setCancelError(null);
+    // Same reason for Regenerate: "Retrying…" or a retry error belongs to the
+    // episode that was clicked, never to whichever one is shown next.
+    setRetrying(false);
+    setRetryError(null);
     // A fresh episode in this slot must never inherit the previous one's open
     // panel — belt-and-braces, since each card is keyed by its id.
     setPublishOpen(false);
@@ -138,6 +164,50 @@ export default function EpisodeCard({
     }
   }
 
+  /**
+   * Re-run THIS failed episode, on the same row. The server resets it to QUEUED
+   * and puts it back in the queue (`POST /api/episodes/[id]/retry`); nothing
+   * else is created or touched.
+   */
+  async function handleRetry() {
+    if (!episode || retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const res = await fetch(`/api/episodes/${episodeId}/retry`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setRetryError((body?.error as string) || strings.run.retryError);
+        setRetrying(false);
+        // 409: the server says this episode is no longer failed (another tab or
+        // an earlier click already regenerated it). The card is showing a stale
+        // FAILED and its poll has stopped, so look again rather than leave it.
+        if (res.status === 409) setRetryNonce((n) => n + 1);
+        return;
+      }
+      // Show what the server has just done, now, rather than a full poll interval
+      // later: queued, with the failed attempt's error and timings gone. The poll
+      // restarted below replaces this with the server's own snapshot straight away.
+      const queued: EpisodeState = {
+        ...episode,
+        status: "QUEUED",
+        step: "Queued",
+        error: null,
+        steps: [],
+        finishedAt: null,
+        totalMs: null,
+      };
+      setEpisode(queued);
+      onState(queued);
+      setRetrying(false);
+      // The poll stopped at FAILED; this effect dependency starts it again.
+      setRetryNonce((n) => n + 1);
+    } catch {
+      setRetryError(strings.run.retryError);
+      setRetrying(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -156,6 +226,9 @@ export default function EpisodeCard({
         }
         setEpisode(body as EpisodeState);
         onState(body as EpisodeState);
+        // A regenerate error is about the FAILED card it was clicked on; once the
+        // episode has moved on it must not resurface if it fails again later.
+        if (body.status !== "FAILED") setRetryError(null);
         if (!TERMINAL.has(body.status)) {
           timer = setTimeout(poll, POLL_MS);
         }
@@ -169,7 +242,10 @@ export default function EpisodeCard({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [episodeId, onState]);
+    // `retryNonce` is a dependency only to re-run this effect: the cleanup above
+    // clears any pending tick of the old loop and the body starts exactly one new
+    // one, so a regeneration never leaves two polls in flight.
+  }, [episodeId, onState, retryNonce]);
 
   if (loadError && !episode) {
     return (
@@ -288,6 +364,21 @@ export default function EpisodeCard({
               {cancelling ? strings.run.cancelling : strings.run.cancelGeneration}
             </button>
           )}
+          {/* Regenerate — only on a FAILED card, in the row directly under the
+              error it answers. A <button>, so CARD_SELECT_IGNORE keeps its click
+              from also selecting the card. Disabled while the request is in
+              flight; the server refuses a second one anyway (409 not_failed). */}
+          {canRegenerate(episode) && (
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={retrying}
+              className="rounded-lg border px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
+              style={{ borderColor: "color-mix(in srgb, var(--cyan) 55%, transparent)", color: "var(--cyan)" }}
+            >
+              {retrying ? strings.run.retrying : strings.run.regenerate}
+            </button>
+          )}
           {episode.hasVideo && (
             <span className="text-[12px] font-semibold" style={{ color: "var(--cyan)" }}>
               {strings.run.videoReady}
@@ -323,6 +414,13 @@ export default function EpisodeCard({
         {cancelError && (
           <p role="alert" className="text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
             {cancelError}
+          </p>
+        )}
+        {/* Only while the card is still FAILED: once the poll shows it moved on
+            (the 409 case above), the message is about a state the card has left. */}
+        {retryError && canRegenerate(episode) && (
+          <p role="alert" className="text-[11px] leading-snug" style={{ color: "var(--rose)" }}>
+            {retryError}
           </p>
         )}
       </div>

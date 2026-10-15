@@ -1,5 +1,6 @@
 import { LENGTHS, type GenerateInput, type IdeaBrief, type LengthSpec, type ScriptLength } from "./schema";
 import { maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
+import { TITLE_RULE, descriptionRule, hashtagRule } from "./metadata-rules";
 
 /**
  * Stated once, up front, in its own unmissable block rather than folded into
@@ -44,6 +45,28 @@ This is both a legal requirement — reading an in-copyright book's prose at
 length is an unlicensed audiobook, and YouTube and Instagram will act on it —
 and the reason the format works at all. Nobody stays for a page being read to
 them. They stay for someone explaining why it matters.`;
+
+/**
+ * What the three posting fields of the package — title, description, hashtags —
+ * must contain. Before this block the writer was given a character cap for each
+ * in the JSON schema and nothing else, so descriptions came back one sentence
+ * long and titles plain. The standard itself lives in `./metadata-rules`, shared
+ * with the Publish Center's Regenerate so that a field written at render time
+ * and one regenerated later are held to the same rules.
+ *
+ * It is its own block, after the script rules, because it is a different job:
+ * the script is spoken and checked line by line against the page, while this
+ * copy is read by someone deciding whether to press play. The grounding check
+ * is built to judge the voiceover, so the rule against invention has to be in
+ * the prompt itself.
+ */
+export const PUBLISHING_COPY_RULES = `THE POSTING COPY. Three fields of your reply are published with the video on YouTube: title, description and hashtags. People read them before deciding to watch, so they are written to the same standard as the script — drawn only from the beats you are writing and the pages you were given, never from anything else. A fact, statistic, quotation, study or claim about the book that is not on the page does not go in any of them.
+
+${TITLE_RULE}
+
+${descriptionRule("the beats you are writing and the pages you were given")}
+
+${hashtagRule(3, 12)}`;
 
 /**
  * The word-index contract, isolated in its own block because it is the
@@ -246,7 +269,9 @@ Rules that are not negotiable:
   in the opening card and on every thumbnail — so they must appear in hook
   EXACTLY as written there, same spelling, same word. Pick the words a reader
   would need if they only had time to read three of them; do not pick "the",
-  "and", or any other word that carries no meaning on its own.${length === "long" ? longRules(spec) : ""}`;
+  "and", or any other word that carries no meaning on its own.
+
+${PUBLISHING_COPY_RULES}${length === "long" ? longRules(spec) : ""}`;
 }
 
 /**

@@ -38,7 +38,7 @@ def main():
     if len(args) < 2:
         fail("usage", "usage: extract.py <pdf> <out_dir> [--max-pages N] [--long-edge PX]")
     pdf_path, out_dir = args[0], args[1]
-    max_pages = 200
+    max_pages = 300
     long_edge = 1600
     rest = args[2:]
     for i in range(0, len(rest) - 1, 2):

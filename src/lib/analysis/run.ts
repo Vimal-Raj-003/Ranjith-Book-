@@ -26,6 +26,7 @@ import { uploadDir } from "../paths";
 import { mapLimit } from "../concurrency";
 import { callContext } from "../content/cli-metrics";
 import { ANALYSIS_STEPS } from "../pipeline-steps";
+import { beginStep, endRun, type StoredStepTiming } from "./step-timings";
 import { measurePage, disposeOcr, type OcrWord } from "../ingest/ocr";
 import { readPage, wordsOf, type PageText } from "../ingest/vision";
 import { alignWords } from "../ingest/align";
@@ -99,11 +100,34 @@ class Reporter {
   private pending: string | null = null;
   readonly notes: string[] = [];
 
+  /** When each stage began and ended this run; persisted whole on every stage change. */
+  private timings: StoredStepTiming[] = [];
+
   constructor(private uploadId: string) {}
 
+  /**
+   * A new stage begins. The previous one ends at the same instant, and the history
+   * goes out in the SAME update that moves `step` -- one write per stage transition
+   * (five a run), never one per second: the browser ticks the running stage itself.
+   */
   async step(step: (typeof ANALYSIS_STEPS)[number]): Promise<void> {
     this.pending = null;
-    await prisma.upload.update({ where: { id: this.uploadId }, data: { step, progress: null } });
+    this.timings = beginStep(this.timings, step, new Date());
+    await prisma.upload.update({
+      where: { id: this.uploadId },
+      data: { step, progress: null, stepTimings: JSON.stringify(this.timings) },
+    });
+  }
+
+  /**
+   * The run is over -- finished, or failed in the stage that is open -- so that stage
+   * ends now. Returns the JSON for the terminal write to carry, or undefined when no
+   * stage ever began (nothing to record, and Prisma leaves the column alone).
+   */
+  finish(): string | undefined {
+    if (this.timings.length === 0) return undefined;
+    this.timings = endRun(this.timings, new Date());
+    return JSON.stringify(this.timings);
   }
 
   /** Throttled: a 200-page loop reports every page but writes about once a second. */
@@ -318,7 +342,9 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
     if (upload.kind !== "pdf" || !upload.sourcePath) throw new PdfError("not_pdf", "This upload is not a PDF.");
     await prisma.upload.update({
       where: { id: uploadId },
-      data: { status: "RUNNING", error: null, notes: null, stats: null, progress: null },
+      // Clearing `stepTimings` here: a run measures only itself. The analyze route clears it too, for the
+      // moment before this line; this covers any other caller (the e2e script runs this directly).
+      data: { status: "RUNNING", error: null, notes: null, stats: null, progress: null, stepTimings: null },
     });
 
     const provider = await contentProvider();
@@ -544,6 +570,8 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
         progress: null,
         notes: report.notes.length ? JSON.stringify(report.notes) : null,
         stats: JSON.stringify(stats),
+        // The last stage ends with the run, in the same write that says it is DONE.
+        stepTimings: report.finish(),
       },
     });
   } catch (err) {
@@ -557,6 +585,10 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
           progress: null,
           notes: report.notes.length ? JSON.stringify(report.notes) : null,
           stats: JSON.stringify(stats),
+          // The stage that threw is the one left open; it ends here, so the rail can show
+          // how long it ran before failing. If this write itself is lost, `endedAt` stays
+          // null and the stage is drawn without a number rather than with a guessed one.
+          stepTimings: report.finish(),
         },
       })
       .catch(() => {});

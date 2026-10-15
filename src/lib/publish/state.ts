@@ -24,6 +24,7 @@
  */
 import fsp from "node:fs/promises";
 import path from "node:path";
+import type { Prisma } from "@prisma/client";
 import { prisma, assertModels } from "@/lib/db";
 import { AppError } from "@/lib/errors";
 import { RENDER_DIR } from "@/lib/paths";
@@ -51,9 +52,11 @@ import { isPublishRefused } from "./contract";
 // The wire shape, imported rather than restated, so the compiler is what keeps
 // this module and the browser in step. See `view.ts` for why it is separate.
 import {
+  PLATFORM_FIELDS,
   isMetadataField,
   platformStatus,
   type MetadataField,
+  type PlatformField,
   type PlatformState,
   type PublicThumb,
   type PublishJobView,
@@ -61,7 +64,8 @@ import {
 } from "./view";
 
 export { METADATA_FIELDS, isMetadataField, platformStatus } from "./view";
-export type { MetadataField, MetadataEdits, PlatformState, PublishJobView, PublishView } from "./view";
+export { PLATFORM_FIELDS, missingPlatformFields } from "./view";
+export type { MetadataField, MetadataEdits, PlatformField, PlatformState, PublishJobView, PublishView } from "./view";
 
 /**
  * How one editable field maps to the columns that store it. One table drives
@@ -737,6 +741,90 @@ export async function storeRegenerated(
   });
 }
 
+/** The columns `isUnwritten` reads: a stored value and the mark that says it is the operator's. */
+type PlatformRow = Record<string, string | Date | null>;
+
+/** Is this one platform field empty AND not the operator's? Read through the one spec table. */
+function isUnwritten(row: PlatformRow, field: PlatformField): boolean {
+  const spec = FIELD_SPECS[field];
+  const raw = row[spec.column] as string | null;
+  const empty = spec.normalise ? spec.normalise(parseHashtags(raw)).length === 0 : text(raw).trim() === "";
+  return empty && row[spec.editedAt] === null;
+}
+
+/**
+ * Which of the four platform fields a stored episode is still missing — the
+ * same answer `missingPlatformFields` gives the browser from the view, computed
+ * from the row so the server does not have to build a whole view to ask.
+ */
+export function missingFromRow(
+  row: {
+    youtubeTags: string | null;
+    igHook: string | null;
+    igCaption: string | null;
+    igHashtags: string | null;
+  } & Pick<EditMarks, "youtubeTagsEditedAt" | "igHookEditedAt" | "igCaptionEditedAt" | "igHashtagsEditedAt">,
+): PlatformField[] {
+  return PLATFORM_FIELDS.filter((f) => isUnwritten(row as unknown as PlatformRow, f));
+}
+
+/**
+ * Write the batched generator's answer into the fields that are STILL EMPTY, and
+ * only those.
+ *
+ * "Never overwrite" is enforced by the write itself, not by a check that the
+ * write then races: each field is a compare-and-swap, an `updateMany` whose
+ * `where` demands the column hold exactly what was read a moment ago AND that
+ * the field's hand-edited mark is still null. A field the operator typed into
+ * while the model was thinking — which can be minutes — no longer matches, so
+ * their words win and the generated ones are dropped. Two panels (or a panel and
+ * the render) answering at once cannot both write the same field for the same
+ * reason: the second finds the column already changed.
+ *
+ * A written field keeps `*EditedAt` null: it is the writer's words, which is
+ * what lets Regenerate replace it later without asking for a confirmation.
+ *
+ * Returns the fields actually written, so a caller can tell "filled" from
+ * "someone got there first".
+ */
+export async function storeGeneratedPlatform(
+  episodeId: string,
+  generated: { tags: string[]; igHook: string; igCaption: string; igHashtags: string[] },
+): Promise<PlatformField[]> {
+  const row = await prisma.episode.findUnique({
+    where: { id: episodeId },
+    select: {
+      youtubeTags: true,
+      igHook: true,
+      igCaption: true,
+      igHashtags: true,
+      youtubeTagsEditedAt: true,
+      igHookEditedAt: true,
+      igCaptionEditedAt: true,
+      igHashtagsEditedAt: true,
+    },
+  });
+  if (!row) throw new AppError("not_found", "Not found", 404);
+
+  const written: PlatformField[] = [];
+  for (const field of PLATFORM_FIELDS) {
+    if (!isUnwritten(row as unknown as PlatformRow, field)) continue;
+    const spec = FIELD_SPECS[field];
+    const value = generated[field];
+    const stored = spec.normalise ? JSON.stringify(spec.normalise(value)) : String(value).trim();
+    // An empty answer is not an answer: leave the field empty rather than store "[]".
+    if (stored === "" || stored === "[]") continue;
+
+    const current = (row as unknown as Record<string, string | null>)[spec.column];
+    const swap = await prisma.episode.updateMany({
+      where: { id: episodeId, [spec.column]: current, [spec.editedAt]: null } as Prisma.EpisodeWhereInput,
+      data: { [spec.column]: stored },
+    });
+    if (swap.count > 0) written.push(field);
+  }
+  return written;
+}
+
 /** Everything a regenerate needs about the episode, loaded through the visibility rule. */
 export async function loadForRegenerate(userId: string, episodeId: string) {
   requirePublishModel();
@@ -745,6 +833,7 @@ export async function loadForRegenerate(userId: string, episodeId: string) {
     select: {
       id: true,
       userId: true,
+      status: true,
       title: true,
       hook: true,
       cta: true,
@@ -752,6 +841,10 @@ export async function loadForRegenerate(userId: string, episodeId: string) {
       voScript: true,
       description: true,
       hashtags: true,
+      youtubeTags: true,
+      igHook: true,
+      igCaption: true,
+      igHashtags: true,
       titleEditedAt: true,
       descriptionEditedAt: true,
       hashtagsEditedAt: true,

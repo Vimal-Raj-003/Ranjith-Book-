@@ -8,6 +8,7 @@
 import type { ContentIdea, Episode, Page, Upload, Book } from "@prisma/client";
 import type { SourceRef } from "./types";
 import type { AnalysisView, IdeaView } from "@/components/types";
+import { analysisStepTimings } from "./step-timings";
 
 export type { AnalysisView, IdeaView, AnalysisSummary, IdeaSourcePage } from "@/components/types";
 
@@ -72,5 +73,13 @@ export function analysisView(
     stats: parse(upload.stats, null),
     ideas: [...upload.ideas].sort((a, b) => a.rank - b.rank).map((i) => ideaView(i, upload.pages)),
     createdAt: upload.createdAt.toISOString(),
+    // `?.`: a row from before the column is null, and so is anything read through a
+    // client that predates it (undefined) -- both mean "use createdAt".
+    startedAt: upload.startedAt?.toISOString() ?? null,
+    updatedAt: upload.updatedAt.toISOString(),
+    // `PipelineRail`'s own shape. `?? null`: a row from before the column is null, and so is
+    // anything read through a client that predates it (undefined) -- both mean "no history",
+    // which is an empty list, not an invented one.
+    stepTimings: analysisStepTimings(upload.stepTimings ?? null, { status: upload.status, step: upload.step }),
   };
 }

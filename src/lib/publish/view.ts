@@ -15,8 +15,10 @@
  * sides together rather than a convention.
  *
  * Client-safe: only `./limits`, `./readiness` and `./contract`, none of which
- * import anything outside this folder, and two of which are type-only here.
+ * import anything outside this folder. `./limits` is imported for two pure
+ * normalisers (`missingPlatformFields`); the other two are type-only here.
  */
+import { normaliseHashtags, normaliseTags } from "./limits";
 import type { PlatformId, PublishMetadata, PublishStatus, VariantField } from "./limits";
 import type { HandoffStep, PlatformCapabilities } from "./contract";
 import type { Readiness } from "./readiness";
@@ -172,6 +174,37 @@ export const METADATA_FIELDS: MetadataField[] = [
 
 export function isMetadataField(v: unknown): v is MetadataField {
   return typeof v === "string" && (METADATA_FIELDS as string[]).includes(v);
+}
+
+/**
+ * The four fields nothing in the render writes by hand: YouTube keyword tags
+ * and the three Instagram fields. They are written together, in one call, by
+ * `generatePlatformMetadata`, when the render finishes — and by the Publish
+ * Center for an episode that predates that, when it is opened.
+ */
+export const PLATFORM_FIELDS = ["tags", "igHook", "igCaption", "igHashtags"] as const;
+
+export type PlatformField = (typeof PLATFORM_FIELDS)[number];
+
+/**
+ * Which of the four are empty AND still the pipeline's to fill.
+ *
+ * "Still the pipeline's" is the `edits` mark: a field the operator typed over
+ * carries a timestamp, and one they deliberately EMPTIED does too (saving an
+ * empty list is an edit). Both are theirs now. Treating an emptied field as
+ * missing would hand them a model call, and a new value, every time they open
+ * the panel — undoing a deliberate choice. Pure, and here rather than in the
+ * component or the route, so the panel deciding to ask and the server deciding
+ * to answer cannot disagree about what "missing" means.
+ */
+export function missingPlatformFields(meta: PublishMetadata, edits: MetadataEdits): PlatformField[] {
+  const empty: Record<PlatformField, boolean> = {
+    tags: normaliseTags(meta.tags ?? []).length === 0,
+    igHook: (meta.igHook ?? "").trim() === "",
+    igCaption: (meta.igCaption ?? "").trim() === "",
+    igHashtags: normaliseHashtags(meta.igHashtags ?? []).length === 0,
+  };
+  return PLATFORM_FIELDS.filter((f) => empty[f] && edits[f] === null);
 }
 
 /** The fields stored and measured as a list of tags rather than as prose. */

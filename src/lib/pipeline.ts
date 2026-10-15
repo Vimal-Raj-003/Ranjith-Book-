@@ -20,6 +20,9 @@ import { validatePlan, type EpisodePlan } from "./ingest/plan-episodes";
 import { generateContent, beatTexts, voScriptFromPackage, type Archetype } from "./content";
 import { releaseIdea } from "./content/idea";
 import { appendBookLink } from "./content/book-link";
+import { titleEmojiShape } from "./content/emoji";
+import { DESCRIPTION_MAX } from "./content/metadata-rules";
+import { runPlatformMetadataStep } from "./publish/generate";
 import { runCliJson } from "./content/cli-provider";
 import { numberedWordLines } from "./content/prompt";
 import type { CliProvider } from "./content/cli";
@@ -78,6 +81,19 @@ import { INGEST_STEPS, EPISODE_STEPS } from "./pipeline-steps";
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/** `<` and `>` out of a piece of posting copy: YouTube refuses an upload that holds either. */
+function stripAngleBrackets(text: string): string {
+  return text.replace(/[<>]/g, "");
+}
+
+/**
+ * How long a finished render waits for the platform copy (YouTube tags and the
+ * Instagram fields) before marking the episode DONE. That call starts as soon as
+ * the script is stored and has the whole voiceover-to-render span to finish in,
+ * so this is the tail case: a slow writer, not a normal one.
+ */
+const PLATFORM_COPY_GRACE_MS = 60_000;
 
 /**
  * Which CLI provider drives content generation (writing, grounding, planning,
@@ -823,14 +839,18 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     await prisma.episode.update({
       where: { id: episodeId },
       data: {
-        title: pkg.title,
+        // YouTube refuses an upload whose title or description holds `<` or
+        // `>` (`publish/youtube/publisher.ts`). Neither carries meaning in
+        // this copy, and finding out at upload time is a worse moment to learn
+        // it than here.
+        title: stripAngleBrackets(pkg.title),
         hook: pkg.hook,
         script: JSON.stringify(pkg.beats),
         voScript: voScriptFromPackage(pkg),
         // The purchase link is appended in code, never asked of the model:
         // a model that invents or mistypes a URL is worse than no URL. With
         // no link on the book this returns the description unchanged.
-        description: appendBookLink(pkg.description, episode.book.bookLink),
+        description: appendBookLink(stripAngleBrackets(pkg.description), episode.book.bookLink),
         hashtags: JSON.stringify(pkg.hashtags),
         cta: pkg.cta,
         verification: report ? JSON.stringify(report) : null,
@@ -838,6 +858,38 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         revised,
       },
     });
+
+    // The title is asked to carry one leading and one or two trailing emoji
+    // (`content/metadata-rules.ts`). A model that ignores that still gives a
+    // perfectly good title, so this only SAYS so — it must never cost a render
+    // minutes of work — and the operator can press Regenerate on the title.
+    // The writer is asked for far less than YouTube's 5,000, and the link is appended after it.
+    // A description that nonetheless ends up over is stored as written (cutting a structured body
+    // mid-section is worse than a red counter) and said so, so the operator can regenerate it.
+    if ([...appendBookLink(stripAngleBrackets(pkg.description), episode.book.bookLink)].length > DESCRIPTION_MAX) {
+      await appendNotes(episodeId, [
+        `The description is over YouTube's ${DESCRIPTION_MAX} characters once the purchase link is added. It is stored as written; press Regenerate on the description in Publish to redo it.`,
+      ]);
+    }
+    const titleShape = titleEmojiShape(pkg.title);
+    if (titleShape.leading !== 1 || titleShape.trailing < 1 || titleShape.trailing > 2 || titleShape.inside > 0) {
+      await appendNotes(episodeId, [
+        `The title has ${titleShape.leading} leading and ${titleShape.trailing} trailing emoji (one leading and one or two trailing were asked for). It is stored as written; press Regenerate on the title in Publish to redo it.`,
+      ]);
+    }
+
+    // YouTube tags and the Instagram hook, caption and hashtags: the four
+    // fields nothing else in the render writes. Started here, with the script
+    // stored, and NOT awaited — it is one model call that needs only the stored
+    // script, and the voiceover, scene plan and render below take minutes it can
+    // run inside. Best-effort in the same sense the music bed is: the step never
+    // rejects (`runPlatformMetadataStep` turns every failure into a note), so a
+    // writer that is down costs these four fields — which the Publish panel
+    // offers to generate — and never the video. Awaited, briefly, just before
+    // the episode is marked DONE.
+    const platformJob = callContext.run({ ...callCtx, step: "Writing the platform copy" }, () =>
+      runPlatformMetadataStep(episodeId, { provider, model }),
+    );
 
     await startStep(EPISODE_STEPS[3]); // Preparing page assets
     const compPages = await Promise.all(
@@ -1218,6 +1270,22 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       throw err;
     }
     await recordCheck();
+
+    // The platform copy has had the whole voiceover, scene-planning and render to
+    // finish in, so this almost always returns at once. If the writer is slow the
+    // video does not wait for it past a minute: the call carries on in the
+    // background and writes into the row when it lands (the Publish panel's own
+    // request joins it rather than starting a second one — `inflight` in
+    // `publish/generate.ts`).
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const platformNote = await Promise.race([
+      platformJob,
+      new Promise<null>((resolve) => {
+        grace = setTimeout(() => resolve(null), PLATFORM_COPY_GRACE_MS);
+      }),
+    ]);
+    if (grace) clearTimeout(grace);
+    if (platformNote) await appendNotes(episodeId, [platformNote]);
 
     await timer.finish();
     // `StepTimer.finish()` deliberately only stamps `finishedAt`/`totalMs` —

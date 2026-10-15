@@ -314,6 +314,10 @@ export const strings = {
     cancelGeneration: "Cancel generation",
     cancelling: "Cancelling…",
     cancelError: "Could not cancel that run. Try again.",
+    /** The recovery button on a FAILED episode card: re-runs that one episode. */
+    regenerate: "Regenerate",
+    retrying: "Retrying…",
+    retryError: "Could not regenerate that video. Try again.",
     statusLabel: (status: string) =>
       ({
         QUEUED: "Queued",
@@ -482,8 +486,9 @@ export const strings = {
     /** Shown while the episode has no Instagram copy of its own and the caption is still the derived one. */
     instagramDerivedNote:
       "No Instagram copy of its own yet — the caption below is composed from the YouTube hook, description and hashtags. Edit or regenerate a field to make Instagram independent.",
-    igHookLabel: "Reel hook",
-    igHookHint: "The scroll-stopping opening line, written for a Reels audience.",
+    igHookLabel: "Title / hook",
+    igHookHint:
+      "Instagram has no title field, so this is its title: the scroll-stopping opening line of the caption, written for a Reels audience. Not the YouTube title.",
     igCaptionLabel: "Caption",
     igHashtagsLabel: "Hashtags",
 
@@ -496,6 +501,20 @@ export const strings = {
     copyFullCaption: "Copy full caption",
     copyField: "Copy",
     copyAll: "Copy all metadata",
+
+    /* --- the tags and Instagram copy are written for you (2026-10-13) ------
+     * The render writes YouTube tags and the three Instagram fields in one call
+     * after the script is stored. An episode rendered before that has them
+     * empty, so opening its panel asks once; these are the two states that
+     * leaves on screen -- working, and failed with a way to try again -- so a
+     * field is never just silently empty. */
+    generatingYouTube: "Writing the YouTube tags from this episode's script…",
+    generatingInstagram: "Writing the Instagram title, caption and hashtags from this episode's script…",
+    generatingHint: "This is a model call and can take a minute or two. Anything you have already written is left alone.",
+    generateFailed: "The missing copy could not be written.",
+    generateStillEmpty: "The writer answered, but nothing was filled in.",
+    generate: "Generate",
+    generating: "Generating…",
 
     /* --- per-platform cover picker (reuses the six existing posters) -------- */
     thumbnailsHeading: "Thumbnails",
@@ -656,7 +675,7 @@ export const strings = {
     intro: "A whole book in, the best video ideas out.",
     helpSummary: "How this works",
     help:
-      "Upload a book as a PDF, up to 200 pages. BookReel reads every page — running OCR on scanned ones — finds the chapters, and looks through the whole book for ideas that could each carry a 1–2 minute video. Every idea is checked against the book's own words and shows the pages it came from. Pick the ideas you want made into videos.",
+      "Upload a book as a PDF, up to 300 pages. BookReel reads every page — running OCR on scanned ones — finds the chapters, and looks through the whole book for ideas that could each carry a 1–2 minute video. Every idea is checked against the book's own words and shows the pages it came from. Pick the ideas you want made into videos.",
     uploadHeading: "Add a book PDF",
     dropHint: "Drag a PDF here, or",
     choose: "Choose PDF",
@@ -685,6 +704,8 @@ export const strings = {
     coverRegenerateFor: (title: string) => `Regenerate the cover of ${title}`,
     nothingOpen: "Pick a book to see its ideas, or upload a new one.",
     runHeading: "Analysing the book",
+    elapsed: "Total elapsed",
+    stepTimes: "Time per step",
     loadError: "This book could not be loaded.",
     retry: "Try again",
     retrying: "Restarting…",

@@ -152,9 +152,21 @@ export function revisionBrief(report: GroundingReport): string {
  * "by <Capitalised Name>" — the shape a fabricated byline takes when it
  * names someone outright. Captures the name itself so it can be compared
  * against a verified author, rather than only detected as present.
+ *
+ * Any whitespace between the words EXCEPT a line break (`[^\S\r\n]`). A name
+ * does not span lines, and the description is now several lines long ("Inspired
+ * by ideas from Deep Work by Cal Newport", a blank line, "Follow BookReel…"): with
+ * a bare `\s` the capture ran on into the next paragraph — "Cal Newport / Follow
+ * Book" — failed to match the verified author, and sent a correct description
+ * back for rewriting until the episode was rejected.
+ *
+ * Not `[ \t]`: this gate is the only thing standing between an unverified name
+ * and a published description, so it must keep seeing a name typed with a
+ * non-breaking or other Unicode space ("Cal\u00A0Newport"), which `\s` matched and
+ * a space-and-tab class does not.
  */
 const BYLINE_PATTERN =
-  /\b(?:by|written by|author(?:ed)? by|penned by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z.]+)+)/g;
+  /\b(?:by|written by|author(?:ed)? by|penned by)[^\S\r\n]+([A-Z][a-z]+(?:[^\S\r\n]+[A-Z][a-z.]+)+)/g;
 
 /**
  * Attributing verbs — the shape that turns a bare noun into an assertion

@@ -1479,6 +1479,35 @@ body {
   line-height: 1.5;
   color: var(--ink);
 }
+/* "Writing the missing tags / Instagram copy..." -- real work in flight, so it is
+   allowed to move, but only softly, and not at all for a reader who asked for
+   reduced motion. Cyan, like the rest of the panel's "this is happening". */
+.pub-generating {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid color-mix(in srgb, var(--cyan) 40%, transparent);
+  background: color-mix(in srgb, var(--cyan) 7%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  animation: pub-generating-pulse 1.8s ease-in-out infinite;
+}
+.pub-generating p {
+  margin: 0;
+}
+@keyframes pub-generating-pulse {
+  50% {
+    border-color: color-mix(in srgb, var(--cyan) 70%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pub-generating {
+    animation: none;
+  }
+}
 /* The readiness list. Everything that is missing, not the first thing. */
 .pub-missing {
   display: flex;

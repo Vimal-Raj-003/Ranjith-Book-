@@ -8,6 +8,18 @@
  * module owns its own copy so that a rewrite of the composition's helper
  * cannot silently change what a thumbnail does with hostile text.
  */
+import { stripEmoji } from "../content/emoji";
+
+/**
+ * Emoji out of a string, for the one input that now carries them by design: the
+ * episode TITLE (one leading and one or two trailing, chosen for the topic —
+ * `content/metadata-rules.ts`). A poster is a designed object, painted in the
+ * theme's own faces, and a colour emoji glyph is whatever font the renderer
+ * happens to find; the title is also headline material (`headlineText` falls
+ * back to it) and the eyebrow line, so both consumers strip it here rather than
+ * trusting every caller to have done so.
+ */
+export { stripEmoji };
 
 const ENTITIES: Record<string, string> = {
   "&": "&amp;",
@@ -160,7 +172,7 @@ export function headlineText(
     const t = strip(line);
     if (t) candidates.push(t);
   }
-  const title = strip(copy.title);
+  const title = strip(stripEmoji(copy.title));
   if (title) candidates.push(title);
 
   for (const c of candidates) {

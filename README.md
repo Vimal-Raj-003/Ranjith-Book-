@@ -87,7 +87,7 @@ measures where each word sits, and the pipeline writes a script, records
 the narration and renders a 9:16 video in which the real page scrolls
 behind the voice and a marker sweeps the words being spoken.
 
-**A book PDF.** Upload a book of up to 200 pages, under **Book PDFs**.
+**A book PDF.** Upload a book of up to 300 pages, under **Book PDFs**.
 PyMuPDF extracts the text and word positions, scanned pages go through
 OCR, chapters are detected, and the whole book is searched for ideas that
 could each carry a 1–2 minute video. Every idea is checked against the

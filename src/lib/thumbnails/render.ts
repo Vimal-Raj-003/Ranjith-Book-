@@ -1,5 +1,5 @@
 import type { AspectSpec, ThumbFocus, Variant } from "./types";
-import { clean, escapeHtml, headlineText, paintKeywords, trimWords } from "./text";
+import { clean, escapeHtml, headlineText, paintKeywords, stripEmoji, trimWords } from "./text";
 import { alpha, contrast, fade, isDark, mix, thumbPalette, type ThumbPalette } from "./palette";
 
 export interface Photo {
@@ -436,7 +436,8 @@ export function buildThumbHtml(opts: {
   const fitMax = Math.round(h * (portrait ? 0.2 : 0.3));
   const fitAttr = `data-fit="${fitMin},${fitMax}"`;
 
-  const title = escapeHtml(trimWords(copy.title, 5).toUpperCase());
+  // The title carries emoji now; the poster never shows them (see `stripEmoji`).
+  const title = escapeHtml(trimWords(stripEmoji(copy.title), 5).toUpperCase());
   const cta = escapeHtml(trimWords(copy.cta, 6));
   const head = paintKeywords(clean(copy.headline) || headlineText(copy, WORD_BUDGET[variant]), copy.keywords);
   const subSource = clean(copy.takeaway?.[0]) || clean(copy.cta);

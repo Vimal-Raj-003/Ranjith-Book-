@@ -16,10 +16,10 @@ import type { RawPdfManifest, RawPdfPage } from "../analysis/types";
 
 const exec = promisify(execFile);
 
-export const MAX_PDF_PAGES = 200;
+export const MAX_PDF_PAGES = 300;
 /** Long edge of each rendered page, px — the same size as a photographed page's derivative. */
 export const PAGE_LONG_EDGE = 1600;
-/** A 200-page scanned book at print resolution; extraction is killed past this. */
+/** A 300-page scanned book at print resolution; extraction is killed past this. */
 const EXTRACT_TIMEOUT_MS = 20 * 60_000;
 
 export class PdfError extends AppError {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import CopyBlock from "./CopyBlock";
 import YouTubePublish from "./YouTubePublish";
 import { Badge, Disclosure, EmptyState, Hint, Panel, Skeleton, StatRow } from "./ui";
@@ -20,6 +20,7 @@ import {
 import { pickPosterFor } from "@/lib/thumbnails/choose";
 import {
   isListField,
+  missingPlatformFields,
   type HandoffStep,
   type MetadataField,
   type PlatformState,
@@ -535,6 +536,72 @@ function ThumbnailPicker({
   );
 }
 
+/**
+ * The state of an episode's one-time "write the missing tags and Instagram copy"
+ * request. Absent means it has not been asked yet; `done` is a request that
+ * answered (the fields are then either filled, or -- if the writer returned
+ * nothing -- still missing, which the panel reports as a failure).
+ */
+type GenState = { phase: "running" } | { phase: "error"; message: string } | { phase: "done" };
+
+/** POST the generate route. Resolves, never rejects: a dropped connection is a failed result like any other. */
+async function requestGenerate(episodeId: string): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+  try {
+    const res = await fetch(`/api/episodes/${episodeId}/publish/generate`, { method: "POST" });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return { ok: res.ok, body };
+  } catch {
+    return { ok: false, body: {} };
+  }
+}
+
+/**
+ * What the panel says while the tags / Instagram copy are being written, or
+ * when writing them failed. Never both, and never nothing: an empty field with
+ * no explanation reads as a bug, and a failed model call that left no trace
+ * reads as the product not working.
+ *
+ * Exported for `tests/publish.test.mts`, which renders it in each state.
+ */
+export function GenerateNotice({
+  state,
+  what,
+  detail,
+  busy,
+  onGenerate,
+}: {
+  state: "running" | "error";
+  /** What is being written, in the operator's words -- "the YouTube tags...". */
+  what: string;
+  /** Why it failed, when the server said. */
+  detail?: string;
+  busy?: boolean;
+  onGenerate: () => void;
+}) {
+  const c = strings.publishCenter;
+  if (state === "running") {
+    return (
+      <div className="pub-generating" role="status" aria-live="polite" aria-busy="true">
+        <p>{what}</p>
+        <p className="hint">{c.generatingHint}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="pub-problems" role="alert">
+      <p>
+        {c.generateFailed}
+        {detail ? ` ${detail}` : ""}
+      </p>
+      <div className="pub-actions">
+        <button type="button" className="chip" aria-disabled={busy ? "true" : undefined} onClick={() => !busy && onGenerate()}>
+          <span className="truncate">{busy ? c.generating : c.generate}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Friendly names for the fields, for the toast and the overwrite confirmation. */
 const FIELD_NAMES: Record<MetadataField, string> = {
   title: "title",
@@ -566,6 +633,15 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
   const [thumbBusy, setThumbBusy] = useState<"youtube" | "instagram" | null>(null);
   /** Bumped by the Retry button to ask the effect for another go. */
   const [reloads, setReloads] = useState(0);
+  /**
+   * The one-time "write the missing tags and Instagram copy" request, per
+   * episode id. A map, not a single value: a request takes a minute or two and
+   * the operator may switch episodes and come back, and the state of the one
+   * they left must still be there to show.
+   */
+  const [gen, setGen] = useState<Record<string, GenState>>({});
+  /** Episodes this mount has already asked about, so opening one panel asks ONCE. */
+  const asked = useRef<Set<string>>(new Set());
 
   const id = episode?.id ?? null;
   const status = episode?.status ?? "";
@@ -616,6 +692,63 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
 
   const mine = fetched && id && fetched.id === id ? fetched : null;
   const view = mine?.view ?? null;
+
+  /**
+   * Which of the tags / Instagram fields are empty and still the pipeline's to
+   * fill, by the same rule the server applies (`missingPlatformFields`). Only a
+   * FINISHED episode is asked about: an earlier one has no script to write from,
+   * and a running one is about to have the render write them.
+   */
+  const missing = view && view.status === "DONE" ? missingPlatformFields(view.metadata, view.edits) : [];
+  const autoEligible = missing.length > 0;
+
+  /**
+   * Take the generate route's answer as the new state -- but only if the panel
+   * is still showing the episode it was for. The request takes minutes; if the
+   * operator has moved on, the answer is dropped here and the panel re-reads the
+   * server when they come back, which now has the fields.
+   */
+  const settleGenerate = useCallback((target: string, result: { ok: boolean; body: Record<string, unknown> }) => {
+    if (result.ok) {
+      setFetched((prev) => (prev && prev.id === target ? { id: target, view: result.body as unknown as PublishView, error: null } : prev));
+    }
+    setGen((g) => ({
+      ...g,
+      [target]: result.ok
+        ? { phase: "done" }
+        : { phase: "error", message: typeof result.body.error === "string" ? result.body.error : "" },
+    }));
+  }, []);
+
+  /**
+   * Ask once, on open. The effect body sets nothing: "generating" is DERIVED
+   * below (an eligible episode with no recorded answer is being generated), so
+   * there is no setState to cascade, exactly as the load effect above is
+   * written. The ref is what makes it once per episode; the server joins a
+   * second request to a running one in any case.
+   */
+  useEffect(() => {
+    if (!id || !autoEligible || asked.current.has(id)) return;
+    asked.current.add(id);
+    const target = id;
+    void requestGenerate(target).then((result) => settleGenerate(target, result));
+  }, [id, autoEligible, settleGenerate]);
+
+  /** The Generate button after a failure: the same request, on demand. */
+  function generateNow() {
+    if (!id) return;
+    const target = id;
+    asked.current.add(target);
+    setGen((g) => ({ ...g, [target]: { phase: "running" } }));
+    void requestGenerate(target).then((result) => settleGenerate(target, result));
+  }
+
+  const genState: GenState | null = !id || !autoEligible ? null : (gen[id] ?? { phase: "running" });
+  /** A request that "succeeded" but left the fields empty is a failure the operator must be told about. */
+  const genRunning = genState?.phase === "running";
+  const genError = genState?.phase === "error" ? genState.message : genState?.phase === "done" ? c.generateStillEmpty : null;
+  const showYouTubeNotice = (genRunning || genError !== null) && missing.includes("tags");
+  const showInstagramNotice = (genRunning || genError !== null) && missing.some((f) => f !== "tags");
 
   /**
    * Poll ONLY while a platform reports work genuinely in flight.
@@ -695,7 +828,11 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
    */
   function accept(body: Record<string, unknown>) {
     if (!id) return;
-    setFetched({ id, view: body as unknown as PublishView, error: null });
+    const target = id;
+    // Only if the panel still shows the episode this write was for: a
+    // Regenerate takes up to a couple of minutes, and an answer landing after
+    // the operator has moved on must not blank the new episode's panel.
+    setFetched((prev) => (prev && prev.id !== target ? prev : { id: target, view: body as unknown as PublishView, error: null }));
   }
 
   async function send(url: string, body: unknown, method = "POST"): Promise<{ ok: boolean; body: Record<string, unknown> }> {
@@ -940,6 +1077,14 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
                   <h4 id="pub-yt-pkg" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
                     {c.youtubePackageHeading}
                   </h4>
+                  {showYouTubeNotice && (
+                    <GenerateNotice
+                      state={genRunning ? "running" : "error"}
+                      what={c.generatingYouTube}
+                      detail={genError ?? undefined}
+                      onGenerate={generateNow}
+                    />
+                  )}
                   {renderField("title", c.titleLabel, { measure: measureOf("title"), copyLabel: c.copyTitle })}
                   {renderField("description", c.descriptionLabel, { rows: 6, measure: measureOf("description"), copyLabel: c.copyDescription })}
                   {renderField("tags", c.tagsLabel, { rows: 2, hint: c.tagsHint, measure: measureOf("tags"), copyLabel: c.copyTags })}
@@ -968,7 +1113,15 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
                     {c.instagramPackageHeading}
                   </h4>
                   <Hint>{c.instagramIntro}</Hint>
-                  {!hasIndependentInstagram(view.metadata) && <Hint>{c.instagramDerivedNote}</Hint>}
+                  {showInstagramNotice && (
+                    <GenerateNotice
+                      state={genRunning ? "running" : "error"}
+                      what={c.generatingInstagram}
+                      detail={genError ?? undefined}
+                      onGenerate={generateNow}
+                    />
+                  )}
+                  {!genRunning && !hasIndependentInstagram(view.metadata) && <Hint>{c.instagramDerivedNote}</Hint>}
                   {renderField("igHook", c.igHookLabel, { hint: c.igHookHint, measure: null, copyLabel: c.copyHook })}
                   {renderField("igCaption", c.igCaptionLabel, {
                     rows: 5,

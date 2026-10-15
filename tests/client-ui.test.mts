@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as inspectorModule from "../src/components/Inspector";
-import { selectOnCardClick, CARD_SELECT_IGNORE, publishEnabled } from "../src/components/EpisodeCard";
+import { selectOnCardClick, CARD_SELECT_IGNORE, publishEnabled, canRegenerate } from "../src/components/EpisodeCard";
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../src/lib/media/pocket-tts";
 import {
   VOICES,
@@ -511,4 +511,54 @@ test("EpisodeCard wires the whole <article> to the gate and keeps the button as 
     src.includes("onClick={() => onSelect(episode.id)}"),
     "the Show button stays the focusable, keyboard-accessible selector — the pointer affordance adds no second tab stop",
   );
+});
+
+test("the Regenerate button is offered for a FAILED episode and for no other status", () => {
+  assert.equal(canRegenerate({ status: "FAILED" }), true);
+  // Everything else is either already being worked on, finished, or stopped on
+  // purpose — the same set `prepareEpisodeRetry` refuses with 409 not_failed.
+  for (const status of ["QUEUED", "RUNNING", "DONE", "CANCELLED"]) {
+    assert.equal(canRegenerate({ status }), false, `${status} must not offer Regenerate`);
+  }
+});
+
+test("EpisodeCard's Regenerate: posts to the retry route, shows Retrying…, updates the card at once, and restarts the stopped poll", async () => {
+  const src = await fs.readFile(path.join(COMPONENTS, "EpisodeCard.tsx"), "utf8");
+
+  // The button: gated by the exported predicate, disabled while in flight, labelled from strings.
+  assert.match(src, /canRegenerate\(episode\)\s*&&/, "the button renders only behind the predicate");
+  assert.match(src, /onClick=\{handleRetry\}/);
+  assert.match(src, /disabled=\{retrying\}/, "disabled while the request is in flight, so a second click cannot be sent");
+  assert.match(src, /retrying \? strings\.run\.retrying : strings\.run\.regenerate/);
+
+  // The request goes to the retry route for THIS episode, as a POST.
+  assert.match(src, /fetch\(`\/api\/episodes\/\$\{episodeId\}\/retry`,\s*\{\s*method: "POST"\s*\}\)/);
+  assert.match(src, /strings\.run\.retryError/, "a failure shows the server's message, or the fallback");
+
+  // On success the shown episode flips to QUEUED immediately, and is reported upward.
+  const from = src.indexOf("async function handleRetry");
+  const handler = src.slice(from, src.indexOf("useEffect(", from));
+  assert.match(handler, /status: "QUEUED"/);
+  assert.match(handler, /step: "Queued"/);
+  assert.match(handler, /error: null/);
+  assert.match(handler, /setEpisode\(queued\)/);
+  assert.match(handler, /onState\(queued\)/);
+
+  // The poll STOPPED at FAILED (it is in TERMINAL); the nonce is what starts it again.
+  assert.match(src, /const TERMINAL = new Set\(\[[^\]]*"FAILED"/, "precondition: FAILED is terminal, so the poll has stopped by the time the button is clicked");
+  assert.match(handler, /setRetryNonce\(\(n\) => n \+ 1\)/, "a successful retry bumps the nonce");
+  assert.match(src, /\}, \[episodeId, onState, retryNonce\]\)/, "and the poll effect depends on it, so it re-runs and polls again");
+  assert.equal(src.match(/setTimeout\(poll/g)?.length, 2, "still one poll loop (its two reschedule sites), not a second one for retries");
+
+  // A fresh episode in the slot never inherits the previous one's retry state.
+  const reset = src.slice(src.indexOf("setCancelling(false)"), src.indexOf("}, [episodeId]);"));
+  assert.match(reset, /setRetrying\(false\)/);
+  assert.match(reset, /setRetryError\(null\)/);
+});
+
+test("the Regenerate copy is in the strings module, beside Cancel's", () => {
+  assert.equal(strings.run.regenerate, "Regenerate");
+  assert.equal(strings.run.retrying, "Retrying…");
+  assert.equal(typeof strings.run.retryError, "string");
+  assert.ok(strings.run.retryError.length > 0);
 });

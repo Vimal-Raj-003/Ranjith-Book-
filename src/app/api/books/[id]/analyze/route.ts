@@ -24,7 +24,15 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
       return NextResponse.json({ error: "This book is already being analysed.", code: "already_running" }, { status: 409 });
     }
 
-    await prisma.upload.update({ where: { id }, data: { status: "QUEUED", step: "Queued", error: null, progress: null } });
+    // `startedAt` is the analysis clock's start. This route is the one path for the first start
+    // (PdfUpload) and every retry (BookAnalysis), so stamping it here covers both without the run
+    // itself knowing. `createdAt` is deliberately left alone: "Your books" is ordered by it.
+    // `stepTimings` goes in the same update: the per-stage history belongs to the run that is
+    // starting, so a retry measures itself fresh rather than showing the failed run's stages.
+    await prisma.upload.update({
+      where: { id },
+      data: { status: "QUEUED", step: "Queued", error: null, progress: null, startedAt: new Date(), stepTimings: null },
+    });
     void runBookAnalysis(id).catch(() => {
       // Recorded on the Upload row by runBookAnalysis; nobody is left to tell.
     });

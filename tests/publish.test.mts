@@ -37,9 +37,10 @@ import {
 import { checkReadiness, type ReadinessInput } from "../src/lib/publish/readiness";
 import { manualHandoff } from "../src/lib/publish/manual";
 import { hasRealPublisher, publisherFor } from "../src/lib/publish/registry";
-import { platformStatus } from "../src/lib/publish/view";
+import { PLATFORM_FIELDS, missingPlatformFields, platformStatus } from "../src/lib/publish/view";
 import { isPublishRefused, type PublishRequest } from "../src/lib/publish/contract";
-import { publishView, recordHandoff, saveMetadata, wasHandEdited } from "../src/lib/publish/state";
+import { loadForRegenerate, publishView, recordHandoff, saveMetadata, wasHandEdited } from "../src/lib/publish/state";
+import { generateMissingPlatformMetadata, runPlatformMetadataStep } from "../src/lib/publish/generate";
 import { regenerateField, type RegenerateSource } from "../src/lib/publish/regenerate";
 import * as centerModule from "../src/components/PublishCenter";
 import { requireIsolation } from "./setup/isolation";
@@ -1326,4 +1327,405 @@ test("nothing on the surface claims a post happened before the state has even lo
     assert.doesNotMatch(html, lie, `the first render must not say ${lie}`);
   }
   assert.doesNotMatch(html, /<progress/, "no progress bar for work that is not happening");
+});
+
+// ---------------------------------------------------------------- tags and Instagram copy, written for you
+
+/**
+ * The four fields nothing used to write: YouTube tags and the three Instagram
+ * fields. Written in one call by the render, and by the Publish panel for an
+ * episode that predates that; only ever into a field that is empty AND not the
+ * operator's. Every model call is a stub -- the real writer is exercised by the
+ * browser verification.
+ */
+
+const GENERATED = {
+  tags: ["deep work", "focus", "attention", "productivity", "time blocking"],
+  igHook: "Busy is not the same as focused. 🎯",
+  igCaption: "Most of us are busy all day and focused for none of it. 🧠\n\nBlock the time. Protect it.",
+  igHashtags: ["#deepwork", "#focus", "#productivity", "#booktok", "#attention"],
+};
+
+function stubGenerate(reply: typeof GENERATED | Error = GENERATED) {
+  const calls: RegenerateSource[] = [];
+  const generate = async (source: RegenerateSource) => {
+    calls.push(source);
+    if (reply instanceof Error) throw reply;
+    return reply;
+  };
+  return { generate: generate as never, calls };
+}
+
+const rowOf = (id: string) => prisma.episode.findUniqueOrThrow({ where: { id } });
+
+test("missingPlatformFields: an empty field is missing, unless it is the operator's -- even when they emptied it", () => {
+  const meta: PublishMetadata = { title: "t", description: "d", hashtags: ["#a"], hook: "h" };
+  const none = { title: null, description: null, hashtags: null, tags: null, igHook: null, igCaption: null, igHashtags: null };
+
+  assert.deepEqual(missingPlatformFields(meta, none), ["tags", "igHook", "igCaption", "igHashtags"]);
+  assert.deepEqual(
+    missingPlatformFields({ ...meta, tags: ["focus"], igHook: "hook", igCaption: "cap", igHashtags: ["#a"] }, none),
+    [],
+    "everything present, nothing missing",
+  );
+  assert.deepEqual(missingPlatformFields({ ...meta, igHook: "   ", tags: [" "], igHashtags: ["#"] }, none), [
+    "tags",
+    "igHook",
+    "igCaption",
+    "igHashtags",
+  ], "whitespace is empty");
+
+  // The operator emptied the hook on purpose: that is an edit, and it is theirs.
+  assert.deepEqual(missingPlatformFields(meta, { ...none, igHook: "2026-10-13T00:00:00.000Z" }), ["tags", "igCaption", "igHashtags"]);
+  assert.deepEqual(PLATFORM_FIELDS, ["tags", "igHook", "igCaption", "igHashtags"]);
+});
+
+test("a generated answer fills all four empty fields, leaves them machine-written, and each platform keeps its own", async () => {
+  const s = await seed();
+  try {
+    const before = await publishView(s.userId, s.episodeId);
+    assert.deepEqual(missingPlatformFields(before.metadata, before.edits), ["tags", "igHook", "igCaption", "igHashtags"]);
+
+    const stub = stubGenerate();
+    const out = await generateMissingPlatformMetadata(s.episodeId, { generate: stub.generate });
+    assert.deepEqual(out.missing, ["tags", "igHook", "igCaption", "igHashtags"]);
+    assert.deepEqual(out.filled, ["tags", "igHook", "igCaption", "igHashtags"]);
+    assert.equal(stub.calls.length, 1, "ONE model call for all four");
+
+    // The model is shown the stored script and the book -- and never the YouTube description.
+    const src = stub.calls[0];
+    assert.match(src.script ?? "", /Almost nobody is focused/);
+    assert.equal(src.author, null, "an unverified author is absent, not a placeholder");
+    assert.equal(src.bookLink, null);
+    assert.equal(src.description, "What the book says about attention.", "carried only so a copied caption can be refused");
+
+    const view = await publishView(s.userId, s.episodeId);
+    assert.deepEqual(view.metadata.tags, GENERATED.tags);
+    assert.equal(view.metadata.igHook, GENERATED.igHook);
+    assert.equal(view.metadata.igCaption, GENERATED.igCaption);
+    assert.deepEqual(view.metadata.igHashtags, ["#deepwork", "#focus", "#productivity", "#booktok", "#attention"]);
+    assert.deepEqual(missingPlatformFields(view.metadata, view.edits), [], "nothing left to ask for");
+
+    // Machine-written, so the next Regenerate will not demand a confirmation.
+    assert.deepEqual(view.edits, { title: null, description: null, hashtags: null, tags: null, igHook: null, igCaption: null, igHashtags: null });
+    const row = await rowOf(s.episodeId);
+    assert.equal(row.youtubeTagsEditedAt, null);
+    assert.equal(row.igHookEditedAt, null);
+
+    // YouTube's own fields are untouched, and the two platforms stay separate.
+    assert.equal(view.metadata.title, "Productivity Isn't Hustle");
+    assert.equal(view.metadata.description, "What the book says about attention.");
+    assert.deepEqual(view.metadata.hashtags, ["#focus", "#deepwork"]);
+    const yt = view.platforms.find((p) => p.platform === "youtube")!;
+    const ig = view.platforms.find((p) => p.platform === "instagram")!;
+    assert.equal(yt.variant.find((f) => f.key === "tags")?.value, "deep work, focus, attention, productivity, time blocking");
+    assert.equal(yt.variant.find((f) => f.key === "description")?.value, "What the book says about attention.");
+    assert.ok(!yt.variant.some((f) => f.value.includes("Busy is not the same")), "no Instagram copy on the YouTube card");
+    const caption = ig.variant.find((f) => f.key === "caption")!;
+    assert.equal(caption.value, `${GENERATED.igHook}\n\n${GENERATED.igCaption}\n\n#deepwork #focus #productivity #booktok #attention`);
+    assert.ok(!caption.value.includes("What the book says about attention."), "the Instagram caption is NOT the YouTube description");
+    assert.ok(!caption.value.includes("#focus #deepwork"), "and carries Instagram's hashtags, not YouTube's");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("generation fills ONLY empty fields: a value, a hand edit, and a deliberately emptied field are all left alone", async () => {
+  const mark = new Date("2026-10-01T00:00:00Z");
+  const s = await seed({
+    row: {
+      youtubeTags: JSON.stringify(["already", "there"]), // has a value (machine-written)
+      igHook: "My own hook", // hand-edited
+      igHookEditedAt: mark,
+      igCaption: "", // emptied on purpose: an edit, with a mark
+      igCaptionEditedAt: mark,
+      // igHashtags: genuinely empty -> the only one to fill
+    },
+  });
+  try {
+    const stub = stubGenerate();
+    const out = await generateMissingPlatformMetadata(s.episodeId, { generate: stub.generate });
+    assert.deepEqual(out.missing, ["igHashtags"], "the server measures what is missing itself");
+    assert.deepEqual(out.filled, ["igHashtags"]);
+
+    const row = await rowOf(s.episodeId);
+    assert.deepEqual(JSON.parse(row.youtubeTags!), ["already", "there"], "an existing value is never overwritten");
+    assert.equal(row.igHook, "My own hook");
+    assert.equal(row.igHookEditedAt?.toISOString(), mark.toISOString(), "and its mark survives");
+    assert.equal(row.igCaption, "", "an emptied field stays empty");
+    assert.equal(row.igCaptionEditedAt?.toISOString(), mark.toISOString());
+    assert.deepEqual(JSON.parse(row.igHashtags!), ["#deepwork", "#focus", "#productivity", "#booktok", "#attention"]);
+    assert.equal(row.igHashtagsEditedAt, null);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("nothing missing means NO model call at all", async () => {
+  const s = await seed({
+    row: {
+      youtubeTags: JSON.stringify(["a"]),
+      igHook: "h",
+      igCaption: "c",
+      igHashtags: JSON.stringify(["#a"]),
+    },
+  });
+  try {
+    const stub = stubGenerate();
+    const out = await generateMissingPlatformMetadata(s.episodeId, { generate: stub.generate });
+    assert.deepEqual(out, { missing: [], filled: [] });
+    assert.equal(stub.calls.length, 0, "a complete episode costs nothing to open");
+
+    // Nor does one whose every empty field the operator emptied on purpose.
+    await prisma.episode.update({
+      where: { id: s.episodeId },
+      data: { youtubeTags: null, igHook: "", igCaption: "", igHashtags: "[]", youtubeTagsEditedAt: new Date(), igHookEditedAt: new Date(), igCaptionEditedAt: new Date(), igHashtagsEditedAt: new Date() },
+    });
+    await generateMissingPlatformMetadata(s.episodeId, { generate: stub.generate });
+    assert.equal(stub.calls.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("an operator edit made WHILE the writer is thinking wins: the write is a compare-and-swap, not a stale check", async () => {
+  const s = await seed();
+  try {
+    const generate = (async () => {
+      // The model takes minutes in production. Here the operator types a hook meanwhile.
+      await saveMetadata(s.userId, s.episodeId, { igHook: "Typed while it thought" });
+      return GENERATED;
+    }) as never;
+
+    const out = await generateMissingPlatformMetadata(s.episodeId, { generate });
+    assert.deepEqual(out.missing, ["tags", "igHook", "igCaption", "igHashtags"], "all four were empty when the call started");
+    assert.deepEqual(out.filled, ["tags", "igCaption", "igHashtags"], "but the hook was no longer empty when the answer landed");
+
+    const row = await rowOf(s.episodeId);
+    assert.equal(row.igHook, "Typed while it thought");
+    assert.ok(row.igHookEditedAt, "and it keeps its hand-edited mark");
+    assert.equal(row.igCaption, GENERATED.igCaption);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("two openings of one episode share ONE model call, and a later one runs afresh", async () => {
+  const s = await seed();
+  try {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const generate = (async () => {
+      calls++;
+      await gate;
+      return GENERATED;
+    }) as never;
+
+    const first = generateMissingPlatformMetadata(s.episodeId, { generate });
+    const second = generateMissingPlatformMetadata(s.episodeId, { generate });
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(calls, 1, "the second caller joined the first");
+    assert.deepEqual(a, b);
+
+    // Finished, so the slot is free: a later call is a new one (which now finds nothing missing).
+    const third = await generateMissingPlatformMetadata(s.episodeId, { generate });
+    assert.deepEqual(third.missing, []);
+    assert.equal(calls, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a generation that fails stores NOTHING and says why; the panel can try again", async () => {
+  const s = await seed();
+  try {
+    await assert.rejects(
+      () => generateMissingPlatformMetadata(s.episodeId, { generate: stubGenerate(new Error("claude: not signed in")).generate }),
+      /not signed in/,
+    );
+    const row = await rowOf(s.episodeId);
+    assert.equal(row.youtubeTags, null);
+    assert.equal(row.igHook, null);
+    assert.equal(row.igCaption, null);
+    assert.equal(row.igHashtags, null);
+
+    // The in-flight slot was released by the failure, so the retry button works.
+    const retry = await generateMissingPlatformMetadata(s.episodeId, { generate: stubGenerate().generate });
+    assert.equal(retry.filled.length, 4);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("the whole chain with a stub model call: the real generator, source mapping and store, with a verified author", async () => {
+  const s = await seed();
+  try {
+    const ep = await prisma.episode.findUniqueOrThrow({ where: { id: s.episodeId } });
+    await prisma.book.update({ where: { id: ep.bookId }, data: { author: "Cal Newport", authorVerified: true, title: "The Focus Habit" } });
+
+    const seen: { system: string; user: string }[] = [];
+    const call = (async (_p: unknown, system: string, user: string) => {
+      seen.push({ system, user });
+      return {
+        tags: ["deep work", "focus", "attention", "productivity", "time blocking"],
+        igHook: "Busy is not focused.",
+        igCaption: "A different caption, written for Instagram.",
+        igHashtags: ["#a1", "#b2", "#c3", "#d4", "#e5"],
+      };
+    }) as never;
+
+    const out = await generateMissingPlatformMetadata(s.episodeId, { call, provider: "claude-cli" });
+    assert.equal(out.filled.length, 4);
+    assert.match(seen[0].user, /Book: The Focus Habit/);
+    assert.match(seen[0].user, /Author: Cal Newport/, "a VERIFIED author is passed");
+    assert.doesNotMatch(seen[0].user, /What the book says about attention/, "the YouTube description is never shown to the writer");
+
+    const row = await rowOf(s.episodeId);
+    const tags = JSON.parse(row.youtubeTags!) as string[];
+    assert.deepEqual(tags.slice(0, 2), ["The Focus Habit", "Cal Newport"], "the book and its verified author lead the tag list");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("the render step NEVER throws: a failing writer becomes a note, a working one writes the fields and returns null", async () => {
+  const s = await seed();
+  try {
+    const note = await runPlatformMetadataStep(s.episodeId, { generate: stubGenerate(new Error("writer exploded")).generate });
+    assert.equal(typeof note, "string");
+    assert.match(note!, /YouTube tags and Instagram copy were not written \(writer exploded\)/);
+    assert.match(note!, /the video is unaffected/);
+    assert.match(note!, /press Generate/);
+    assert.equal((await rowOf(s.episodeId)).igHook, null, "a failure leaves the fields empty, not half-filled");
+    assert.equal((await rowOf(s.episodeId)).status, "DONE", "and costs the episode nothing");
+
+    // Even an episode that does not exist is a note, not an exception out of the render.
+    const gone = await runPlatformMetadataStep("no-such-episode", { generate: stubGenerate().generate });
+    assert.match(gone!, /were not written/);
+
+    assert.equal(await runPlatformMetadataStep(s.episodeId, { generate: stubGenerate().generate }), null);
+    const row = await rowOf(s.episodeId);
+    assert.equal(row.igHook, GENERATED.igHook);
+    assert.equal(row.igHookEditedAt, null, "written by the render, so machine-written");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("a script-less episode cannot be generated for, and says so rather than inventing", async () => {
+  const s = await seed({ row: { script: null, voScript: null } });
+  try {
+    await assert.rejects(
+      () => generateMissingPlatformMetadata(s.episodeId, { call: (async () => GENERATED) as never, provider: "claude-cli" }),
+      (err: unknown) => {
+        assert.equal((err as { code: string }).code, "no_script");
+        assert.equal((err as { status: number }).status, 409);
+        return true;
+      },
+    );
+    assert.equal((await rowOf(s.episodeId)).igHook, null);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("the generate route's episode lookup is the shared visibility rule and reports the status", async () => {
+  const s = await seed();
+  try {
+    assert.equal((await loadForRegenerate(s.userId, s.episodeId)).status, "DONE");
+    await assert.rejects(
+      () => loadForRegenerate(s.otherUserId, s.episodeId),
+      (err: unknown) => (err as { code: string }).code === "not_found",
+      "another operator's episode is not found, not merely empty",
+    );
+    await prisma.episode.update({ where: { id: s.episodeId }, data: { userId: null, status: "RUNNING" } });
+    const ownerless = await loadForRegenerate(s.otherUserId, s.episodeId);
+    assert.equal(ownerless.status, "RUNNING", "an ownerless episode is visible, and the route will refuse it for not being DONE");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("after generation an edit still saves, marks, and keeps the platforms apart", async () => {
+  const s = await seed();
+  try {
+    await generateMissingPlatformMetadata(s.episodeId, { generate: stubGenerate().generate });
+
+    const edited = await saveMetadata(s.userId, s.episodeId, { igCaption: "My caption", tags: "focus, deep work" });
+    assert.equal(edited.metadata.igCaption, "My caption");
+    assert.deepEqual(edited.metadata.tags, ["focus", "deep work"]);
+    assert.ok(edited.edits.igCaption && edited.edits.tags, "both are now the operator's");
+    assert.equal(edited.edits.igHook, null, "the others are still as written");
+    assert.equal(edited.metadata.description, "What the book says about attention.", "YouTube's description is untouched by Instagram edits");
+
+    // Regenerate still demands confirmation for the edited field, and not for the generated one.
+    const row = await rowOf(s.episodeId);
+    assert.equal(wasHandEdited(row, "igCaption"), true);
+    assert.equal(wasHandEdited(row, "igHook"), false);
+
+    // Nothing is missing any more, so opening the panel again costs no model call.
+    const stub = stubGenerate();
+    assert.deepEqual((await generateMissingPlatformMetadata(s.episodeId, { generate: stub.generate })).missing, []);
+    assert.equal(stub.calls.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+// ---- the panel's two states, rendered
+
+const NoticeComponent = (centerModule as unknown as { GenerateNotice: React.ComponentType<Record<string, unknown>> }).GenerateNotice;
+
+test("GENERATING is announced, with what is being written; FAILED has a Generate button and the reason -- never a blank", () => {
+  const c = strings.publishCenter;
+  const running = renderToStaticMarkup(
+    React.createElement(NoticeComponent, { state: "running", what: c.generatingYouTube, onGenerate: () => {} }),
+  );
+  assert.match(running, /role="status"/);
+  assert.match(running, /aria-busy="true"/);
+  assert.ok(running.includes("Writing the YouTube tags"));
+  assert.ok(running.includes(c.generatingHint));
+  assert.doesNotMatch(running, /<button/, "nothing to press while it is working");
+
+  const failed = renderToStaticMarkup(
+    React.createElement(NoticeComponent, { state: "error", what: c.generatingInstagram, detail: "The writer could not be reached: not signed in", onGenerate: () => {} }),
+  );
+  assert.match(failed, /role="alert"/);
+  assert.ok(failed.includes(c.generateFailed));
+  assert.ok(failed.includes("not signed in"), "the reason is shown");
+  assert.match(failed, /<button[^>]*>[\s\S]*Generate[\s\S]*<\/button>/, "a manual retry");
+
+  const retrying = renderToStaticMarkup(
+    React.createElement(NoticeComponent, { state: "error", what: "x", busy: true, onGenerate: () => {} }),
+  );
+  assert.match(retrying, /aria-disabled="true"/);
+  assert.ok(retrying.includes(c.generating));
+});
+
+test("the panel is wired to ask once on open, show both states on the right package, and take the answer without a re-fetch", async () => {
+  const src = await fs.readFile(fileURLToPath(new URL("../src/components/PublishCenter.tsx", import.meta.url)), "utf8");
+  assert.match(src, /missingPlatformFields\(view\.metadata, view\.edits\)/, "the same rule the server applies");
+  assert.match(src, /view\.status === "DONE"/, "only a finished episode is asked about");
+  assert.match(src, /asked\.current\.has\(id\)/, "once per episode per mount");
+  assert.match(src, /\/api\/episodes\/\$\{episodeId\}\/publish\/generate/);
+  assert.match(src, /method: "POST"/);
+  // Both packages, each on its own fields.
+  assert.match(src, /showYouTubeNotice = .*missing\.includes\("tags"\)/);
+  assert.match(src, /showInstagramNotice = .*missing\.some\(\(f\) => f !== "tags"\)/);
+  assert.equal(src.match(/<GenerateNotice/g)?.length, 2);
+  // The answer is the view (no second request), applied only to the episode it was for.
+  assert.match(src, /prev\.id === target \? \{ id: target, view: result\.body/);
+  // A manual retry exists and is the same request.
+  assert.match(src, /onGenerate=\{generateNow\}/);
+  // The derived "generating" state sets nothing in the effect body (the lint rule this file already honours).
+  assert.match(src, /gen\[id\] \?\? \{ phase: "running" \}/);
+});
+
+test("the Instagram title field reads as the Instagram title / hook, and not as the YouTube title", () => {
+  const c = strings.publishCenter;
+  assert.equal(c.igHookLabel, "Title / hook");
+  assert.match(c.igHookHint, /Instagram has no title field/);
+  assert.match(c.igHookHint, /Not the YouTube title/);
 });

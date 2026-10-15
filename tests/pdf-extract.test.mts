@@ -6,11 +6,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractPdf, readRawPage, resolvePython } from "../src/lib/pdf/extract";
+import { extractPdf, MAX_PDF_PAGES, readRawPage, resolvePython } from "../src/lib/pdf/extract";
 import { bodyFontSize, linesFromOcr, linesFromRaw, needsOcr, structurePages, type LinedPage } from "../src/lib/pdf/page-text";
 import { detectSections } from "../src/lib/analysis/sections";
 import { chunkSections } from "../src/lib/analysis/chunks";
@@ -21,6 +22,7 @@ import { uploadDir } from "../src/lib/paths";
 import type { RawPdfPage } from "../src/lib/analysis/types";
 
 const MAKE = path.join(process.cwd(), "scripts", "fixtures", "make-book-pdf.py");
+const EXTRACT_PY = path.join(process.cwd(), "src", "lib", "pdf", "extract.py");
 
 const CHAPTERS = [
   {
@@ -173,11 +175,18 @@ d.save(sys.argv[1])`;
   execFileSync(py!.bin, [...py!.args, "-c", code, file], { windowsHide: true });
 }
 
-test("page bounds: a 1-page and a 200-page PDF are accepted, a 201-page PDF is refused", async (t) => {
+/** The plain n-page PDF, built once per run and shared between the page-bound tests. */
+function plainPdfOnce(n: number): string {
+  const file = path.join(dir, `plain-${n}.pdf`);
+  if (!existsSync(file)) plainPdf(file, n);
+  return file;
+}
+
+test("page bounds: a 1-page and a 300-page PDF are accepted, a 301-page PDF is refused", async (t) => {
   if (!py) return t.skip("no Python with PyMuPDF");
-  for (const n of [1, 200]) {
-    const file = path.join(dir, `plain-${n}.pdf`);
-    plainPdf(file, n);
+  assert.equal(MAX_PDF_PAGES, 300);
+  for (const n of [1, 300]) {
+    const file = plainPdfOnce(n);
     const manifest = await extractPdf(file, path.join(dir, `plain-${n}-out`), () => {});
     assert.equal(manifest.pageCount, n);
   }
@@ -193,13 +202,47 @@ test("page bounds: a 1-page and a 200-page PDF are accepted, a 201-page PDF is r
   pages[0].words = pages[0].text.paragraphs.join(" ").split(/\s+/);
   assert.ok(chunkSections(pages, detectSections(pages, [])).length >= 1);
 
-  const over = path.join(dir, "plain-201.pdf");
-  plainPdf(over, 201);
+  const over = plainPdfOnce(301);
   await assert.rejects(
-    () => extractPdf(over, path.join(dir, "plain-201-out"), () => {}),
+    () => extractPdf(over, path.join(dir, "plain-301-out"), () => {}),
     (err: Error & { code?: string }) =>
-      err.code === "pdf_too_many_pages" && err.message === "This PDF has 201 pages; at most 200 can be analysed at once.",
+      err.code === "pdf_too_many_pages" && err.message === "This PDF has 301 pages; at most 300 can be analysed at once.",
   );
+});
+
+/**
+ * Runs `extract.py` the way `extractPdf` does, but at a thumbnail `--long-edge`
+ * so the page gate can be checked at many sizes without rendering ~1,000
+ * full-size pages. The gate sits before any rendering, so it is the same gate.
+ */
+function runExtractor(file: string, out: string, extra: string[]): { status: number | null; messages: { type: string; [k: string]: unknown }[] } {
+  const r = spawnSync(py!.bin, [...py!.args, EXTRACT_PY, file, out, ...extra, "--long-edge", "64"], { encoding: "utf8", windowsHide: true });
+  const messages = r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type: string; [k: string]: unknown });
+  return { status: r.status, messages };
+}
+
+test("page gate: 200, 201, 264 and 300 pages pass, 301 is refused — as extractPdf runs it, and on the Python default", async (t) => {
+  if (!py) return t.skip("no Python with PyMuPDF");
+  // `extractPdf` always passes --max-pages MAX_PDF_PAGES; the bare script falls back to its own default.
+  const modes = [
+    { name: "--max-pages MAX_PDF_PAGES", args: ["--max-pages", String(MAX_PDF_PAGES)] },
+    { name: "python default", args: [] as string[] },
+  ];
+  for (const mode of modes) {
+    // 264 is the page count that was refused at "at most 200" before the limit was raised.
+    for (const n of [200, 201, 264, 300]) {
+      const { status, messages } = runExtractor(plainPdfOnce(n), path.join(dir, `gate-${n}-out`), mode.args);
+      assert.equal(status, 0, `${n} pages (${mode.name}) exits cleanly`);
+      assert.deepEqual(messages[0], { type: "start", pageCount: n }, `${n} pages (${mode.name}) is accepted and starts extracting`);
+      assert.equal(messages.at(-1)?.type, "done", `${n} pages (${mode.name}) runs to the end`);
+      assert.ok(!messages.some((m) => m.type === "error"), `${n} pages (${mode.name}) raises no error`);
+    }
+    const refused = runExtractor(plainPdfOnce(301), path.join(dir, "gate-301-out"), mode.args);
+    assert.equal(refused.status, 2, `301 pages (${mode.name}) is refused`);
+    assert.deepEqual(refused.messages, [
+      { type: "error", code: "too_many_pages", message: "This PDF has 301 pages; at most 300 can be analysed at once." },
+    ]);
+  }
 });
 
 test("an encrypted or broken PDF fails with a sentence, not a traceback", async (t) => {

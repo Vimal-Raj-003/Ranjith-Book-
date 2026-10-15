@@ -199,6 +199,19 @@ model Upload {
   chunks    Chunk[]
   ideas     ContentIdea[]
   createdAt DateTime @default(now())
+  /// When the current analysis run was started: set by `POST /api/books/[id]/analyze`,
+  /// which is the one path for both the first start and every retry. `createdAt` is the
+  /// upload, which a retry would otherwise be measured from. Null on rows from before
+  /// this column and on photo uploads; a reader falls back to `createdAt`. Never
+  /// rewrite `createdAt` to get this: "Your books" is ordered by it.
+  startedAt DateTime?
+  /// JSON [{step, startedAt, endedAt|null}] -- when each stage of the current PDF analysis
+  /// began and ended, in run order. Written once per stage transition (about five times a
+  /// run) by `Reporter.step` and closed out by the terminal write; cleared by
+  /// `POST /api/books/[id]/analyze` so a retry measures fresh. This is `Upload`'s answer to
+  /// the `StepRun` history an `Episode` has, for the analysis only. Null on rows from before
+  /// this column and on photo uploads: no history is invented for them.
+  stepTimings String?
   /// Bumped by every `prisma.upload.update` in `runIngest` (once per step
   /// transition). `reap.ts` uses this — not `createdAt` — to tell "stuck on
   /// the current step" apart from "a long-running upload that is still

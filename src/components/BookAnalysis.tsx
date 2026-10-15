@@ -5,6 +5,7 @@ import { ANALYSIS_STEPS } from "@/lib/pipeline-steps";
 import { strings } from "@/lib/strings";
 import type { AnalysisView, EpisodeState } from "./types";
 import PipelineRail from "./PipelineRail";
+import AnalysisElapsed from "./AnalysisElapsed";
 import IdeaCard from "./IdeaCard";
 import VideoPreview from "./VideoPreview";
 import { Disclosure, EmptyState, Panel } from "./ui";
@@ -101,7 +102,10 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
     try {
       const res = await fetch(`/api/books/${uploadId}/analyze`, { method: "POST" });
       if (!res.ok) throw new Error();
-      setView((v) => (v ? { ...v, status: "QUEUED", error: null } : v));
+      // The clock restarts with the run: until the next poll brings the server's own
+      // `startedAt`, this is the same moment (to within the request) it will record.
+      // The stage times restart with it, as the route clears them: a retry measures itself.
+      setView((v) => (v ? { ...v, status: "QUEUED", error: null, startedAt: new Date().toISOString(), stepTimings: [] } : v));
       setPollKey((k) => k + 1);
     } catch {
       show(strings.books.retryError, "error");
@@ -154,12 +158,57 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
         <span className="text-[12px]" style={{ color: "var(--mute)" }}>
           {strings.books.pages(view.pageCount)}
         </span>
+        {/* The run panel below is not drawn once the run is DONE, so the final
+            duration is kept here; the same component, frozen, no remount reset. */}
+        {!live && (
+          <AnalysisElapsed
+            status={view.status}
+            createdAt={view.createdAt}
+            startedAt={view.startedAt}
+            updatedAt={view.updatedAt}
+            className="ml-auto"
+          />
+        )}
       </div>
 
+      {/* The run panel is gone once DONE, and with it the per-stage times; a finished run that
+          recorded them keeps them one click away. A row from before they were recorded has
+          none, and shows nothing here rather than an empty list. */}
+      {!live && (view.stepTimings?.length ?? 0) > 0 && (
+        <Disclosure quiet summary={strings.books.stepTimes}>
+          <PipelineRail
+            step={view.step}
+            status={view.status}
+            steps={view.stepTimings}
+            stepList={ANALYSIS_STEPS}
+            expanded
+          />
+        </Disclosure>
+      )}
+
       {live && (
-        <Panel title={strings.books.runHeading}>
+        <Panel
+          title={strings.books.runHeading}
+          actions={
+            <AnalysisElapsed
+              status={view.status}
+              createdAt={view.createdAt}
+              startedAt={view.startedAt}
+              updatedAt={view.updatedAt}
+            />
+          }
+        >
           <div aria-live="polite" className="flex flex-col gap-2">
-            <PipelineRail step={view.step} status={view.status} error={view.error} stepList={ANALYSIS_STEPS} />
+            {/* `steps`: what each stage measured -- finished stages frozen, the running one ticking
+                from its own start, stages not reached blank. The rail does the drawing. */}
+            <PipelineRail
+              step={view.step}
+              status={view.status}
+              error={view.error}
+              steps={view.stepTimings}
+              stepList={ANALYSIS_STEPS}
+              expanded
+            />
             {view.progress && view.status !== "FAILED" && (
               <div className="flex items-center gap-2">
                 <div className="h-1 flex-1 overflow-hidden rounded-full" style={{ background: "var(--slab-2)" }} aria-hidden>

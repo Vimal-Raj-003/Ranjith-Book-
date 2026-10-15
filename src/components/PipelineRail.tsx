@@ -49,6 +49,10 @@ export interface PipelineRailProps {
   /** The stages to draw. Defaults to the photo pipeline's `STEPS`; a book PDF
    *  analysis passes its own `ANALYSIS_STEPS`. */
   stepList?: readonly string[];
+  /** Open the full stage list (and with it each stage's time) from the start. Off by
+   *  default, which is how an episode card keeps its own short; the analysis panel turns
+   *  it on, because the five stages and how long each took is most of what it has to say. */
+  expanded?: boolean;
 }
 
 /**
@@ -62,7 +66,7 @@ export interface PipelineRailProps {
  * and whether a segment went red — and one line carries the only stage that
  * is news. The full list is a keypress away and unchanged when it is opened.
  */
-export default function PipelineRail({ step, status, error, steps, totalMs, stepList = STEPS }: PipelineRailProps) {
+export default function PipelineRail({ step, status, error, steps, totalMs, stepList = STEPS, expanded = false }: PipelineRailProps) {
   // Timings are keyed by step NAME rather than by index: the rail renders
   // ingest and episode stages as one list, while StepRun rows exist only for
   // the episode half, so the two are not positionally aligned.
@@ -78,13 +82,23 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!isRunning) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
+    const tick = () => setNow(Date.now());
+    // `now` stands still while nothing runs, so when a run BEGINS -- the first poll after
+    // QUEUED, or a Retry -- it is older than the stage's own `startedAt` until the first
+    // tick, a second away: catch up at once instead of showing that gap.
+    const catchUp = setTimeout(tick, 0);
+    const id = setInterval(tick, 1000);
+    return () => {
+      clearTimeout(catchUp);
+      clearInterval(id);
+    };
   }, [isRunning]);
   const runningTiming = timing.get(step);
+  // Clamped at zero: `now` is only refreshed once a second, so a stage that began since the last
+  // tick has a `startedAt` a moment AFTER it, and "-300ms" is not a duration anyone ran.
   const runningElapsedMs =
     isRunning && runningTiming && runningTiming.durationMs == null
-      ? now - new Date(runningTiming.startedAt).getTime()
+      ? Math.max(0, now - new Date(runningTiming.startedAt).getTime())
       : null;
   // The denominator for the share column is the sum of what was actually
   // measured, not `totalMs`: total includes time outside any step, and a
@@ -159,7 +173,7 @@ export default function PipelineRail({ step, status, error, steps, totalMs, step
         </span>
       )}
 
-      <Disclosure quiet summary={strings.run.allSteps}>
+      <Disclosure quiet defaultOpen={expanded} summary={strings.run.allSteps}>
         <ol role="list" className="flex flex-col gap-0.5">
           {stepList.map((s, i) => {
             const state = stateOf(i);

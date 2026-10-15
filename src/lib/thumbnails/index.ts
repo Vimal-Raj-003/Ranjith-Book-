@@ -3,7 +3,7 @@ import path from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import type { ContentPackage } from "../content/schema";
 import { ASPECTS, VARIANTS, type ThumbFocus, type ThumbPage, type ThumbSpec } from "./types";
-import { clean } from "./text";
+import { clean, stripEmoji } from "./text";
 import { thumbPalette } from "./palette";
 import { FIT_SCRIPT, buildThumbHtml, normaliseFocus, type Box, type Photo, type ThumbCopy } from "./render";
 
@@ -134,7 +134,8 @@ export async function generateThumbnails(opts: {
     .filter(Boolean);
 
   const copy: ThumbCopy = {
-    title: clean(pkg.title),
+    // The title carries emoji by design; no poster shows one (`stripEmoji`).
+    title: clean(stripEmoji(typeof pkg.title === "string" ? pkg.title : "")),
     hook: clean(pkg.hook),
     keywords: Array.isArray(pkg.hookKeywords) ? pkg.hookKeywords : [],
     cta: clean(pkg.cta),
