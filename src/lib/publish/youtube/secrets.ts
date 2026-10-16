@@ -208,6 +208,34 @@ export const verifierAad = (userId: string): string => `youtube:pkce:${userId}`;
 export const sessionAad = (episodeId: string): string => `youtube:session:${episodeId}`;
 
 /**
+ * Instagram's AADs, in their own namespace.
+ *
+ * Deliberately NOT the `youtube:`-prefixed ones: a sealed value is bound to its
+ * purpose, so an Instagram Page token copied into a YouTube row (or the other
+ * way round) fails the tag check instead of being handed to the wrong API.
+ */
+/** The AAD for one user's long-lived Page token, the durable Instagram credential. */
+export const instagramTokenAad = (userId: string): string => `instagram:token:${userId}`;
+/** The AAD for one user's long-lived USER token, kept only so Disconnect can revoke at Meta. */
+export const instagramUserAad = (userId: string): string => `instagram:user:${userId}`;
+/** The AAD for one in-flight Instagram authorisation's CSRF nonce. */
+export const instagramStateAad = (userId: string): string => `instagram:state:${userId}`;
+
+/**
+ * A key for a DIFFERENT purpose, derived from the install's token key.
+ *
+ * The signed media link is an HMAC, not an encryption, and must not be keyed
+ * with the very bytes that seal stored credentials: if the two ever interacted,
+ * a weakness in one would be a weakness in the other. `HMAC(key, purpose)` is
+ * the standard domain-separated derivation, and it throws `TokenKeyMissing` for
+ * the same reasons `seal` does — an install that cannot protect a credential
+ * does not get to mint a link either.
+ */
+export function deriveKey(purpose: string, env: EnvLike = process.env): Buffer {
+  return crypto.createHmac("sha256", currentKey(env)).update(purpose, "utf8").digest();
+}
+
+/**
  * The ONLY representation of a secret that may appear in a log line, an error
  * message, or a response body.
  *

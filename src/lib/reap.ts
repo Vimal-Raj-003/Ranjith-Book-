@@ -1,6 +1,7 @@
 import { prisma } from "./db";
 import { isEpisodeLive } from "./episodes/live";
 import { releaseIdea } from "./content/idea";
+import { recoverInterruptedBrowserJobs } from "./publish/browser/recover";
 
 /**
  * A run only makes progress while the server process that started it is alive.
@@ -107,5 +108,13 @@ export async function reapStaleRuns(): Promise<number> {
     });
   }
 
-  return reapable.length + staleUploads.length;
+  // A browser-mode PUBLISH is the one kind of run that is never resumed or
+  // replaced after a restart: it was driving a window that is gone, and a re-run
+  // could post twice. It is handed to a person instead. Best-effort here (a Prisma
+  // client that predates the `mode` column cannot ask), and not time-based: a job
+  // is interrupted exactly when it is in flight in the database and not running in
+  // this process. See `publish/browser/recover.ts`.
+  const handedToAPerson = await recoverInterruptedBrowserJobs().catch(() => 0);
+
+  return reapable.length + staleUploads.length + handedToAPerson;
 }

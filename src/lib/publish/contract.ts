@@ -122,7 +122,7 @@ export interface HandoffStep {
 }
 
 /**
- * The end of an attempt. Three variants, and only one of them is success.
+ * The end of an attempt. Four variants, and only one of them is success.
  *
  * `PUBLISHED` requires `externalId` and `confirmedAt`, so it cannot be returned
  * by a provider that has not been told something by a platform. That is the
@@ -155,9 +155,28 @@ export type PublishOutcome =
        * something a reader has to reconstruct from the id.
        */
       reviewUrl?: string | null;
+      /**
+       * Set ONLY when the platform is HOLDING the post for later: the id is real
+       * but nothing is live yet. A caller records it as SCHEDULED, not PUBLISHED.
+       * It is the time the platform READ BACK, never the time that was asked for.
+       * Only the browser publishers set it; the API publishers never do.
+       */
+      scheduledFor?: Date | null;
+      /** The visibility the platform read back (`private`, `unlisted`, `public`, `scheduled`). */
+      visibility?: string | null;
     }
   | { status: "FAILED"; error: string }
-  | { status: "REQUIRES_CONNECTION"; error: string };
+  | { status: "REQUIRES_CONNECTION"; error: string }
+  /**
+   * A browser-mode job that only a person can take further, and whose real
+   * outcome may be unknown. It is deliberately NOT a failure (a retry could post a
+   * second copy) and NOT a success (nothing confirmed). `error` says what to do.
+   *
+   * `externalId`/`externalUrl` are optional and only ever something the platform
+   * itself showed: when present, a video is probably already there, which is why a
+   * recorded id blocks a re-run.
+   */
+  | { status: "AWAITING_HUMAN"; error: string; externalId?: string | null; externalUrl?: string | null };
 
 /**
  * What a provider tells the caller while an upload is in flight.

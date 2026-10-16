@@ -45,6 +45,14 @@ export function isPlatformId(value: unknown): value is PlatformId {
  *    build can set either, because nothing in this build uploads; they exist so
  *    the platform workstreams do not have to widen the vocabulary (and so a
  *    reader written now already handles them).
+ *  - `AWAITING_HUMAN` — a browser-mode job stopped because only a person can go
+ *    on: a sign-in or security check is on screen, or the outcome is genuinely
+ *    UNKNOWN (the final button was pressed and the platform never confirmed, or
+ *    the server restarted mid-job). It is not a failure and not a success, and it
+ *    is never retried automatically: a blind retry could post a second copy.
+ *  - `SCHEDULED` — the platform itself confirmed the post is scheduled for later
+ *    (`externalId` holds its id, `scheduledFor` the time it reads back). Nothing
+ *    is live yet, so it is not `PUBLISHED`.
  *  - `PUBLISHED` — the platform confirmed it, and `externalId` holds the id it
  *    returned. There is no other way to reach this value: see `PublishOutcome`.
  *  - `FAILED` — an attempt was made and the platform or the transport refused.
@@ -55,6 +63,8 @@ export const PUBLISH_STATUSES = [
   "REQUIRES_CONNECTION",
   "PREPARING",
   "UPLOADING",
+  "AWAITING_HUMAN",
+  "SCHEDULED",
   "PUBLISHED",
   "FAILED",
 ] as const;
@@ -78,6 +88,39 @@ export function isInFlight(status: PublishStatus): boolean {
 /** The one status that claims a platform has the video. Nothing else may imply it. */
 export function isPublished(status: PublishStatus): boolean {
   return status === "PUBLISHED";
+}
+
+/**
+ * How a publish is carried out.
+ *
+ *  - `api` is the default and the recommended route: the official YouTube Data
+ *    API / Instagram Graph API, authorised by an OAuth grant.
+ *  - `browser` is an explicit, optional alternative: a real Chromium window the
+ *    operator signs in to themselves, driven through the platform's own web
+ *    uploader. Never chosen implicitly, and never a silent fallback for `api`.
+ */
+export const PUBLISH_MODES = ["api", "browser"] as const;
+
+export type PublishMode = (typeof PUBLISH_MODES)[number];
+
+export function isPublishMode(value: unknown): value is PublishMode {
+  return typeof value === "string" && (PUBLISH_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * Does a browser-mode attempt currently hold this episode's row on a platform?
+ *
+ * True while a browser window is working (`PREPARING`/`UPLOADING`) AND while one
+ * is waiting on a person (`AWAITING_HUMAN`), because in that second state the
+ * real outcome is unknown: the video may already be on the platform. The API
+ * routes ask this before starting so the two routes can never both post one
+ * episode. A row from before the `mode` column (absent or null) is an API row.
+ */
+export function browserHolds(job: { mode?: string | null; status: string } | null | undefined): boolean {
+  return (
+    job?.mode === "browser" &&
+    (job.status === "PREPARING" || job.status === "UPLOADING" || job.status === "AWAITING_HUMAN")
+  );
 }
 
 export interface PlatformLimits {
@@ -108,11 +151,11 @@ export const PLATFORM_LABELS: Record<PlatformId, string> = {
  * Where the operator finishes the job by hand, with no connection configured.
  *
  * These are the platforms' own upload surfaces and nothing else. They are
- * opened in a new tab for the operator to use themselves: this app never drives
- * them, never fills them in and never sees a password. Automating either one
- * means scraping a logged-in session, which is both against those platforms'
- * terms and a credential hazard — the official APIs are the only honest route
- * and they are a later workstream.
+ * opened in a new tab for the operator to use themselves: this link never drives
+ * them, never fills them in and never sees a password. (Driving them is a
+ * separate, explicitly chosen `browser` mode -- see `PUBLISH_MODES` -- that opens
+ * its own window; it is a convenience with real terms-of-service and fragility
+ * costs, and the official APIs remain the recommended route.)
  */
 export const PLATFORM_STUDIO_URL: Record<PlatformId, string> = {
   youtube: "https://studio.youtube.com/channel/UC/videos/upload",

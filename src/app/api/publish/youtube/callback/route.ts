@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth/session";
-import { redeemState, storeGrant } from "@/lib/publish/youtube/accounts";
-import { CONNECT_PARAM, CONNECT_REASON_PARAM } from "@/lib/publish/connect";
+import { redeemState, storeGrant, verifyChannelIdentity } from "@/lib/publish/youtube/accounts";
+import { CONNECT_PARAM, CONNECT_REASON_PARAM, identityCopy, identitySentence } from "@/lib/publish/connect";
+import { expectedHandle } from "@/lib/publish/identity";
 import { safeReturnTo, serverConfig } from "@/lib/publish/youtube/config";
-import { YouTubeAuthError, exchangeCode, hasUploadScope } from "@/lib/publish/youtube/oauth";
+import { YouTubeAuthError, exchangeCode, hasReadonlyScope, hasUploadScope } from "@/lib/publish/youtube/oauth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -112,7 +113,43 @@ export async function GET(req: Request) {
         "That consent did not include permission to upload, so nothing was stored. Connect again and accept the upload permission.",
       );
     }
+    if (!hasReadonlyScope(tokens.scope)) {
+      // Without it this app cannot ask YouTube which channel it just connected,
+      // and a connection that cannot be identified would let the wrong channel
+      // be posted to without anyone noticing. (A connection made BEFORE this
+      // scope existed is a different case and keeps working; see `accounts.ts`.)
+      return back(
+        req,
+        returnTo,
+        "failed",
+        "That consent did not include permission to read which channel this is, so nothing was stored. Connect again and accept every permission.",
+      );
+    }
     await storeGrant(user.id, tokens);
+
+    // Ask YouTube which channel this is, right now, while the operator is here
+    // to act on the answer. A wrong channel is still STORED (so the card can say
+    // which one it is and offer Disconnect), and is reported rather than hidden;
+    // publishing to it is blocked by `identityBlocksPublish`.
+    const identity = await verifyChannelIdentity(user.id);
+    if (identity.verdict === "mismatch") {
+      return back(
+        req,
+        returnTo,
+        "connected",
+        identityCopy.connectedWrongAccount(identity.handle ?? "another channel", expectedHandle("youtube")),
+      );
+    }
+    if (identity.verdict === "unverified") {
+      return back(
+        req,
+        returnTo,
+        "connected",
+        identity.problem ??
+          identitySentence("YouTube", "unverified", null, expectedHandle("youtube")) ??
+          "YouTube has not confirmed which channel this is.",
+      );
+    }
     return back(req, returnTo, "connected");
   } catch (err) {
     // MAPPED, OPERATOR-FACING SENTENCES ONLY, and this is an allow-list rather

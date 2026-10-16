@@ -32,21 +32,32 @@ export const GOOGLE = {
   /** Resumable upload initiation. `uploadType=resumable` is what makes it so. */
   videosUpload: "https://www.googleapis.com/upload/youtube/v3/videos",
   thumbnailsSet: "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+  /** `channels.list`, read with `mine=true` to learn which channel a credential belongs to. */
+  channelsList: "https://www.googleapis.com/youtube/v3/channels",
 } as const;
 
 /**
- * The one scope this app asks for.
+ * The scopes this app asks for.
  *
- * `youtube.upload` is enough to insert a video AND to call `thumbnails.set`, so
- * nothing more is requested. `youtube.readonly` would let the connect screen
- * name the channel before the first upload and let this app read whether the
- * channel is verified — and it is a read grant over the operator's entire
- * YouTube account, for a label. It is not asked for. The consequence is stated
- * where it bites: the channel name is recorded from the first upload's own
- * response (which carries `snippet.channelTitle`), and a thumbnail that needs a
- * verified channel is attempted and reported, never predicted.
+ * `youtube.upload` is enough to insert a video AND to call `thumbnails.set`, and
+ * it is what upload gating (`hasUploadScope`) keys off. It is listed first and
+ * is unchanged.
+ *
+ * `youtube.readonly` is ADDITIVE and exists for exactly one call:
+ * `channels.list?mine=true`, which is the only way to learn from YouTube itself
+ * which channel a credential belongs to. An earlier version of this comment
+ * argued against asking for it ("a read grant over the operator's entire YouTube
+ * account, for a label"). That argument held while the channel name was only a
+ * label. It no longer is one: identity verification — refusing to publish to the
+ * wrong channel — needs a handle that YouTube reported, not one an upload
+ * response echoed back, and an upload response is the only other place a channel
+ * name appears. A connection granted before this scope existed keeps working for
+ * upload and is shown a "reconnect to verify" warning (see `accounts.ts`).
  */
-export const YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"] as const;
+export const YOUTUBE_SCOPES = [
+  "https://www.googleapis.com/auth/youtube.upload",
+  "https://www.googleapis.com/auth/youtube.readonly",
+] as const;
 
 export const SCOPE_PARAM = YOUTUBE_SCOPES.join(" ");
 

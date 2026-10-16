@@ -19,13 +19,13 @@
  * normalisers (`missingPlatformFields`); the other two are type-only here.
  */
 import { normaliseHashtags, normaliseTags } from "./limits";
-import type { PlatformId, PublishMetadata, PublishStatus, VariantField } from "./limits";
+import type { PlatformId, PublishMetadata, PublishMode, PublishStatus, VariantField } from "./limits";
 import type { HandoffStep, PlatformCapabilities } from "./contract";
 import type { Readiness } from "./readiness";
 
 export type { HandoffStep, PlatformCapabilities } from "./contract";
 export type { Readiness, ReadinessIssue } from "./readiness";
-export type { PlatformId, PublishMetadata, PublishStatus, VariantField } from "./limits";
+export type { PlatformId, PublishMetadata, PublishMode, PublishStatus, VariantField } from "./limits";
 
 /** The last recorded attempt on one platform. */
 export interface PublishJobView {
@@ -58,6 +58,32 @@ export interface PublishJobView {
   privacyStatus: string | null;
   /** Where the operator finishes the job, for a platform that has a review surface. */
   reviewUrl: string | null;
+  /**
+   * How this attempt was carried out. Absent reads as `api`: optional so that a
+   * view built before the column existed still type-checks.
+   */
+  mode?: PublishMode;
+  /** ISO. When a platform-SCHEDULED post goes live, as the platform read it back; absent or null otherwise. */
+  scheduledFor?: string | null;
+}
+
+/**
+ * The optional browser-window route for one platform, as the card needs it.
+ *
+ * Present for every platform that has a browser publisher, whether or not it can
+ * run right now: `available` is the answer to that, with `reason` saying why not.
+ * Nothing here is a credential, a profile path or a cookie -- the sign-in lives in
+ * a Chromium profile on the server's disk and never crosses this wire.
+ */
+export interface BrowserModeView {
+  /** Is a Chromium that can run this present on the server? */
+  available: boolean;
+  /** Whole sentence, set when `available` is false. */
+  reason: string | null;
+  /** Can the platform's web uploader schedule? YouTube Studio can; Instagram web cannot. */
+  canSchedule: boolean;
+  /** True when the window is hidden (`BOOKREEL_PUBLISH_HEADLESS`): a sign-in cannot be done in it. */
+  headless: boolean;
 }
 
 /** Which fields the operator has typed over, as ISO timestamps. Null means "as written". */
@@ -109,6 +135,8 @@ export interface PlatformState {
   /** What the operator does by hand. Empty when readiness or validation refuses. */
   handoff: HandoffStep[];
   requires: string[];
+  /** The optional browser-window route. Absent or null for a platform that has none. */
+  browser?: BrowserModeView | null;
   job: PublishJobView | null;
 }
 
@@ -235,6 +263,9 @@ export function platformStatus(
 ): PublishStatus {
   if (recorded === "PUBLISHED" || recorded === "FAILED") return recorded;
   if (recorded === "PREPARING" || recorded === "UPLOADING") return recorded;
+  // Recorded facts too: a job waiting on a person, and a post the platform is
+  // holding for later. Neither may be recomputed into READY by a local re-check.
+  if (recorded === "AWAITING_HUMAN" || recorded === "SCHEDULED") return recorded;
   if (!readiness.ready) return "NOT_READY";
   return configured ? "READY" : "REQUIRES_CONNECTION";
 }

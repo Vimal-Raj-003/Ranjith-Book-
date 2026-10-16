@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import BrowserPublish from "./BrowserPublish";
 import CopyBlock from "./CopyBlock";
+import InstagramPublish from "./InstagramPublish";
 import YouTubePublish from "./YouTubePublish";
 import { Badge, Disclosure, EmptyState, Hint, Panel, Skeleton, StatRow } from "./ui";
 import { useToast } from "./Toast";
@@ -74,6 +76,10 @@ const TONE: Record<PublishStatus, BadgeTone> = {
   REQUIRES_CONNECTION: "soon",
   PREPARING: "live",
   UPLOADING: "live",
+  // Waiting on a person is neither progress nor failure; the violet "not yet" tone.
+  AWAITING_HUMAN: "soon",
+  // The platform confirmed it is holding the post: a confirmed result, not yet live.
+  SCHEDULED: "done",
   PUBLISHED: "done",
   FAILED: "failed",
 };
@@ -203,7 +209,7 @@ function PlatformCard({
       )}
 
       {/* Said plainly rather than left to be inferred from a missing button. */}
-      {!state.capabilities.canUpload && <p className="hint">{c.cannotUpload}</p>}
+      {!state.capabilities.canUpload && !state.hasPublisher && <p className="hint">{c.cannotUpload}</p>}
 
       {/* A platform that CAN upload gets its connection card: the grant, the
           Connect/Disconnect pair, the one Publish button, measured progress and
@@ -213,6 +219,22 @@ function PlatformCard({
           what to show; this only says which platform has one. */}
       {state.platform === "youtube" && state.capabilities.canUpload && (
         <YouTubePublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
+      )}
+
+      {/* Instagram has a provider on every install, but it can only upload for a
+          connected account that Instagram itself says is the expected one -- so
+          unlike YouTube the card is keyed on having a provider, not on
+          `canUpload`: it is where the operator connects, and where the reason
+          for "not yet" is said. The hand-off further down is unchanged either way. */}
+      {state.platform === "instagram" && state.hasPublisher && (
+        <InstagramPublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
+      )}
+
+      {/* The OPTIONAL browser-window route, beside the API one and never instead
+          of it. Rendered for any platform that has one; the card says for itself
+          whether it can run here, and the API card above stays the recommended way. */}
+      {state.browser && (
+        <BrowserPublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
       )}
 
       {/* `PublishJob` carries an externalId only when a platform returned one,

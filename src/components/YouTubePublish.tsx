@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import IdentityStatus from "./IdentityStatus";
 import { Badge, Hint, StatRow } from "./ui";
 import { useToast } from "./Toast";
 import {
   CONNECT_PARAM,
   CONNECT_REASON_PARAM,
   connectCopy,
+  identityCopy,
   isConnectResult,
   type ConnectionView,
 } from "@/lib/publish/connect";
@@ -135,7 +137,9 @@ export default function YouTubePublish({
     if (!isConnectResult(result)) return;
     const reason = url.searchParams.get(CONNECT_REASON_PARAM);
 
-    if (result === "connected") toast.show(connectCopy.resultConnected, "ok");
+    // A connection that went through but is not the expected channel comes back
+    // as "connected" WITH a reason: that is a warning, not a success.
+    if (result === "connected") toast.show(reason ?? connectCopy.resultConnected, reason ? "warn" : "ok");
     else if (result === "denied") toast.show(reason ?? connectCopy.resultDenied, "warn");
     else toast.show(reason ?? connectCopy.resultFailed, "error");
 
@@ -158,6 +162,14 @@ export default function YouTubePublish({
   const job = state.job;
   const inFlight = state.status === "PREPARING" || state.status === "UPLOADING";
   const published = Boolean(job?.publishedAt && job.externalId);
+  /**
+   * The browser-window route holds this episode: a post the platform is holding
+   * for later, or an attempt that stopped for a person and may already be up.
+   * Either way a second upload by this route could duplicate it, so no button.
+   */
+  const heldByBrowser = state.status === "SCHEDULED" || state.status === "AWAITING_HUMAN";
+  /** The platform's own API named a different (or no) channel, and the server refuses an upload on it. */
+  const identityBlocks = connection?.identityBlocksPublish ?? false;
 
   /**
    * Connect is an ORDINARY LINK, not a fetch and not a router push.
@@ -280,12 +292,20 @@ export default function YouTubePublish({
             </ul>
           )}
 
+          {/* Which channel this is, as YouTube's own API reported it. A wrong
+              or unconfirmed channel is a blocking alert; a connection that
+              predates verification is a warning that says how to verify. */}
+          {connection && <IdentityStatus platform="YouTube" connection={connection} />}
+
           {/* The upload. Offered only for an episode this account owns, only
               when the platform would accept it, and never while one is already
-              in flight. */}
+              in flight. A channel the API says is the wrong one gets a sentence
+              instead of a button. */}
           {!owned ? (
             <Hint>{connectCopy.notOwned}</Hint>
-          ) : published ? null : (
+          ) : published || heldByBrowser ? null : identityBlocks ? (
+            <Hint>{identityCopy.publishBlocked}</Hint>
+          ) : (
             <>
               <div className="pub-actions">
                 <button

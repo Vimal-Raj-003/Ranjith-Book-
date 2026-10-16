@@ -267,3 +267,20 @@ export function hasUploadScope(scope: string): boolean {
     granted.includes("https://www.googleapis.com/auth/youtube") ||
     granted.includes("https://www.googleapis.com/auth/youtubepartner");
 }
+
+/**
+ * Did the grant include permission to ask YouTube which channel this is?
+ *
+ * `channels.list?mine=true` is permitted by any of these. A credential without
+ * one cannot be identity-verified, which is NOT the same as it being unable to
+ * upload: `hasUploadScope` is the separate, unchanged gate for that.
+ */
+export function hasReadonlyScope(scope: string): boolean {
+  const granted = grantedScopes(scope);
+  return (
+    granted.includes("https://www.googleapis.com/auth/youtube.readonly") ||
+    granted.includes("https://www.googleapis.com/auth/youtube") ||
+    granted.includes("https://www.googleapis.com/auth/youtube.force-ssl") ||
+    granted.includes("https://www.googleapis.com/auth/youtubepartner")
+  );
+}

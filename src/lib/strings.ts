@@ -436,6 +436,8 @@ export const strings = {
       REQUIRES_CONNECTION: "Requires connection",
       PREPARING: "Preparing",
       UPLOADING: "Uploading",
+      AWAITING_HUMAN: "Needs you",
+      SCHEDULED: "Scheduled",
       PUBLISHED: "Published",
       FAILED: "Failed",
     } as Record<string, string>,
@@ -447,9 +449,62 @@ export const strings = {
         "Nothing is connected to this platform, so this app cannot post for you. Everything is ready to hand over — do the upload yourself in the platform's own uploader.",
       PREPARING: "The upload is being prepared.",
       UPLOADING: "The upload is in progress.",
+      AWAITING_HUMAN:
+        "The browser window stopped for you: a sign-in or security check needs a person, or what happened is not known. It is never retried automatically.",
+      SCHEDULED: "The platform confirmed this post is scheduled. Nothing is live yet.",
       PUBLISHED: "The platform confirmed this post.",
       FAILED: "The last attempt was refused.",
     } as Record<string, string>,
+    /**
+     * The OPTIONAL browser-window route, beside the API. Every sentence is plain
+     * about three things: it opens a real window you may have to sign in to, it
+     * drives a website (which can break, and which the platform's terms may not
+     * welcome), and the official API stays the recommended way.
+     */
+    browser: {
+      eyebrow: "Browser window",
+      optional: "Optional",
+      intro: (platform: string) =>
+        `Opens a real browser window on the computer running BookReel and posts through ${platform}'s own website. ` +
+        "You may have to sign in the first time, in that window, and clear any security check yourself: BookReel never types your password and never tries to get past a check.",
+      recommend:
+        "The official API above is the recommended route. This one drives a website, which can break whenever the site changes and which the platform's terms may not welcome.",
+      unavailable: "This route is not available on this server.",
+      headless:
+        "BOOKREEL_PUBLISH_HEADLESS is on, so the window is hidden and a sign-in or security check cannot be done in it: the job will stop and say so. Unset it and restart to sign in.",
+      notOwned:
+        "This episode does not belong to this account, so it cannot be posted from here. The hand-off below still works.",
+      publish: "Publish via browser window",
+      publishing: "Opening the window…",
+      started: "The browser window is opening. Watch it, and sign in if it asks.",
+      failed: "The browser publish could not be started.",
+      working: "A browser window is working on this. The result is only recorded once the platform's own page confirms it.",
+      kidsLegend: "Is this video made for kids?",
+      kidsNote: "YouTube requires an answer and it is yours to give, so BookReel never picks one for you.",
+      kidsNo: "No, it is not made for kids",
+      kidsYes: "Yes, it is made for kids",
+      visibilityLabel: "Visibility",
+      visibilityPrivate: "Private (review in Studio)",
+      visibilityUnlisted: "Unlisted",
+      visibilityPublic: "Public",
+      scheduleLabel: "Schedule for later (optional)",
+      scheduleNote: "Scheduled posts go public at that time. Uses your computer's time zone.",
+      igPublicNote:
+        "Instagram has no private or draft post: sharing puts the Reel on your account, publicly, at once. Instagram's website cannot schedule it, so there is no schedule here.",
+      confirmPublic: "This goes live without a review step and cannot be taken back from here. Post it?",
+      confirmYes: "Yes, open the window and post",
+      confirmNo: "Not now",
+      stoppedHeading: "The browser window stopped for you",
+      stoppedNote:
+        "Look at the open window. If it was a sign-in or a security check, do it there. If the post may already be on the platform, check the platform first.",
+      ackLabel: "I looked at the platform: the post is not there, or a sign-in was the only problem.",
+      retry: "Retry in the browser window",
+      retrying: "Opening the window…",
+      alreadySeen: "A video was already seen on the platform, so this is not retried.",
+      scheduledFor: (when: string) => `Scheduled for ${when} (as the platform read it back)`,
+      scheduledId: "Platform id",
+      viaBrowser: "Posted through the browser window",
+    },
     /** Named plainly, because an operator should know why a button is not there. */
     cannotUpload: "This app cannot upload to this platform yet.",
     requiresHeading: "A connection will need",

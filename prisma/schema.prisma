@@ -573,6 +573,22 @@ model PublishJob {
   /// operator can see it rather than take it on trust.
   privacyStatus String?
 
+  /// HOW THIS JOB IS CARRIED OUT: "api" (the official YouTube Data API / Instagram
+  /// Graph API, and the default) or "browser" (an optional Chromium window the
+  /// operator signs in to). Recorded on the row, not only in the request, because
+  /// a restart must be able to tell the two apart: an interrupted API upload
+  /// resumes from its stored session, but an interrupted BROWSER job is never
+  /// re-run -- its real outcome is unknown and a blind retry could post twice --
+  /// so recovery marks it AWAITING_HUMAN instead. Null (a row from before this
+  /// column) reads as "api".
+  mode String? @default("api")
+
+  /// When a platform-SCHEDULED post goes live. Set only together with the
+  /// SCHEDULED status and the platform's own id, and read back from the platform;
+  /// never an intention. `publishedAt` stays null for a scheduled post, because
+  /// nothing is published yet.
+  scheduledFor DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -26,8 +26,16 @@
  */
 import { assertModels, prisma } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import type { ConnectionView } from "../connect";
-import { YOUTUBE_PROVIDER, serverConfig, publicConfig, SCOPE_PARAM } from "./config";
+import {
+  displayHandle,
+  identitySentence,
+  judgeIdentity,
+  type ConnectionView,
+  type IdentityVerdict,
+} from "../connect";
+import { expectedHandle } from "../identity";
+import { GOOGLE, YOUTUBE_PROVIDER, serverConfig, publicConfig, SCOPE_PARAM } from "./config";
+import { mapApiError } from "./errors";
 import {
   accessAad,
   open,
@@ -42,6 +50,7 @@ import {
   ACCESS_SKEW_MS,
   STATE_TTL_MS,
   YouTubeAuthError,
+  hasReadonlyScope,
   hasUploadScope,
   hashState,
   refreshAccess,
@@ -104,6 +113,49 @@ async function findAccount(userId: string): Promise<AccountRow | null> {
 }
 
 /**
+ * Which channel is this, according to YouTube.
+ *
+ * The verdict is computed from `externalAccountName` ONLY for a grant that
+ * carries the identity scope, and for such a grant that column is written by
+ * `verifyChannelIdentity` and by nothing else (`noteChannel` is held off it: an
+ * upload response carries a channel TITLE, and a title is a label anyone can
+ * set). A grant that predates the scope has no API-sourced handle at all, so
+ * whatever is in that column is a title and is not read as one: it is
+ * `unverified`, with a reconnect warning, and it is NOT blocked from uploading.
+ * It keeps exactly the ability it was granted.
+ */
+function identityFor(
+  row: AccountRow | null,
+  env: EnvLike,
+): Pick<
+  YouTubeConnection,
+  "verifiedHandle" | "expectedHandle" | "identity" | "identityNote" | "identityBlocksPublish"
+> {
+  const expected = expectedHandle("youtube", env);
+  if (!row) {
+    return { verifiedHandle: null, expectedHandle: expected, identity: "unverified", identityNote: null, identityBlocksPublish: false };
+  }
+  if (!hasReadonlyScope(row.scope)) {
+    return {
+      verifiedHandle: null,
+      expectedHandle: expected,
+      identity: "unverified",
+      identityNote: identitySentence("YouTube", "unverified", null, expected, { legacy: true }),
+      identityBlocksPublish: false,
+    };
+  }
+  const verified = displayHandle(row.externalAccountName) || null;
+  const identity = judgeIdentity(verified, expected);
+  return {
+    verifiedHandle: verified,
+    expectedHandle: expected,
+    identity,
+    identityNote: identitySentence("YouTube", identity, verified, expected),
+    identityBlocksPublish: identity !== "match",
+  };
+}
+
+/**
  * The connection, as a UI state.
  *
  * Never throws. Every failure — no environment, no row, a revoked row, a row
@@ -125,6 +177,7 @@ export async function connectionFor(
     connectedAt: null,
     scopes: [],
     problem: null,
+    ...identityFor(null, env),
   };
   if (!userId) return empty;
 
@@ -147,6 +200,7 @@ export async function connectionFor(
     connectedAt: row.connectedAt.toISOString(),
     scopes,
     problem: null,
+    ...identityFor(row, env),
   };
 
   if (row.revokedAt) {
@@ -200,6 +254,12 @@ export async function storeGrant(
     accessExpiresAt: tokens.expiresAt,
     scope: tokens.scope,
     revokedAt: null,
+    // A new grant may be for a DIFFERENT channel than the one it replaces, so
+    // whatever the old one reported is forgotten here and re-read from YouTube
+    // (`verifyChannelIdentity`) rather than inherited. Inheriting it would let a
+    // reconnect as the wrong account keep the right account's verified handle.
+    externalAccountId: null,
+    externalAccountName: null,
   };
   await prisma.platformAccount.upsert({
     where: { userId_provider: { userId, provider: YOUTUBE_PROVIDER } },
@@ -211,17 +271,129 @@ export async function storeGrant(
 /** Record what the platform said about the account, once it has said it. */
 export async function noteChannel(userId: string, channelId: string | null, channelTitle: string | null): Promise<void> {
   if (!channelId && !channelTitle) return;
+  // For a grant that can be identity-verified, `externalAccountName` holds the
+  // handle YouTube's channel lookup returned, and the upload response's TITLE
+  // must not overwrite it: a title is a label, and a channel can be named
+  // "@between_pages" by anyone. The id is only filled in if it is not known.
+  const row = await findAccount(userId).catch(() => null);
+  const verifiable = row !== null && hasReadonlyScope(row.scope);
   await prisma.platformAccount
     .update({
       where: { userId_provider: { userId, provider: YOUTUBE_PROVIDER } },
       data: {
-        ...(channelId ? { externalAccountId: channelId } : {}),
-        ...(channelTitle ? { externalAccountName: channelTitle } : {}),
+        ...(channelId && !(verifiable && row?.externalAccountId) ? { externalAccountId: channelId } : {}),
+        ...(channelTitle && !verifiable ? { externalAccountName: channelTitle } : {}),
       },
     })
     .catch(() => {
       // Losing a channel label is not worth failing a successful upload over.
     });
+}
+
+/** What YouTube said about which channel a credential belongs to. */
+export interface ChannelIdentity {
+  verdict: IdentityVerdict;
+  /** The `@handle` YouTube reported, or null when it reported none. */
+  handle: string | null;
+  channelId: string | null;
+  /** The channel title, for the record of what was checked; never used for the verdict. */
+  title: string | null;
+  /** Why no handle was obtained, when that is a failure rather than a mismatch. */
+  problem: string | null;
+}
+
+/**
+ * Ask YouTube which channel this credential belongs to, and record the answer.
+ *
+ * `channels.list?part=snippet&mine=true` with a fresh access token. The verdict
+ * is made from `snippet.customUrl` (the `@handle`) and from nothing stored: a
+ * stored title, a stored name and the expected handle appearing in a label are
+ * all ignored. A credential that lacks the identity scope is NOT asked (the
+ * answer would be a 403) and comes back `unverified`.
+ *
+ * Never throws. A failed lookup is `unverified` with the reason, because every
+ * caller (the OAuth callback, the connection read, the pre-publish check) has to
+ * render that answer rather than handle an exception.
+ */
+export async function verifyChannelIdentity(
+  userId: string,
+  env: EnvLike = process.env,
+  doFetch: Fetcher = fetch,
+): Promise<ChannelIdentity> {
+  const expected = expectedHandle("youtube", env);
+  const unverified = (problem: string): ChannelIdentity => ({
+    verdict: "unverified",
+    handle: null,
+    channelId: null,
+    title: null,
+    problem,
+  });
+
+  try {
+    requireAccountModels();
+    const row = await findAccount(userId);
+    if (!row) return unverified("No YouTube account is connected.");
+    if (!hasReadonlyScope(row.scope)) {
+      return unverified(identitySentence("YouTube", "unverified", null, expected, { legacy: true }) ?? "");
+    }
+
+    const accessToken = await accessTokenFor(userId, env, doFetch);
+    const res = await doFetch(`${GOOGLE.channelsList}?part=snippet&mine=true`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    const text = await res.text().catch(() => "");
+    let body: unknown = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+    if (!res.ok) return unverified(mapApiError(res.status, body, "channel lookup").message);
+
+    const items = (body as { items?: unknown } | null)?.items;
+    const first = (Array.isArray(items) ? items[0] : null) as
+      | { id?: unknown; snippet?: { title?: unknown; customUrl?: unknown } }
+      | null;
+    const channelId = typeof first?.id === "string" && first.id !== "" ? first.id : null;
+    if (!channelId) {
+      return unverified(
+        "YouTube reported no channel for this Google account, so there is nothing to verify. " +
+          "Create the channel on that account, then connect again.",
+      );
+    }
+    const title = typeof first?.snippet?.title === "string" ? first.snippet.title : null;
+    const handle =
+      displayHandle(typeof first?.snippet?.customUrl === "string" ? first.snippet.customUrl : null) || null;
+
+    await prisma.platformAccount
+      .update({
+        where: { userId_provider: { userId, provider: YOUTUBE_PROVIDER } },
+        data: { externalAccountId: channelId, externalAccountName: handle },
+      })
+      .catch(() => {
+        // The verdict below is from the API either way; failing to cache it only
+        // means the next read asks again.
+      });
+
+    return {
+      verdict: judgeIdentity(handle, expected),
+      handle,
+      channelId,
+      title,
+      problem: handle
+        ? null
+        : "YouTube returned this channel without an @handle, so it cannot be checked against the expected one.",
+    };
+  } catch (err) {
+    // By name, not `instanceof`: see `isAppError` in lib/errors.ts.
+    const named = err instanceof Error && (err.name === "AppError" || err.name === "YouTubeAuthError");
+    return unverified(
+      named && err instanceof Error
+        ? err.message
+        : "YouTube could not be asked which channel this is. Try again, or reconnect.",
+    );
+  }
 }
 
 /**

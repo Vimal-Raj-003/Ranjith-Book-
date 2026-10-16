@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
-import { connectionFor, disconnect } from "@/lib/publish/youtube/accounts";
+import { connectionFor, disconnect, verifyChannelIdentity } from "@/lib/publish/youtube/accounts";
+import { hasReadonlyScope } from "@/lib/publish/youtube/oauth";
 import type { ConnectionView } from "@/lib/publish/connect";
 
 export const runtime = "nodejs";
@@ -33,7 +34,20 @@ export async function GET() {
     const user = await currentUser();
     if (!user) return NextResponse.json({ error: "Sign in to continue.", code: "unauthorized" }, { status: 401 });
 
-    const view: ConnectionView = await connectionFor(user.id);
+    let view: ConnectionView = await connectionFor(user.id);
+    // A grant that CAN be identity-verified but has no API-sourced handle yet
+    // (the lookup failed when the operator connected) is asked once more here,
+    // so a transient failure heals on the next read instead of leaving the card
+    // blocked until a reconnect. A grant that predates the scope is not asked.
+    if (
+      view.connected &&
+      view.identity === "unverified" &&
+      view.identityBlocksPublish &&
+      hasReadonlyScope(view.scopes.join(" "))
+    ) {
+      await verifyChannelIdentity(user.id);
+      view = await connectionFor(user.id);
+    }
     return NextResponse.json(view);
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });

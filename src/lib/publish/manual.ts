@@ -13,10 +13,10 @@
  *    ordinary link to the platform's own page; what happens there happens in
  *    the operator's browser, under the operator's own session.
  *  - It never drives a page. There is no automation of YouTube Studio or
- *    Instagram here — no scripted clicks, no DOM, no scraping. Both platforms
- *    forbid it and it would mean holding a logged-in session this app has no
- *    business holding. The official APIs are the only route, and they are a
- *    later workstream.
+ *    Instagram HERE — no scripted clicks, no DOM, no scraping. (The separate,
+ *    explicitly chosen browser-window route in `./browser/` does drive a window
+ *    the operator signs in to; this hand-off does not, and is unchanged by it.)
+ *    The official APIs remain the recommended route.
  *  - It never reports success. `publish()` returns `REQUIRES_CONNECTION`, every
  *    time, by construction: `PublishOutcome`'s PUBLISHED variant needs an
  *    `externalId` from the platform and this provider has no platform to get

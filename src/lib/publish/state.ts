@@ -37,6 +37,7 @@ import {
   FIELD_MAX,
   PLATFORM_IDS,
   PLATFORM_LABELS,
+  isPublishMode,
   normaliseHashtags,
   normaliseTags,
   variantFor,
@@ -45,7 +46,8 @@ import {
   type PublishStatus,
 } from "./limits";
 import { checkReadiness, type ReadinessInput } from "./readiness";
-import { hasRealPublisher, publisherFor, type PublisherContext } from "./registry";
+import { browserModeFor, hasRealPublisher, publisherFor, type PublisherContext } from "./registry";
+import { recoverInterruptedBrowserJobs } from "./browser/recover";
 import { studioUrlFor } from "./youtube/config";
 import type { AssetRef, HandoffStep, PublishRequest } from "./contract";
 import { isPublishRefused } from "./contract";
@@ -384,6 +386,9 @@ export type PublishJobRow = {
   thumbnailStatus: string | null;
   thumbnailError: string | null;
   privacyStatus: string | null;
+  /** Absent on a row read through a client that predates the column. */
+  mode?: string | null;
+  scheduledFor?: Date | null;
 };
 
 function jobView(job: PublishJobRow | null, platform: PlatformId): PublishJobView | null {
@@ -431,6 +436,10 @@ function jobView(job: PublishJobRow | null, platform: PlatformId): PublishJobVie
     // Derived from the id the platform returned, never stored, so it cannot
     // outlive or disagree with it. Only YouTube has a review surface.
     reviewUrl: platform === "youtube" && job.externalId ? studioUrlFor(job.externalId) : null,
+    // Read back through the vocabulary, so a hand-edited value cannot make the UI
+    // claim a mode it does not know. A row from before the column is an API row.
+    mode: isPublishMode(job.mode) ? job.mode : "api",
+    scheduledFor: job.scheduledFor?.toISOString() ?? null,
   };
 }
 
@@ -442,6 +451,11 @@ export async function publishView(
 ): Promise<PublishView> {
   requirePublishModel();
   const row = await loadEpisode(userId, episodeId);
+  // A browser job a restart interrupted is handed to a person BEFORE its row is
+  // read, so this view never shows PREPARING for a window nobody is driving.
+  // Best-effort: a client that predates the `mode` column cannot run the query,
+  // and that must not stop the panel from loading.
+  await recoverInterruptedBrowserJobs(row.id).catch(() => 0);
   const a = await assets(row);
   const meta = metadataOf(row);
   const readiness = checkReadiness(readinessInput(row, a));
@@ -459,10 +473,16 @@ export async function publishView(
     // The viewer's own id, so a provider resolves the viewer's grant and
     // nobody else's. `ctx` lets a test substitute a mocked API boundary.
     const publisher = publisherFor(platform, { userId, ...ctx });
-    const caps = publisher.capabilities();
     // Never allowed to throw: a provider whose credential store is unreachable
     // is "not configured", which is an answer.
+    //
+    // ASKED BEFORE `capabilities()`, on purpose. A provider whose capabilities
+    // depend on the connection (Instagram offers `canUpload` only for a
+    // connected, identity-verified account) answers the synchronous
+    // `capabilities()` from what this call established; one whose capabilities
+    // are constant (YouTube, the handoff) is indifferent to the order.
     const configured = await publisher.isConfigured().catch(() => false);
+    const caps = publisher.capabilities();
     const real = hasRealPublisher(platform);
     const recorded = byPlatform.get(platform) ?? null;
 
@@ -498,6 +518,8 @@ export async function publishView(
           : null,
       handoff,
       requires: caps.requires,
+      // The optional browser-window route: whether it can run here, never whether it has.
+      browser: browserModeFor(platform, { userId, ...ctx }),
       job: jobView(recorded as PublishJobRow | null, platform),
     });
   }

@@ -113,13 +113,18 @@ test("every publish status has a label and an explanation in strings.ts", () => 
   );
 });
 
-test("the status vocabulary is exactly the seven the brief names, and the guards agree", () => {
+test("the status vocabulary is the seven the brief names plus the two browser mode adds, and the guards agree", () => {
+  // AWAITING_HUMAN (a browser job stopped for a person) and SCHEDULED (the platform
+  // is holding a post for later) were added with the optional browser-window route.
+  // Neither is in flight and neither is a success -- asserted below.
   assert.deepEqual([...PUBLISH_STATUSES], [
     "NOT_READY",
     "READY",
     "REQUIRES_CONNECTION",
     "PREPARING",
     "UPLOADING",
+    "AWAITING_HUMAN",
+    "SCHEDULED",
     "PUBLISHED",
     "FAILED",
   ]);
@@ -430,19 +435,23 @@ const REQUEST: PublishRequest = {
  * false and every test below still sees REQUIRES_CONNECTION — which is the
  * property that actually matters and is asserted directly further down.
  */
-test("the registry never returns nothing, and only YouTube has a real provider", () => {
+test("the registry never returns nothing, and both platforms now have a real provider", () => {
   assert.equal(hasRealPublisher("youtube"), true, "the YouTube provider is registered");
-  assert.equal(hasRealPublisher("instagram"), false, "Instagram still has no provider");
+  // Updated when the Instagram provider landed: the code exists, so this is true.
+  // It is NOT "can this install use it" -- see the next assertion.
+  assert.equal(hasRealPublisher("instagram"), true, "the Instagram provider is registered");
   for (const platform of PLATFORM_IDS) {
     const publisher = publisherFor(platform);
-    assert.equal(typeof publisher.publish, "function", "a platform with no provider still gets the handoff");
+    assert.equal(typeof publisher.publish, "function", "a platform always gets a publisher");
     assert.equal(publisher.capabilities().id, platform);
-    assert.equal(
-      publisher.capabilities().canUpload,
-      hasRealPublisher(platform),
-      "canUpload and having a provider are the same fact",
-    );
   }
+  // YouTube's capabilities are constant ("it genuinely can, when connected");
+  // Instagram's are the HANDOFF's until a connected, identity-verified account
+  // exists, so with nobody connected `canUpload` is false for it. (The guarantee
+  // that matters -- it still offers the whole handoff -- is asserted in
+  // `tests/publish-instagram.test.mts`.)
+  assert.equal(publisherFor("youtube").capabilities().canUpload, true);
+  assert.equal(publisherFor("instagram").capabilities().canUpload, false);
 });
 
 test("the handoff is honest about every capability it does not have", () => {
@@ -467,7 +476,8 @@ test("the handoff needs no credentials, which is NOT the platform being connecte
   // platform that HAS a provider it is that provider's `isConfigured()` that
   // decides -- which is false with no credentials in the environment.
   assert.equal(await manualHandoff("youtube").isConfigured(), true);
-  assert.equal(hasRealPublisher("instagram"), false);
+  assert.equal(hasRealPublisher("instagram"), true);
+  assert.equal(await publisherFor("instagram").isConfigured(), false, "a provider with nobody connected is not configured");
   assert.equal(platformStatus({ ready: true, issues: [] }, false, null), "REQUIRES_CONNECTION");
 });
 
@@ -848,7 +858,10 @@ test("a finished episode reads as READY, with both platforms requiring a connect
       // cannot use it), which is exactly the pair the vocabulary is for.
       assert.equal(p.status, "REQUIRES_CONNECTION", `${p.platform} must not claim to be connected`);
       assert.equal(p.configured, false, `${p.platform}: no credentials, so not configured`);
-      assert.equal(p.hasPublisher, p.platform === "youtube");
+      // Both platforms have a provider now. Only YouTube reports `canUpload`
+      // with nothing connected; Instagram's capabilities are the handoff's until
+      // a connected, identity-verified account exists.
+      assert.equal(p.hasPublisher, true);
       assert.equal(p.capabilities.canUpload, p.platform === "youtube");
       assert.deepEqual(p.problems, []);
       assert.ok(p.handoff.length >= 5, "the handoff is offered, because this episode would pass");

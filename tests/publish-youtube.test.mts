@@ -165,8 +165,21 @@ test("the connection the browser is given has no field a credential could sit in
     assert.ok(!wire.includes(KEY), "the encryption key must not cross the wire");
     assert.deepEqual(
       Object.keys(view).sort(),
-      ["channelId", "channelTitle", "config", "connected", "connectedAt", "problem", "scopes"],
-      "a new field on the connection view is a deliberate decision, not an accident",
+      [
+        "channelId",
+        "channelTitle",
+        "config",
+        "connected",
+        "connectedAt",
+        "expectedHandle",
+        "identity",
+        "identityBlocksPublish",
+        "identityNote",
+        "problem",
+        "scopes",
+        "verifiedHandle",
+      ],
+      "a new field on the connection view is a deliberate decision, not an accident (identity fields added deliberately)",
     );
   } finally {
     await prisma.user.delete({ where: { id: user.id } }).catch(() => {});
@@ -321,9 +334,14 @@ test("the redirect target is app-relative or refused: the callback is not an ope
   }
 });
 
-test("the app asks for one scope, and it is the upload scope", () => {
-  assert.deepEqual([...YOUTUBE_SCOPES], ["https://www.googleapis.com/auth/youtube.upload"]);
+test("the app asks for the upload scope, plus read-only for identity verification, and upload gating is unchanged", () => {
+  // ADDITIVE: youtube.readonly was appended; youtube.upload is still first.
+  assert.deepEqual([...YOUTUBE_SCOPES], [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+  ]);
   assert.equal(hasUploadScope("https://www.googleapis.com/auth/youtube.upload"), true);
+  // Upload still REQUIRES the upload scope: read-only alone must not gate in.
   assert.equal(hasUploadScope("https://www.googleapis.com/auth/youtube.readonly"), false);
   assert.equal(hasUploadScope(""), false);
 });
@@ -1128,9 +1146,9 @@ test("a provider with no user cannot reach anyone's channel", async () => {
   assert.ok("error" in outcome && /No signed-in account/.test(outcome.error));
 });
 
-test("the registry hands YouTube its real provider and Instagram the handoff", () => {
+test("the registry hands YouTube its real provider, and Instagram its own whose capabilities are the handoff until verified", () => {
   assert.equal(hasRealPublisher("youtube"), true);
-  assert.equal(hasRealPublisher("instagram"), false);
+  assert.equal(hasRealPublisher("instagram"), true, "Instagram has a provider too, since the Graph API work");
   assert.equal(publisherFor("youtube", { userId: "u" }).capabilities().canUpload, true);
   assert.equal(publisherFor("instagram", { userId: "u" }).capabilities().canUpload, false);
   // Honest about what it does NOT do, which is as important.

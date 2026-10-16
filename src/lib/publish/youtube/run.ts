@@ -41,9 +41,13 @@ import { isPublishRefused, type PreparedPublish, type PublishProgress } from "..
 import { loadPublishRequest, publishView } from "../state";
 import type { PublishView } from "../view";
 import { YOUTUBE_PROVIDER, UPLOAD_PRIVACY, publicConfig } from "./config";
+import { connectionFor, verifyChannelIdentity } from "./accounts";
 import { youTubePublisher } from "./publisher";
 import { open, seal, sessionAad, type EnvLike } from "./secrets";
-import type { Fetcher } from "./oauth";
+import { hasReadonlyScope, type Fetcher } from "./oauth";
+import { identitySentence } from "../connect";
+import { expectedHandle } from "../identity";
+import { browserHolds } from "../limits";
 
 /** Episodes with an upload running in THIS process. See layer 3 above. */
 const RUNNING = new Set<string>();
@@ -74,6 +78,7 @@ type JobRow = {
   externalId: string | null;
   sessionUrlEnc: string | null;
   attempts: number;
+  mode?: string | null;
 };
 
 async function currentJob(episodeId: string): Promise<JobRow | null> {
@@ -114,6 +119,17 @@ export async function startYouTubePublish(
     // Layer 3. Already in flight in this process.
     return publishView(userId, episodeId, options);
   }
+  if (browserHolds(existing)) {
+    // The optional browser-window route holds this row: it is running, or it stopped
+    // for a person and what it did on YouTube is not known. Two routes must not both
+    // post one episode, so this one waits until that is settled.
+    throw new AppError(
+      "browser_job_holds",
+      "A browser-window publish holds this episode on YouTube: it is running, or it stopped for you to check. " +
+        "Settle that first (the video may already be on the channel). Nothing was sent.",
+      409,
+    );
+  }
 
   const config = publicConfig(env);
   if (!config.configured) {
@@ -123,6 +139,31 @@ export async function startYouTubePublish(
         `Missing: ${config.missing.join(", ")}. Use the handoff below instead — nothing was sent.`,
       409,
     );
+  }
+
+  // THE IDENTITY GATE. A channel YouTube itself reported as a different one than
+  // this install publishes to is refused before anything is prepared or sent.
+  // A connection that merely predates the identity scope is not blocked: it
+  // keeps the upload ability it was granted (and the card tells the operator to
+  // reconnect to verify).
+  const view = await connectionFor(userId, env);
+  if (view.connected && view.identityBlocksPublish) {
+    throw new AppError("identity_blocked", `${view.identityNote ?? "This channel is not verified."} Nothing was sent.`, 409);
+  }
+  if (view.connected && hasReadonlyScope(view.scopes.join(" "))) {
+    // And once more LIVE, from the API, at the moment of the upload: the stored
+    // handle was read when the operator connected, and a publish is the one
+    // action that cannot be taken back. A lookup that cannot be made at all
+    // (network) falls back to the stored, API-sourced verdict above; a lookup
+    // that answers with a different channel, or with none, stops the upload.
+    const live = await verifyChannelIdentity(userId, env, options.fetchImpl);
+    if (live.verdict === "mismatch" || (live.verdict === "unverified" && live.channelId !== null)) {
+      throw new AppError(
+        "identity_blocked",
+        `${identitySentence("YouTube", live.verdict, live.handle, expectedHandle("youtube", env)) ?? "This channel is not verified."} Nothing was sent.`,
+        409,
+      );
+    }
   }
 
   const publisher = youTubePublisher({ userId, env, fetchImpl: options.fetchImpl });

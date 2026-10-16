@@ -51,7 +51,7 @@ import type {
 import { handoffSteps } from "../manual";
 import { ENV, publicConfig, studioUrlFor, watchUrlFor } from "./config";
 import type { EnvLike } from "./secrets";
-import { YouTubeNotConnected, accessTokenFor, isConnected, noteChannel } from "./accounts";
+import { YouTubeNotConnected, accessTokenFor, connectionFor, noteChannel } from "./accounts";
 import { TAGS_MAX_CHARS, YouTubeApiError, setThumbnail, uploadVideo } from "./upload";
 import type { Fetcher } from "./oauth";
 
@@ -139,7 +139,8 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
       `An OAuth client, with ${ENV.clientId} and ${ENV.clientSecret} set on this server`,
       `${ENV.redirectUri} matching an Authorised redirect URI on that client, exactly`,
       `${ENV.tokenKey} set, so the stored refresh token can be encrypted at rest`,
-      "A one-time consent from the channel's Google account, granting youtube.upload",
+      "A one-time consent from the channel's Google account, granting youtube.upload " +
+        "(and youtube.readonly, which lets this app confirm WHICH channel it is before posting)",
       "A verified channel, for the thumbnail only — the video uploads either way",
     ],
   });
@@ -175,7 +176,11 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
 
   const isConfigured = async (): Promise<boolean> => {
     if (!publicConfig(env).configured) return false;
-    return isConnected(ctx.userId, env);
+    // Connected AND not positively identified as the wrong channel. A connection
+    // that merely predates identity verification is not blocked (see
+    // `identityBlocksPublish`), so existing uploads keep working.
+    const view = await connectionFor(ctx.userId, env);
+    return view.connected && !view.identityBlocksPublish;
   };
 
   return {
@@ -214,6 +219,16 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
           error:
             "This server has no YouTube connection configured, so it cannot post for you. " +
             `Missing: ${config.missing.join(", ")}. The video, poster and text are ready to hand over instead.`,
+        };
+      }
+
+      // The identity gate, again, at the moment of the upload: `startYouTubePublish`
+      // checks it first, and this is the same refusal for any other caller.
+      const view = await connectionFor(ctx.userId, env);
+      if (view.connected && view.identityBlocksPublish) {
+        return {
+          status: "REQUIRES_CONNECTION",
+          error: view.identityNote ?? "YouTube has not confirmed which channel this is, so nothing was uploaded.",
         };
       }
 
