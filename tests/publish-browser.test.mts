@@ -34,6 +34,7 @@ import {
   NeedsHuman,
   browserOptionProblems,
   desiredVisibility,
+  igNativeScheduleEnabled,
   isHeadless,
   judgePage,
   launchOptionsFor,
@@ -715,6 +716,64 @@ test("browserOptionProblems: what must be said in so many words, and what is ref
   assert.deepEqual(codes("instagram", { confirmPublic: true, visibility: "private" }), ["bad_options"]);
 });
 
+test("igNativeScheduleEnabled: a kill-switch that is off unless it is explicitly turned on", () => {
+  assert.equal(igNativeScheduleEnabled({}), false, "unset is off");
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "" }), false);
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "0" }), false);
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "false" }), false);
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "FALSE" }), false, "false is case-insensitive");
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "1" }), true);
+  assert.equal(igNativeScheduleEnabled({ BOOKREEL_IG_NATIVE_SCHEDULE: "true" }), true);
+});
+
+test("browserOptionProblems: Instagram scheduledAt is refused with the flag off, and validated like YouTube's with it on", () => {
+  const now = Date.now();
+  const soon = new Date(now + 60 * 60_000);
+  const problems = (o: BrowserPublishOptions) => browserOptionProblems("instagram", o, now);
+  const codes = (o: BrowserPublishOptions) => problems(o).map((x) => x.code);
+  const FLAG = "BOOKREEL_IG_NATIVE_SCHEDULE";
+  const saved = process.env[FLAG];
+  const setFlag = (value: string | undefined) => {
+    if (value === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = value;
+  };
+  try {
+    // Flag OFF: the schedule is refused, and the message names the switch.
+    setFlag(undefined);
+    const off = problems({ scheduledAt: soon, confirmPublic: true });
+    assert.deepEqual(off.map((x) => x.code), ["bad_options"]);
+    assert.match(off[0].message, /BOOKREEL_IG_NATIVE_SCHEDULE/);
+    assert.match(off[0].message, /Nothing was sent\.$/);
+    setFlag("0");
+    assert.deepEqual(codes({ scheduledAt: soon, confirmPublic: true }), ["bad_options"], "0 is off");
+
+    // Flag ON: the same checks YouTube's schedule gets.
+    setFlag("1");
+    assert.deepEqual(codes({ scheduledAt: soon, confirmPublic: true }), []);
+    assert.deepEqual(
+      codes({ scheduledAt: new Date(now + MIN_SCHEDULE_LEAD_MS - 1000), confirmPublic: true }),
+      ["bad_options"],
+      "less than the minimum lead",
+    );
+    assert.deepEqual(codes({ scheduledAt: new Date("nope"), confirmPublic: true }), ["bad_options"], "not a date");
+    assert.deepEqual(codes({ scheduledAt: soon }), ["needs_confirmation"], "still must be confirmed");
+    assert.deepEqual(codes({ scheduledAt: soon, confirmPublic: true, visibility: "private" }), ["bad_options"], "still no private post");
+
+    // Unchanged either way: an immediate Instagram post, and the YouTube shape.
+    assert.deepEqual(codes({ confirmPublic: true }), []);
+    setFlag(undefined);
+    assert.deepEqual(codes({ confirmPublic: true }), []);
+    assert.deepEqual(codes({}), ["needs_confirmation"]);
+    assert.deepEqual(browserOptionProblems("youtube", { madeForKids: false, scheduledAt: soon, confirmPublic: true }, now), []);
+    assert.deepEqual(
+      browserOptionProblems("youtube", { madeForKids: false, scheduledAt: new Date(now + MIN_SCHEDULE_LEAD_MS - 1000), confirmPublic: true }, now).map((x) => x.code),
+      ["bad_options"],
+    );
+  } finally {
+    setFlag(saved);
+  }
+});
+
 // ======================================================================= THE YOUTUBE FLOW
 
 test("YouTube: a private upload is PUBLISHED only after the video's own page reads back the title and visibility", async () => {
@@ -1031,7 +1090,7 @@ test("Instagram: no schedule is offered or faked, and a post is never made witho
     const later = new Date(Date.now() + 86_400_000);
     const sched = await publishInstagram({}, { confirmPublic: true, scheduledAt: later }, root);
     assert.equal(sched.outcome.status, "FAILED");
-    assert.match((sched.outcome as { error: string }).error, /cannot schedule/);
+    assert.match((sched.outcome as { error: string }).error, /BOOKREEL_IG_NATIVE_SCHEDULE/);
     assert.equal(sched.launches.length, 0, "no window was opened to 'schedule' it");
 
     const unconfirmed = await publishInstagram({}, {}, root);

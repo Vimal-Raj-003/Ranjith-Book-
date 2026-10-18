@@ -103,6 +103,19 @@ export function isHeadless(env: EnvLike = process.env): boolean {
   return TRUTHY.has((env.BOOKREEL_PUBLISH_HEADLESS ?? "").trim().toLowerCase());
 }
 
+/** The kill-switch for scheduling an Instagram post from the browser window. Off unless it is set. */
+export const IG_NATIVE_SCHEDULE_ENV = "BOOKREEL_IG_NATIVE_SCHEDULE";
+
+/**
+ * Is Instagram's own scheduler allowed to be driven? `BOOKREEL_IG_NATIVE_SCHEDULE`
+ * set to anything other than empty, `0` or `false` (any case) turns it on. Unset is
+ * off, so merging this cannot cause a real schedule until the operator opts in.
+ */
+export function igNativeScheduleEnabled(env: EnvLike = process.env): boolean {
+  const raw = (env[IG_NATIVE_SCHEDULE_ENV] ?? "").trim().toLowerCase();
+  return raw !== "" && raw !== "0" && raw !== "false";
+}
+
 export function launchOptionsFor(env: EnvLike = process.env): LaunchOptions {
   return { headless: isHeadless(env), viewport: { width: 1366, height: 900 }, timeout: 60_000 };
 }
@@ -616,8 +629,10 @@ export function desiredVisibility(options: BrowserPublishOptions): "scheduled" |
  *    `confirmPublic: true`: they cannot be taken back from here.
  *  - YouTube's "made for kids" is the operator's own declaration and must be
  *    supplied, never defaulted.
- *  - Instagram's web uploader has no schedule and no private post, so asking for
- *    one is refused rather than quietly turned into an immediate public one.
+ *  - Instagram has no private post, so asking for one is refused rather than
+ *    quietly turned into an immediate public one. An Instagram SCHEDULE is
+ *    refused unless `BOOKREEL_IG_NATIVE_SCHEDULE` is on; when it is, the time is
+ *    held to the same rules as a YouTube schedule.
  */
 export function browserOptionProblems(
   platform: PlatformId,
@@ -630,12 +645,21 @@ export function browserOptionProblems(
 
   if (platform === "instagram") {
     if (scheduleAsked) {
-      problems.push({
-        code: "bad_options",
-        message:
-          "Instagram's web uploader cannot schedule a post for most accounts, so there is no schedule option here. " +
-          "Nothing was sent.",
-      });
+      if (!igNativeScheduleEnabled()) {
+        problems.push({
+          code: "bad_options",
+          message:
+            "Scheduling an Instagram post is switched off. Set BOOKREEL_IG_NATIVE_SCHEDULE=1 to allow it, " +
+            "or post now instead. Nothing was sent.",
+        });
+      } else if (!validDate) {
+        problems.push({ code: "bad_options", message: "The scheduled time is not a valid date. Nothing was sent." });
+      } else if ((options.scheduledAt as Date).getTime() < now + MIN_SCHEDULE_LEAD_MS) {
+        problems.push({
+          code: "bad_options",
+          message: "Pick a time at least 15 minutes from now to schedule an Instagram post. Nothing was sent.",
+        });
+      }
     }
     if (options.visibility !== undefined && options.visibility !== "public") {
       problems.push({
