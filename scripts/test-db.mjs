@@ -17,6 +17,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 const dir = path.join(process.cwd(), ".bookreel", "test");
 const template = path.join(dir, "template.db");
@@ -33,16 +34,28 @@ for (const f of fs.readdirSync(dir)) {
 }
 
 const prismaCli = path.join(process.cwd(), "node_modules", "prisma", "build", "index.js");
+// Prisma's schema-engine cannot create a new SQLite file on some Windows drives.
+// Build in a private temporary directory, then copy the empty template to the
+// existing isolated test layout. Application data is never a source or target.
+const schemaScratch = fs.mkdtempSync(path.join(os.tmpdir(), "bookreel-test-schema-"));
+const schemaTemplate = path.join(schemaScratch, "template.db");
+// SQLite accepts an empty file; pre-creating avoids the Windows schema-engine's
+// intermittent create/open race when a parent directory was just made.
+fs.writeFileSync(schemaTemplate, "");
 try {
   // No --force-reset: the directory was just emptied, so this creates a new
   // file rather than resetting one — nothing exists to lose.
   execFileSync(process.execPath, [prismaCli, "db", "push", "--skip-generate"], {
-    env: { ...process.env, DATABASE_URL: `file:${template.replace(/\\/g, "/")}` },
+    env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? "info", DATABASE_URL: `file:${schemaTemplate.replace(/\\/g, "/")}` },
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });
+  fs.copyFileSync(schemaTemplate, template);
 } catch (err) {
   console.error(`Could not build the test database: ${err.stderr?.toString() || err.message}`);
   process.exit(1);
+} finally {
+  fs.rmSync(schemaTemplate, { force: true });
+  fs.rmdirSync(schemaScratch);
 }
 console.log(`test database template ready (${path.relative(process.cwd(), template)})`);

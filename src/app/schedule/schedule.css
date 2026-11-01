@@ -1,0 +1,18 @@
+/* RepoReel's colorful scheduling surface, scoped so BookReel's studio is unchanged. */
+html:has([data-weekly-page]) {height:auto;min-height:100%;overflow:auto;}
+body:has([data-weekly-page]) {height:auto;min-height:100vh;overflow:visible;}
+:root:has([data-weekly-page]) {
+  --void:#080817; --slab:#120e2b; --slab-2:#100c27; --field:#080817;
+  --line:#443176; --line-soft:#30234f; --ink:#f1edff; --mute:#b5add5;
+  --mute-2:#9a8cc4; --amber:#ff2bd6; --cyan:#00d9ff; --rose:#ff6b86;
+  --green:#35f2a0; --violet:#a78bfa; --on-accent:#09061b; --scrim:rgba(4,2,20,.8);
+  color-scheme:dark;
+}
+[data-weekly-page] {min-height:100vh;background:var(--void);color:var(--ink);}
+[data-weekly-page] .slab {border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,rgba(24,17,66,.84),rgba(13,10,36,.88));box-shadow:inset 0 0 0 1px rgba(255,43,214,.05),0 0 20px rgba(139,92,246,.06);}
+[data-weekly-page] :is(button,a)[style*="background: var(--amber)"],
+[data-weekly-page] :is(button,a)[style*="background:var(--amber)"] {background:linear-gradient(90deg,#ff2bd6,#8b5cf6 55%,#3d8bff)!important;box-shadow:0 0 18px rgba(255,43,214,.2);}
+[data-weekly-page] button:disabled {box-shadow:none!important;}
+[data-weekly-page] [role="dialog"].slab {background:linear-gradient(180deg,#1b134a,#0e0b26);}
+[data-weekly-page] .eyebrow {font-size:10px;letter-spacing:.16em;text-transform:uppercase;}
+@media(max-width:480px) {[data-weekly-page] [data-platform]{min-width:0;overflow-wrap:anywhere;}}

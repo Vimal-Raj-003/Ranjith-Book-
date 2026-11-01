@@ -109,6 +109,8 @@ const PUBLISH_DIR = fileURLToPath(new URL("../src/lib/publish/", import.meta.url
 const KEY = crypto.randomBytes(32).toString("base64");
 
 /** An environment that looks fully configured, with no real credentials in it. */
+process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED = "1";
+
 const CONFIGURED: EnvLike = {
   GOOGLE_CLIENT_ID: "test-client-id.apps.googleusercontent.com",
   GOOGLE_CLIENT_SECRET: "test-client-secret",
@@ -1046,7 +1048,7 @@ test("hashtags become YouTube tags, and a tag list over YouTube's budget is refu
   assert.deepEqual(tagsFrom(["#focus", "deep work", "#Focus"]), ["focus", "deep work"]);
   assert.ok(tagsLength(["ab"]) > 2, "a quoted tag costs more than its characters");
 
-  const publisher = youTubePublisher({ userId: null, env: {} });
+  const publisher = youTubePublisher({ userId: null, env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
   const many = Array.from({ length: 60 }, (_, i) => `#averyverylonghashtagnumber${i}`);
   const verdict = publisher.validate({ ...REQUEST, metadata: { ...REQUEST.metadata, hashtags: many } });
   assert.equal(verdict.ok, false);
@@ -1070,7 +1072,7 @@ test("the uploader sends the operator's keyword tags, falling back to hashtag-de
   assert.deepEqual(uploadTags({ title: "t", description: "d", hashtags: [], hook: "h", tags: [] }), []);
 
   // The tag-budget refusal measures the KEYWORD tags, and names them as tags.
-  const publisher = youTubePublisher({ userId: null, env: {} });
+  const publisher = youTubePublisher({ userId: null, env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
   const bigTags = Array.from({ length: 60 }, (_, i) => `a-very-long-keyword-tag-number-${i}`);
   const verdict = publisher.validate({ ...REQUEST, metadata: { ...REQUEST.metadata, tags: bigTags } });
   assert.equal(verdict.ok, false);
@@ -1078,7 +1080,7 @@ test("the uploader sends the operator's keyword tags, falling back to hashtag-de
 });
 
 test("the provider refuses what YouTube would, with the reason named", () => {
-  const publisher = youTubePublisher({ userId: null, env: {} });
+  const publisher = youTubePublisher({ userId: null, env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
   assert.equal(publisher.validate(REQUEST).ok, true);
 
   const noPoster = publisher.validate({ ...REQUEST, poster: null });
@@ -1101,7 +1103,7 @@ test("the category is a documented default, overridable, and never anything else
 });
 
 test("unconfigured, the provider says REQUIRES_CONNECTION and still offers the whole handoff", async () => {
-  const publisher = youTubePublisher({ userId: "u1", env: {} });
+  const publisher = youTubePublisher({ userId: "u1", env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
   assert.equal(await publisher.isConfigured(), false);
 
   const prepared = await publisher.prepare(REQUEST);
@@ -1153,7 +1155,7 @@ test("the registry hands YouTube its real provider, and Instagram its own whose 
   assert.equal(publisherFor("instagram", { userId: "u" }).capabilities().canUpload, false);
   // Honest about what it does NOT do, which is as important.
   const caps = publisherFor("youtube", { userId: "u" }).capabilities();
-  assert.equal(caps.canSchedule, false, "nothing here schedules; saying true would offer a dead control");
+  assert.equal(caps.canSchedule, true, "the API supports native scheduled publishing");
   assert.equal(caps.canSetThumbnail, true);
   assert.ok(caps.requires.some((r) => /BOOKREEL_TOKEN_KEY/.test(r)), "and what it needs is named");
 });
@@ -1306,7 +1308,7 @@ test("an unconfigured server refuses to start a publish and does not record one"
   const s = await seed();
   try {
     await assert.rejects(
-      () => startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: {} }),
+      () => startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } }),
       (err: unknown) => {
         const e = err as { status?: number; code?: string; message?: string };
         assert.equal(e.status, 409);
@@ -1572,7 +1574,7 @@ function renderCard(state: Partial<PlatformState>, owned = true): string {
     platform: "youtube",
     label: "YouTube",
     status: "REQUIRES_CONNECTION",
-    capabilities: youTubePublisher({ userId: null, env: {} }).capabilities(),
+    capabilities: youTubePublisher({ userId: null, env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } }).capabilities(),
     hasPublisher: true,
     configured: false,
     problems: [],
@@ -1774,4 +1776,93 @@ test("the integration never reaches the real network without being handed a fetc
     }
   }
   assert.deepEqual(offenders, [], `these call the network directly and cannot be tested: ${offenders.join(", ")}`);
+});
+
+test("native API scheduling verifies BookReel's channel and requires the exact platform publishAt receipt", async () => {
+  for (const receiptPresent of [true, false]) {
+    const s = await seed();
+    try {
+      await storeGrant(s.ownerId, { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: new Date(Date.now() + 3600_000), scope: YOUTUBE_SCOPES.join(" ") }, CONFIGURED);
+      await prisma.platformAccount.update({ where: { userId_provider: { userId: s.ownerId, provider: "youtube" } }, data: { externalAccountId: "UCbook", externalAccountName: "@betweenpages08-l4d" } });
+      const at = new Date(Date.now() + 2 * 86400_000);
+      let sessions = 0;
+      let identities = 0;
+      const mock = stubFetch((url, init) => {
+        if (url.includes("/channels?")) { identities++; return { status: 200, body: { items: [{ id: "UCbook", snippet: { customUrl: "@betweenpages08-l4d", title: "BookReel fixture" } }] } }; }
+        if (url.includes("/upload/youtube/v3/videos")) {
+          assert.ok(identities > 0, "live channel check precedes upload");
+          sessions++;
+          const body = JSON.parse(String(init?.body));
+          assert.deepEqual(body.status, { privacyStatus: "private", publishAt: at.toISOString(), selfDeclaredMadeForKids: false });
+          return { status: 200, headers: { location: "https://upload.example.test/native" } };
+        }
+        if (url.includes("/thumbnails/set")) return { status: 200, body: {} };
+        if (url === "https://upload.example.test/native") return { status: 200, body: { id: "bookVideo01", snippet: { channelId: "UCbook" }, status: { privacyStatus: "private", ...(receiptPresent ? { publishAt: at.toISOString() } : {}) } } };
+        throw new Error(`Unexpected mock URL: ${url}`);
+      });
+      await startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: CONFIGURED, fetchImpl: mock.impl, scheduledAt: at, madeForKids: false, waitForCompletion: true });
+      const job = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: s.ownedEpisodeId, platform: "youtube" } } });
+      assert.equal(job?.status, receiptPresent ? "SCHEDULED" : "AWAITING_HUMAN");
+      assert.equal(job?.scheduledFor?.toISOString() ?? null, receiptPresent ? at.toISOString() : null);
+      assert.equal(job?.publishedAt, null);
+      assert.equal(job?.externalId, "bookVideo01");
+      await startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: CONFIGURED, fetchImpl: mock.impl, scheduledAt: at, madeForKids: false, waitForCompletion: true });
+      assert.equal(sessions, 1, "even an unconfirmed schedule cannot cause another upload");
+    } finally { await s.cleanup(); }
+  }
+});
+
+test("native API scheduling refuses a live channel mismatch before creating an upload session", async () => {
+  const s = await seed();
+  try {
+    await storeGrant(s.ownerId, { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: new Date(Date.now() + 3600_000), scope: YOUTUBE_SCOPES.join(" ") }, CONFIGURED);
+    await prisma.platformAccount.update({ where: { userId_provider: { userId: s.ownerId, provider: "youtube" } }, data: { externalAccountName: "@betweenpages08-l4d" } });
+    const mock = stubFetch(url => {
+      assert.ok(url.includes("/channels?"), "no upload endpoint may be reached");
+      return { status: 200, body: { items: [{ id: "UCother", snippet: { customUrl: "@some-other-channel" } }] } };
+    });
+    await assert.rejects(startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: CONFIGURED, fetchImpl: mock.impl, scheduledAt: new Date(Date.now() + 86400_000), madeForKids: false, waitForCompletion: true }), /Nothing was sent/);
+    assert.equal(await prisma.publishJob.count({ where: { episodeId: s.ownedEpisodeId } }), 0);
+  } finally { await s.cleanup(); }
+});
+
+test("an expired native upload session is held for review instead of creating a second upload", async () => {
+  const file = await tempVideo(1024);
+  try {
+    const mock = stubFetch(url => {
+      assert.equal(url, "https://expired.example.test/native");
+      return { status: 404, body: { error: { message: "gone" } } };
+    });
+    await assert.rejects(uploadVideo("fixture", file, 1024, "video/mp4", SNIPPET, { resumeFrom: "https://expired.example.test/native", schedule: { publishAt: new Date(Date.now() + 86400_000).toISOString(), madeForKids: false } }, mock.impl), /Inspect Studio/);
+    assert.equal(mock.calls.length, 1);
+  } finally { await fs.rm(file, { force: true }); }
+});
+
+test("API restart recovery probes the durable session and holds jobs whose outcome has no receipt", async () => {
+  const { recoverYouTubeUploads } = await import("../src/lib/publish/youtube/run");
+  const { sessionAad } = await import("../src/lib/publish/youtube/secrets");
+  const s = await seed();
+  try {
+    await storeGrant(s.ownerId, { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: new Date(Date.now() + 3600_000), scope: YOUTUBE_SCOPES[0] }, CONFIGURED);
+    const session = "https://upload.example.test/restarted";
+    await prisma.publishJob.create({ data: { episodeId: s.ownedEpisodeId, platform: "youtube", mode: "api", status: "UPLOADING", workerPid: process.pid, attempts: 1, sessionUrlEnc: seal(session, sessionAad(s.ownedEpisodeId), CONFIGURED) } });
+    await prisma.publishJob.create({ data: { episodeId: s.ownerlessEpisodeId, platform: "youtube", mode: "api", status: "UPLOADING", workerPid: process.pid, attempts: 1 } });
+    await recoverYouTubeUploads();
+    const jobs = await prisma.publishJob.findMany({ where: { episodeId: { in: [s.ownedEpisodeId, s.ownerlessEpisodeId] } } });
+    assert.equal(jobs.find(job => job.episodeId === s.ownedEpisodeId)?.status, "QUEUED");
+    assert.equal(jobs.find(job => job.episodeId === s.ownerlessEpisodeId)?.status, "AWAITING_HUMAN");
+    let probes = 0;
+    const mock = stubFetch((url, init) => {
+      if (url.includes("/thumbnails/set")) return { status: 200, body: {} };
+      assert.equal(url, session, "never open a second upload session");
+      assert.match((init?.headers as Record<string, string>)["Content-Range"], /^bytes \*\//, "query accepted bytes before sending any data");
+      probes++;
+      return { status: 200, body: { id: "recovered01", snippet: {}, status: { privacyStatus: "private" } } };
+    });
+    await startYouTubePublish(s.ownerId, s.ownedEpisodeId, { env: CONFIGURED, fetchImpl: mock.impl, waitForCompletion: true });
+    const recovered = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: s.ownedEpisodeId, platform: "youtube" } } });
+    assert.equal(recovered?.externalId, "recovered01");
+    assert.equal(recovered?.status, "PUBLISHED");
+    assert.equal(probes, 1);
+  } finally { await s.cleanup(); }
 });

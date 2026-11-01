@@ -14,6 +14,7 @@
 import { isThemeSetting, THEME_SETTING_AUTO } from "../video/composition/themes";
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../media/pocket-tts";
 import { MOODS } from "../media/moods";
+import { DEFAULT_GEMINI_MODEL_ID, GEMINI_MODELS } from "../strings";
 import { getSetting } from "../db";
 
 /**
@@ -27,6 +28,7 @@ import { getSetting } from "../db";
 export const SETTING_KEYS = [
   "theme", "voiceId", "voiceProvider",
   "musicMood", "musicIntensity", "musicLevel", "musicDuck",
+  "cliProvider", "geminiModel",
 ] as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[number];
@@ -45,9 +47,12 @@ export const SETTING_FALLBACKS: Record<SettingKey, string> = {
   musicIntensity: "1",
   musicLevel: "-22", // BED_MEAN_DB in ffmpeg.ts — the level shipped today.
   musicDuck: "normal",
+  cliProvider: "claude-cli",
+  geminiModel: DEFAULT_GEMINI_MODEL_ID,
 };
 
 const VOICE_IDS = POCKET_VOICES.map((v) => v.id);
+const GEMINI_MODEL_IDS = GEMINI_MODELS.map((m) => m.id);
 const DUCKS = ["off", "light", "normal", "strong"];
 
 /**
@@ -171,5 +176,9 @@ export function validateSetting(
       return intIn(value, -40, -13);
     case "musicDuck":
       return oneOf(value, DUCKS);
+    case "cliProvider":
+      return oneOf(value, ["claude-cli", "codex-cli", "gemini"]);
+    case "geminiModel":
+      return oneOf(value, GEMINI_MODEL_IDS);
   }
 }

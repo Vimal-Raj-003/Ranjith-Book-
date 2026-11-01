@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Badge, Hint, StatRow } from "./ui";
+import { Badge, Disclosure, Hint, StatRow } from "./ui";
 import { useToast } from "./Toast";
 import { strings } from "@/lib/strings";
 import type { PlatformState } from "@/lib/publish/view";
@@ -17,7 +17,14 @@ import type { PlatformState } from "@/lib/publish/view";
  * 1. IT SAYS WHAT IT IS. A real browser window opens on the computer running
  *    BookReel; the operator may have to sign in there; it drives a website that
  *    can change under it; the API is the recommended route. All of that is on the
- *    card before the button, not behind it.
+ *    card before the button, not behind it. When the server is set to attach to
+ *    the operator's OWN Chrome (`state.browser.attach`) the card says that
+ *    instead -- BookReel opens nothing, manages nothing and closes nothing of
+ *    theirs -- and lists the steps to start that Chrome, open if it cannot be reached.
+ *    When it is set to open the INSTALLED Chrome (`state.browser.channel`) the card
+ *    says that instead: a real Chrome on a dedicated BookReel profile, signed in to
+ *    by hand, never the personal profile -- and that Google may still refuse a
+ *    sign-in in an automated window.
  *
  * 2. NOTHING IS DECLARED OR CONFIRMED ON THE OPERATOR'S BEHALF. "Made for kids"
  *    has NO default -- the button stays inert until one is chosen -- and anything
@@ -37,6 +44,13 @@ import type { PlatformState } from "@/lib/publish/view";
  * 5. NO SECRET, PROFILE OR COOKIE CROSSES THIS FILE. The sign-in lives in a
  *    Chromium profile on the server's disk; the browser sees `BrowserModeView`,
  *    which has no field to put one in.
+ *
+ * 6. THE SIGN-IN BUTTON ONLY ASKS. In channel mode on YouTube the card offers
+ *    "Sign in to YouTube": a POST that makes the SERVER open a plain Chrome on the
+ *    dedicated profile, for the operator to sign in to by hand, once. It sends the
+ *    platform name and nothing else, receives a sentence back, and never sees a
+ *    password, a cookie or the profile. Google refuses sign-ins in automated
+ *    browsers, so the card says to sign in there, close it, and then publish.
  */
 
 /** Only an app path or an https URL may become an href. The same guard the panel uses. */
@@ -47,6 +61,15 @@ function safeHref(href: string | null | undefined): string | null {
 }
 
 type Visibility = "private" | "unlisted" | "public";
+
+/** The port in the configured address, for the example command. Chrome's usual one when it cannot be read. */
+function portOf(endpoint: string): string {
+  try {
+    return new URL(endpoint).port || "9222";
+  } catch {
+    return "9222";
+  }
+}
 
 export default function BrowserPublish({
   episodeId,
@@ -66,6 +89,10 @@ export default function BrowserPublish({
   const browser = state.browser;
   const job = state.job;
   const isYouTube = state.platform === "youtube";
+  /** Set when the route attaches to the operator's own Chrome instead of opening one. */
+  const attach = browser?.attach ?? null;
+  /** Set when the route opens the INSTALLED Chrome/Edge on a dedicated profile (never when attaching: that outranks it). */
+  const channel = !attach ? (browser?.channel ?? null) : null;
 
   const [visibility, setVisibility] = useState<Visibility>("private");
   const [schedule, setSchedule] = useState("");
@@ -74,6 +101,9 @@ export default function BrowserPublish({
   const [confirming, setConfirming] = useState(false);
   const [looked, setLooked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  /** The server's instruction after the sign-in window opened, kept on the card (a toast is gone in seconds). */
+  const [signInNote, setSignInNote] = useState<string | null>(null);
 
   if (!browser) return null;
 
@@ -124,6 +154,29 @@ export default function BrowserPublish({
     }
   }
 
+  /** Open the one-time sign-in window (a plain Chrome on the dedicated profile). It carries no secret either way. */
+  async function signIn() {
+    if (signingIn) return;
+    setSigningIn(true);
+    try {
+      const res = await fetch("/api/publish/browser/signin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: state.platform }),
+      });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) {
+        setSignInNote(null);
+        toast.show(typeof body.error === "string" ? body.error : c.signIn.failed, "error");
+        return;
+      }
+      setSignInNote(typeof body.message === "string" ? body.message : c.signIn.opened);
+      toast.show(c.signIn.opened, "ok");
+    } finally {
+      setSigningIn(false);
+    }
+  }
+
   const reviewHref = safeHref(job?.reviewUrl);
 
   return (
@@ -133,8 +186,32 @@ export default function BrowserPublish({
         <Badge tone="plain">{c.optional}</Badge>
       </div>
 
-      <p className="hint">{c.intro(state.label)}</p>
+      <p className="hint">
+        {attach
+          ? c.attachIntro(state.label, attach.endpoint)
+          : channel
+            ? c.channelIntro(state.label, c.channelName[channel] ?? channel)
+            : c.intro(state.label)}
+      </p>
       <Hint>{c.recommend}</Hint>
+      {channel && isYouTube && !settled && !inFlight && (
+        <>
+          <Hint>{c.channelYouTube}</Hint>
+          <Hint>{c.channelNote}</Hint>
+        </>
+      )}
+
+      {/* Open when Chrome could not be reached; a folded reminder otherwise. */}
+      {attach && !settled && !inFlight && (
+        <Disclosure summary={c.attachStepsHeading} defaultOpen={!browser.available} quiet>
+          <ol className="pub-requires">
+            {c.attachSteps(state.label, portOf(attach.endpoint)).map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+          <Hint>{c.attachNote}</Hint>
+        </Disclosure>
+      )}
 
       {!browser.available ? (
         <Hint>{browser.reason ?? c.unavailable}</Hint>
@@ -177,6 +254,30 @@ export default function BrowserPublish({
                   <span>{c.ackLabel}</span>
                 </label>
               )}
+            </div>
+          )}
+
+          {/* Channel mode, YouTube: sign in once in a PLAIN Chrome on the dedicated profile; the publish reuses it. */}
+          {channel && isYouTube && !(awaiting && job?.externalId) && (
+            <div className="flex flex-col gap-1">
+              <p className="field-label">{c.signIn.heading}</p>
+              <Hint>{c.signIn.intro(c.channelName[channel] ?? channel)}</Hint>
+              <div className="pub-actions">
+                <button
+                  type="button"
+                  className="chip"
+                  aria-disabled={signingIn ? "true" : undefined}
+                  onClick={() => void signIn()}
+                >
+                  <span className="truncate">{signingIn ? c.signIn.opening : c.signIn.button}</span>
+                </button>
+              </div>
+              {signInNote && (
+                <p className="hint" role="status">
+                  {signInNote}
+                </p>
+              )}
+              <Hint>{c.signIn.closeFirst}</Hint>
             </div>
           )}
 

@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import BrowserPublish from "./BrowserPublish";
 import CopyBlock from "./CopyBlock";
-import InstagramPublish from "./InstagramPublish";
-import YouTubePublish from "./YouTubePublish";
-import { Badge, Disclosure, EmptyState, Hint, Panel, Skeleton, StatRow } from "./ui";
+import PublishFlow from "./PublishFlow";
+import InstagramConnection from "./InstagramConnection";
+import { Badge, Disclosure, EmptyState, Hint, Panel, Skeleton } from "./ui";
 import { useToast } from "./Toast";
 import { strings } from "@/lib/strings";
+import { safeHref } from "@/lib/publish/flow";
 import {
   PLATFORM_LIMITS,
   hashtagLine,
@@ -27,77 +27,52 @@ import {
   type MetadataField,
   type PlatformState,
   type PublicThumb,
-  type PublishStatus,
   type PublishView,
   type VariantField,
 } from "@/lib/publish/view";
-import type { BadgeTone } from "./ui";
 import type { EpisodeState } from "./types";
 
 /**
- * The Publish Center: what goes out, what it says, where it stands, and what is
- * stopping it.
+ * The Publish page: what goes out, what it says, where it goes, and what happened.
  *
- * It replaces `PublishPanel`, which was forty-eight lines and a `<details>`
- * holding four copy-to-clipboard boxes. Those four boxes are still here, byte
- * for byte, under the same heading — the operator has been pasting from them
- * for months and a rewrite that improved them would have broken a habit for no
- * reason. Everything else is new: the readiness verdict, the assets, the
- * editable metadata with a per-field Regenerate, and a card per platform.
+ * It is laid out the way the operator drew it, top to bottom:
+ *
+ *   1. the header, `Publish – <video title>`;
+ *   2. the video and its thumbnail, side by side, each with its Download;
+ *   3. a YouTube block -- Title, Description, Tags, Hashtags, each with Rewrite and Copy --
+ *      and its own Publish;
+ *   4. an Instagram block -- Title, Caption, Hashtags -- the same way;
+ *   5. Visibility, 6. Schedule, and 7. the three publish buttons.
+ *
+ * Blocks 3 to 7 live in `PublishFlow`; the editors inside blocks 3 and 4 are rendered HERE and
+ * handed down, because their drafts, Save, Rewrite (the old Regenerate) and hand-edit protection
+ * are this component's, exactly as they were. The cover picker, the by-hand hand-off and the four
+ * copy blocks the operator has pasted from for months are all still here, folded below.
+ *
+ * THE CONNECTION AND THE BROWSER WINDOW ARE NOT SECTIONS ANY MORE. The OAuth grant card and the
+ * browser-window card used to sit inside every platform card; the operator asked for them gone
+ * from the page. They are gone from the layout, not from the app: `YouTubePublish`,
+ * `InstagramPublish` and `BrowserPublish` still exist, the connect and sign-in routes still
+ * answer, and the publish engine still runs -- the Publish buttons go through it. What a
+ * connection used to show is now said where it matters: a stop for a sign-in is on the result,
+ * with the Sign in button beside it.
  *
  * TWO RULES SHAPE EVERY LINE OF THIS FILE.
  *
- * 1. NOTHING IS FAKED. There is no progress bar, no spinner and no "uploading"
- *    wording for work that is not happening, because nothing in this build
- *    uploads anything. Every platform card says `REQUIRES_CONNECTION` and says
- *    what that means. Every control either does its job or is not rendered: a
- *    Download that would 404 is not shown, and a Publish button does not exist
- *    at all because no provider here can upload (`capabilities().canUpload`).
- *    The one spinner-ish state is on buttons doing real work — a save, a model
- *    call, a record — and it stops when that work does.
+ * 1. NOTHING IS FAKED. Every status is the job row's, which the engine writes only from the
+ *    platform's own page (or API answer). A press that has not been confirmed is shown as in
+ *    progress or as needing the operator, never as posted. Every control either does its job or
+ *    is not rendered: a Download that would 404 is not shown.
  *
- * 2. THE COPY BLOCKS CANNOT REGRESS. They are fed from the publish view when it
- *    has loaded and from the polled episode snapshot when it has not, so a
- *    failed or stale `GET .../publish` leaves them working exactly as they did
- *    before this surface existed. That is why `copyMetadata` falls back the way
- *    it does rather than rendering nothing until the fetch lands.
+ * 2. THE COPY BLOCKS CANNOT REGRESS. They are fed from the publish view when it has loaded and
+ *    from the polled episode snapshot when it has not, so a failed or stale `GET .../publish`
+ *    leaves them working exactly as they did before this surface existed. That is why
+ *    `copyMetadata` falls back the way it does rather than rendering nothing until the fetch lands.
  *
- * All provider knowledge stops at the API. This component never names an API,
- * never holds a token, and never sees a credential: it renders capabilities,
- * statuses and handoff steps that arrived as JSON. Which is what makes adding
- * YouTube later a change to `src/lib/publish/registry.ts` and nothing here.
+ * All provider knowledge stops at the API. This component never names an API, never holds a token,
+ * and never sees a credential: it renders capabilities, statuses and handoff steps that arrived as
+ * JSON.
  */
-
-const TONE: Record<PublishStatus, BadgeTone> = {
-  NOT_READY: "cancelled",
-  READY: "done",
-  // Violet, the same tone the Queue's "Coming soon" uses: a real connection is
-  // a later workstream, and this is the honest colour for "not yet".
-  REQUIRES_CONNECTION: "soon",
-  PREPARING: "live",
-  UPLOADING: "live",
-  // Waiting on a person is neither progress nor failure; the violet "not yet" tone.
-  AWAITING_HUMAN: "soon",
-  // The platform confirmed it is holding the post: a confirmed result, not yet live.
-  SCHEDULED: "done",
-  PUBLISHED: "done",
-  FAILED: "failed",
-};
-
-/**
- * Only an app-relative path or an https URL may become an `href`.
- *
- * Today every one of these comes from `limits.ts` (a constant) or from the
- * server's own asset URLs, so nothing can fail this. It is here because the
- * handoff steps are DATA from a provider, and the first third-party provider
- * that returns a `javascript:` label would otherwise find a DOM sink waiting
- * for it. A refused href renders as plain text, not as a dead link.
- */
-function safeHref(href: string | undefined): string | null {
-  if (typeof href !== "string") return null;
-  if (href.startsWith("/")) return href;
-  return /^https:\/\//i.test(href) ? href : null;
-}
 
 /** The character or tag count beside a field, red when it is over. */
 function Measure({ field }: { field: VariantField }) {
@@ -113,7 +88,7 @@ function Measure({ field }: { field: VariantField }) {
   );
 }
 
-function CopyButton({ label, text }: { label: string; text: string }) {
+function CopyButton({ label, text, ariaLabel }: { label: string; text: string; ariaLabel?: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -122,6 +97,8 @@ function CopyButton({ label, text }: { label: string; text: string }) {
     <button
       type="button"
       className="chip"
+      // Said in full for a screen reader ("Copy title"), because seven buttons that all read "Copy" are not seven answers.
+      aria-label={ariaLabel ? (copied ? strings.publishCenter.flow.copied : ariaLabel) : undefined}
       // Not `disabled`: a control that disables itself drops keyboard focus,
       // and there is nothing to wait for here anyway.
       aria-disabled={text === "" ? "true" : undefined}
@@ -167,39 +144,38 @@ function HandoffControl({ step }: { step: HandoffStep }) {
   );
 }
 
-function PlatformCard({
+/**
+ * The by-hand hand-off for one platform: the files to download, the text to copy, a link to the
+ * platform's own uploader, and the record that says "I handed this over".
+ *
+ * It is the old platform card with its two connection cards taken out. It posts nothing and never
+ * says it did -- the record button only writes down that these words and files were handed over,
+ * and when. It lives in a fold at the bottom of the page, for the day the operator would rather
+ * post it themselves than press Publish.
+ */
+function HandoffCard({
   state,
   recording,
   onRecord,
-  episodeId,
-  owned,
-  onPublished,
 }: {
   state: PlatformState;
   recording: boolean;
   onRecord: () => void;
-  episodeId: string | null;
-  /** Whether this account owns the episode — publishing requires it. */
-  owned: boolean;
-  onPublished: (view: Record<string, unknown>) => void;
 }) {
   const c = strings.publishCenter;
   const job = state.job;
 
   return (
-    <section className="pub-platform" aria-labelledby={`pub-${state.platform}`}>
+    <section className="pub-platform" aria-labelledby={`pub-hand-${state.platform}`}>
       <header className="pub-platform-head">
-        <h4 id={`pub-${state.platform}`} className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
+        <h4 id={`pub-hand-${state.platform}`} className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
           {state.label}
         </h4>
-        <Badge tone={TONE[state.status]}>{c.statusLabel[state.status] ?? state.status}</Badge>
       </header>
 
-      <p className="hint">{c.statusNote[state.status] ?? ""}</p>
-
-      {/* The cover THIS platform will use — the one its handoff downloads and
-          (for YouTube) its upload sets as the thumbnail. Chosen in the picker
-          above; shown here so the card and what goes out cannot disagree. */}
+      {/* The cover THIS platform will use -- the one its handoff downloads and
+          (for YouTube) its upload sets as the thumbnail. Chosen in the picker;
+          shown here so the card and what goes out cannot disagree. */}
       {state.cover && (
         <div className="pub-platform-cover" data-aspect={state.cover.aspect}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -208,108 +184,25 @@ function PlatformCard({
         </div>
       )}
 
-      {/* Said plainly rather than left to be inferred from a missing button. */}
-      {!state.capabilities.canUpload && !state.hasPublisher && <p className="hint">{c.cannotUpload}</p>}
-
-      {/* A platform that CAN upload gets its connection card: the grant, the
-          Connect/Disconnect pair, the one Publish button, measured progress and
-          the review link. It is a separate component because an OAuth grant is
-          a different subject from an episode's metadata — and because nothing
-          platform-specific belongs in this file. The card decides for itself
-          what to show; this only says which platform has one. */}
-      {state.platform === "youtube" && state.capabilities.canUpload && (
-        <YouTubePublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
-      )}
-
-      {/* Instagram has a provider on every install, but it can only upload for a
-          connected account that Instagram itself says is the expected one -- so
-          unlike YouTube the card is keyed on having a provider, not on
-          `canUpload`: it is where the operator connects, and where the reason
-          for "not yet" is said. The hand-off further down is unchanged either way. */}
-      {state.platform === "instagram" && state.hasPublisher && (
-        <InstagramPublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
-      )}
-
-      {/* The OPTIONAL browser-window route, beside the API one and never instead
-          of it. Rendered for any platform that has one; the card says for itself
-          whether it can run here, and the API card above stays the recommended way. */}
-      {state.browser && (
-        <BrowserPublish episodeId={episodeId} state={state} owned={owned} onPublished={onPublished} />
-      )}
-
-      {/* `PublishJob` carries an externalId only when a platform returned one,
-          so this block cannot appear without a real confirmation. Nothing in
-          this build can produce one — it is here so the platform workstreams do
-          not have to add it, and so the shape is already proven by a test. */}
-      {job?.publishedAt && job.externalId && (
-        <div className="pub-rows">
-          <StatRow label={c.publishedLabel} value={new Date(job.publishedAt).toLocaleString()} />
-          <StatRow label={c.platformIdLabel} value={job.externalId} />
-          {safeHref(job.externalUrl ?? undefined) && (
-            <a className="chip" href={safeHref(job.externalUrl ?? undefined)!} target="_blank" rel="noopener noreferrer">
-              <span className="truncate">{c.openOn(state.label)}</span>
-            </a>
+      <div className="flex flex-col gap-2">
+        <p className="eyebrow">{c.handoffHeading}</p>
+        <div className="pub-actions">
+          {state.handoff.map((step) => (
+            <HandoffControl key={`${step.kind}-${step.label}`} step={step} />
+          ))}
+        </div>
+        <div className="pub-actions">
+          <button type="button" className="chip" onClick={onRecord} aria-disabled={recording ? "true" : undefined}>
+            <span className="truncate">{recording ? c.recording : c.recordHandoff}</span>
+          </button>
+          {job?.preparedAt && (
+            <span className="hint">
+              {c.recordedAt(new Date(job.preparedAt).toLocaleString())} · {c.attemptsLabel(job.attempts)}
+            </span>
           )}
         </div>
-      )}
-
-      {state.variant.length > 0 && (
-        <ul className="pub-measures" role="list">
-          {state.variant.map((f) => (
-            <li key={f.key}>
-              <span className="truncate" style={{ color: "var(--mute)" }}>{f.label}</span>
-              <Measure field={f} />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {state.problems.length > 0 && (
-        <div className="pub-problems" role="alert">
-          <p className="eyebrow">{c.problemsHeading}</p>
-          <ul role="list">
-            {state.problems.map((p) => (
-              <li key={p}>{p}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {state.handoff.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <p className="eyebrow">{c.handoffHeading}</p>
-          <div className="pub-actions">
-            {state.handoff.map((step) => (
-              <HandoffControl key={`${step.kind}-${step.label}`} step={step} />
-            ))}
-          </div>
-          <div className="pub-actions">
-            <button type="button" className="chip" onClick={onRecord} aria-disabled={recording ? "true" : undefined}>
-              <span className="truncate">{recording ? c.recording : c.recordHandoff}</span>
-            </button>
-            {job?.preparedAt && (
-              <span className="hint">
-                {c.recordedAt(new Date(job.preparedAt).toLocaleString())} · {c.attemptsLabel(job.attempts)}
-              </span>
-            )}
-          </div>
-          <Hint>{c.recordHint}</Hint>
-        </div>
-      )}
-
-      {job?.lastError && state.status === "FAILED" && (
-        <p className="hint" role="alert" style={{ color: "var(--rose)" }}>
-          {job.lastError}
-        </p>
-      )}
-
-      <Disclosure quiet summary={c.requiresHeading}>
-        <ul className="pub-requires" role="list">
-          {state.requires.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
-      </Disclosure>
+        <Hint>{c.recordHint}</Hint>
+      </div>
     </section>
   );
 }
@@ -379,47 +272,56 @@ function FieldEditor({
         </div>
       </div>
 
-      {rows ? (
-        <textarea
-          id={id}
-          className="control"
-          rows={rows}
-          value={value}
-          aria-describedby={hintId}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      ) : (
-        <input
-          id={id}
-          type="text"
-          className="control"
-          value={value}
-          aria-describedby={hintId}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      )}
+      {/* The field on the left, its buttons on the right (they wrap under it on a narrow stage). */}
+      <div className="pub-field-row">
+        <div className="pub-field-input">
+          {rows ? (
+            <textarea
+              id={id}
+              className="control"
+              rows={rows}
+              value={value}
+              aria-describedby={hintId}
+              onChange={(e) => onChange(e.target.value)}
+            />
+          ) : (
+            <input
+              id={id}
+              type="text"
+              className="control"
+              value={value}
+              aria-describedby={hintId}
+              onChange={(e) => onChange(e.target.value)}
+            />
+          )}
 
-      {hint && <Hint id={hintId}>{hint}</Hint>}
+          {hint && <Hint id={hintId}>{hint}</Hint>}
+        </div>
 
-      <div className="pub-actions">
-        <button
-          type="button"
-          className="chip"
-          data-state={dirty ? "on" : undefined}
-          aria-disabled={!dirty || busy !== null ? "true" : undefined}
-          onClick={() => dirty && busy === null && onSave()}
-        >
-          <span className="truncate">{busy === "save" ? c.saving : c.save}</span>
-        </button>
-        <button
-          type="button"
-          className="chip"
-          aria-disabled={busy !== null ? "true" : undefined}
-          onClick={() => busy === null && onRegenerate()}
-        >
-          <span className="truncate">{busy === "regen" ? c.regenerating : c.regenerate}</span>
-        </button>
-        {copyText !== undefined && <CopyButton label={copyLabel ?? c.copyField} text={copyText} />}
+        <div className="pub-field-actions">
+          {/* Rewrite is the old Regenerate: the same action, the same route, the same overwrite
+              confirmation below. Only the word changed, to the one the wireframe uses. */}
+          <button
+            type="button"
+            className="chip"
+            aria-label={`${c.regenerate} ${name ?? label}`}
+            aria-disabled={busy !== null ? "true" : undefined}
+            onClick={() => busy === null && onRegenerate()}
+          >
+            <span className="truncate">{busy === "regen" ? c.regenerating : c.regenerate}</span>
+          </button>
+          {copyText !== undefined && <CopyButton label={c.flow.copy} ariaLabel={copyLabel ?? c.copyField} text={copyText} />}
+          <button
+            type="button"
+            className="chip"
+            data-state={dirty ? "on" : undefined}
+            aria-label={`${c.save} ${name ?? label}`}
+            aria-disabled={!dirty || busy !== null ? "true" : undefined}
+            onClick={() => dirty && busy === null && onSave()}
+          >
+            <span className="truncate">{busy === "save" ? c.saving : c.save}</span>
+          </button>
+        </div>
       </div>
 
       {confirming && (
@@ -497,10 +399,9 @@ function ThumbnailPicker({
   const igKey = pickPosterFor(thumbnails, choices.instagram, choices.default, "9:16")?.key ?? null;
 
   return (
-    <section className="flex flex-col gap-2" aria-labelledby="pub-thumbs">
-      <h3 id="pub-thumbs" className="eyebrow">
-        {c.thumbnailsHeading}
-      </h3>
+    // Folded under the media row by the page, whose summary already names it, so the section is
+    // labelled rather than headed a second time.
+    <section className="flex flex-col gap-2" aria-label={c.thumbnailsHeading}>
       <Hint>{c.thumbnailsHint}</Hint>
       {thumbnails.length === 0 ? (
         <EmptyState>{c.thumbnailsEmpty}</EmptyState>
@@ -637,7 +538,18 @@ const FIELD_NAMES: Record<MetadataField, string> = {
 
 type Busy = { kind: "save" | "regen"; field: MetadataField } | { kind: "record"; platform: string } | null;
 
-export default function PublishCenter({ episode }: { episode: EpisodeState | null }) {
+export default function PublishCenter({
+  episode,
+  initialView = null,
+}: {
+  episode: EpisodeState | null;
+  /**
+   * A publish view to start from instead of waiting for the first fetch -- the seam a server render
+   * (and the tests, which have no browser) use to see the loaded page. The mount still reads the
+   * server's answer and replaces it, so this can never leave a stale view on screen.
+   */
+  initialView?: PublishView | null;
+}) {
   const c = strings.publishCenter;
   const toast = useToast();
 
@@ -647,7 +559,11 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
    * step. Switching episodes mid-fetch therefore cannot show one video's
    * metadata on another's panel: `view` below is null unless the ids match.
    */
-  const [fetched, setFetched] = useState<{ id: string; view: PublishView | null; error: string | null } | null>(null);
+  const [fetched, setFetched] = useState<{ id: string; view: PublishView | null; error: string | null } | null>(() =>
+    initialView ? { id: initialView.episodeId, view: initialView, error: null } : null,
+  );
+  /** The episode whose drafts the page has started clean for, so a poll's refresh never throws away what is being typed. */
+  const startedFor = useRef<string | null>(null);
   const [drafts, setDrafts] = useState<Partial<Record<MetadataField, string>>>({});
   const [busy, setBusy] = useState<Busy>(null);
   const [confirming, setConfirming] = useState<MetadataField | null>(null);
@@ -695,15 +611,24 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
           // A stale Prisma client is the one failure with a fix the operator can
           // apply, so it gets its own sentence instead of the generic one.
           const message = body?.code === "publish_client_stale" ? c.stale : (body?.error ?? c.loadFailed);
-          setFetched({ id, view: null, error: message });
+          // A refresh that fails while this episode's page is already up keeps the page: the choices,
+          // the open confirmation and a publish in flight are not thrown away for one dropped poll.
+          setFetched((prev) => (prev && prev.id === id && prev.view ? { ...prev, error: message } : { id, view: null, error: message }));
           return;
         }
         setFetched({ id, view: body as PublishView, error: null });
-        setDrafts({});
-        setConfirming(null);
+        // Fresh drafts only the first time this episode loads. The page re-reads while a publish is in
+        // flight (every 1.5s), and clearing here on every read threw away whatever was being typed.
+        if (startedFor.current !== id) {
+          startedFor.current = id;
+          setDrafts({});
+          setConfirming(null);
+        }
       } catch {
         // An aborted fetch is this component moving on, not a failure.
-        if (live) setFetched({ id, view: null, error: c.loadFailed });
+        if (live) {
+          setFetched((prev) => (prev && prev.id === id && prev.view ? { ...prev, error: c.loadFailed } : { id, view: null, error: c.loadFailed }));
+        }
       }
     })();
     return () => {
@@ -987,10 +912,81 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
 
   const ready = view?.readiness.ready ?? false;
   const issues = view?.readiness.issues ?? [];
+  const fl = c.flow;
+
+  /** The YouTube block's editors, in the wireframe's order: Title, Description, Tags (keyword), Hashtags. */
+  const youtubeFields = view ? (
+    <>
+      <Hint>{c.metadataHint}</Hint>
+      {showYouTubeNotice && (
+        <GenerateNotice
+          state={genRunning ? "running" : "error"}
+          what={c.generatingYouTube}
+          detail={genError ?? undefined}
+          onGenerate={generateNow}
+        />
+      )}
+      {renderField("title", c.titleLabel, { measure: measureOf("title"), copyLabel: c.copyTitle })}
+      {renderField("description", c.descriptionLabel, { rows: 6, measure: measureOf("description"), copyLabel: c.copyDescription })}
+      {renderField("tags", c.tagsLabel, { rows: 2, hint: c.tagsHint, measure: measureOf("tags"), copyLabel: c.copyTags })}
+      {renderField("hashtags", c.hashtagsLabel, { rows: 2, hint: c.hashtagsHint, measure: measureOf("hashtags"), copyLabel: c.copyHashtags })}
+      <div className="pub-actions">
+        <CopyButton
+          label={c.copyAll}
+          text={[
+            view.metadata.title,
+            "",
+            view.metadata.description,
+            "",
+            `${c.tagsLabel}: ${tagsLine(view.metadata.tags)}`,
+            hashtagLine(view.metadata.hashtags),
+          ].join("\n")}
+        />
+      </div>
+    </>
+  ) : null;
+
+  /**
+   * The Instagram block's editors: Title (the hook), Caption, Hashtags. Written for Instagram rather
+   * than derived from the YouTube description; while they are empty the caption still falls back to
+   * the composed one, and the note says so.
+   */
+  const instagramFields = view ? (
+    <>
+      <Hint>{c.instagramIntro}</Hint>
+      {showInstagramNotice && (
+        <GenerateNotice
+          state={genRunning ? "running" : "error"}
+          what={c.generatingInstagram}
+          detail={genError ?? undefined}
+          onGenerate={generateNow}
+        />
+      )}
+      {!genRunning && !hasIndependentInstagram(view.metadata) && <Hint>{c.instagramDerivedNote}</Hint>}
+      {renderField("igHook", c.igHookLabel, { hint: c.igHookHint, measure: null, copyLabel: c.copyHook })}
+      {renderField("igCaption", c.igCaptionLabel, {
+        rows: 5,
+        measure: charMeasure("caption", shown("igCaption"), PLATFORM_LIMITS.instagram.body),
+        copyLabel: c.copyCaption,
+      })}
+      {renderField("igHashtags", c.igHashtagsLabel, {
+        rows: 2,
+        measure: tagMeasure(shown("igHashtags"), PLATFORM_LIMITS.instagram.hashtags),
+        copyLabel: c.copyHashtags,
+      })}
+      <div className="pub-actions">
+        <CopyButton label={c.copyFullCaption} text={instagramCaption(view.metadata)} />
+      </div>
+      <Hint>{c.regenerateHint}</Hint>
+    </>
+  ) : null;
+
+  const handoffs = view ? view.platforms.filter((p) => p.handoff.length > 0) : [];
 
   return (
     <Panel
-      title={c.heading}
+      className="pub-center"
+      title={fl.headingFor(view?.title ?? episode?.title ?? null)}
       actions={
         view ? (
           <Badge tone={ready ? "done" : "live"}>{ready ? c.ready : c.notReady}</Badge>
@@ -998,9 +994,17 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
       }
     >
       {!episode ? (
-        <EmptyState>{c.none}</EmptyState>
+        // The Instagram account is account-level, not per video, so it is here with nothing picked
+        // too -- you connect it BEFORE choosing a video. Same position in both branches, so picking an
+        // episode keeps the card (and any check in progress) instead of remounting it.
+        <div className="flex flex-col gap-3">
+          <InstagramConnection />
+          <EmptyState>{c.none}</EmptyState>
+        </div>
       ) : (
         <div className="flex flex-col gap-3">
+          <InstagramConnection />
+
           {loadError && (
             <div className="flex flex-col gap-2" role="alert">
               <Hint>{loadError}</Hint>
@@ -1016,178 +1020,58 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
 
           {view && (
             <>
-              {/* The verdict, and when it is no, the whole list rather than the
-                  first thing wrong. `aria-live` because it changes under the
-                  reader after a save or a re-render. */}
-              <div className="pub-missing" aria-live="polite">
-                {ready ? (
-                  <p className="hint">{c.noConfirmation}</p>
-                ) : (
-                  <>
-                    <p className="eyebrow">{issues.length === 1 ? c.missingOne : c.missingMany(issues.length)}</p>
-                    <ul role="list">
-                      {issues.map((i) => (
-                        <li key={i.code}>{i.message}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-              </div>
-
-              <section className="flex flex-col gap-2" aria-labelledby="pub-assets">
-                <h3 id="pub-assets" className="eyebrow">
-                  {c.assetsHeading}
-                </h3>
-                <div className="pub-assets">
-                  <div className="pub-stage">
-                    {view.videoUrl ? (
-                      <video key={view.episodeId} controls playsInline preload="metadata" src={view.videoUrl}>
-                        {c.unsupported}
-                      </video>
-                    ) : (
-                      <p className="preview-note">{c.noVideoYet}</p>
-                    )}
-                  </div>
-
-                  <div className="pub-poster">
-                    {view.poster ? (
-                      /* A plain <img>: the bytes come from a session-guarded
-                         route, not from `public/`, so `next/image` has nothing
-                         to optimise and would only add a second fetch. */
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={view.poster.url} alt={c.posterAlt(view.title ?? view.bookTitle)} />
-                    ) : (
-                      <p className="preview-note">{c.noPosterYet}</p>
-                    )}
-                  </div>
-
-                  <div className="pub-rows">
-                    <StatRow
-                      label={c.videoLabel}
-                      value={view.videoBytes === null ? c.noValue : c.sizeValue(view.videoBytes)}
-                    />
-                    <StatRow
-                      label={c.lengthLabel}
-                      value={view.durationSec === null ? c.noValue : c.durationValue(view.durationSec)}
-                    />
-                    <StatRow label={c.posterLabel} value={view.poster?.key ?? c.noValue} />
-                    <div className="pub-actions">
-                      {view.videoUrl && (
-                        <a className="chip" href={view.videoUrl} download>
-                          <span className="truncate">{c.downloadVideo}</span>
-                        </a>
-                      )}
-                      {view.poster && (
-                        <a className="chip" href={view.poster.url} download>
-                          <span className="truncate">{c.downloadPoster}</span>
-                        </a>
-                      )}
-                    </div>
-                  </div>
+              {/* What is missing, and only when something is: the whole list rather than the first
+                  thing wrong. `aria-live` because it changes under the reader after a save or a
+                  re-render. A finished episode says nothing here -- the badge in the header does. */}
+              {!ready && (
+                <div className="pub-missing" aria-live="polite">
+                  <p className="eyebrow">{issues.length === 1 ? c.missingOne : c.missingMany(issues.length)}</p>
+                  <ul role="list">
+                    {issues.map((i) => (
+                      <li key={i.code}>{i.message}</li>
+                    ))}
+                  </ul>
                 </div>
-              </section>
+              )}
 
-              <section className="flex flex-col gap-3" aria-labelledby="pub-meta">
-                <h3 id="pub-meta" className="eyebrow">
-                  {c.metadataHeading}
-                </h3>
-                <Hint>{c.metadataHint}</Hint>
+              <MediaRow view={view} />
 
-                {/* The YouTube package: title, description, the keyword tags
-                    (distinct from hashtags) and the hashtags. */}
-                <div className="pub-package" aria-labelledby="pub-yt-pkg">
-                  <h4 id="pub-yt-pkg" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
-                    {c.youtubePackageHeading}
-                  </h4>
-                  {showYouTubeNotice && (
-                    <GenerateNotice
-                      state={genRunning ? "running" : "error"}
-                      what={c.generatingYouTube}
-                      detail={genError ?? undefined}
-                      onGenerate={generateNow}
-                    />
-                  )}
-                  {renderField("title", c.titleLabel, { measure: measureOf("title"), copyLabel: c.copyTitle })}
-                  {renderField("description", c.descriptionLabel, { rows: 6, measure: measureOf("description"), copyLabel: c.copyDescription })}
-                  {renderField("tags", c.tagsLabel, { rows: 2, hint: c.tagsHint, measure: measureOf("tags"), copyLabel: c.copyTags })}
-                  {renderField("hashtags", c.hashtagsLabel, { rows: 2, hint: c.hashtagsHint, measure: measureOf("hashtags"), copyLabel: c.copyHashtags })}
-                  <div className="pub-actions">
-                    <CopyButton
-                      label={c.copyAll}
-                      text={[
-                        view.metadata.title,
-                        "",
-                        view.metadata.description,
-                        "",
-                        `${c.tagsLabel}: ${tagsLine(view.metadata.tags)}`,
-                        hashtagLine(view.metadata.hashtags),
-                      ].join("\n")}
-                    />
-                  </div>
-                </div>
-
-                {/* The Instagram package, written for Instagram rather than
-                    derived from the YouTube description. While it is empty the
-                    caption still falls back to the composed one, and the note
-                    says so. */}
-                <div className="pub-package" aria-labelledby="pub-ig-pkg">
-                  <h4 id="pub-ig-pkg" className="font-display text-[13px] font-semibold" style={{ color: "var(--ink)" }}>
-                    {c.instagramPackageHeading}
-                  </h4>
-                  <Hint>{c.instagramIntro}</Hint>
-                  {showInstagramNotice && (
-                    <GenerateNotice
-                      state={genRunning ? "running" : "error"}
-                      what={c.generatingInstagram}
-                      detail={genError ?? undefined}
-                      onGenerate={generateNow}
-                    />
-                  )}
-                  {!genRunning && !hasIndependentInstagram(view.metadata) && <Hint>{c.instagramDerivedNote}</Hint>}
-                  {renderField("igHook", c.igHookLabel, { hint: c.igHookHint, measure: null, copyLabel: c.copyHook })}
-                  {renderField("igCaption", c.igCaptionLabel, {
-                    rows: 5,
-                    measure: charMeasure("caption", shown("igCaption"), PLATFORM_LIMITS.instagram.body),
-                    copyLabel: c.copyCaption,
-                  })}
-                  {renderField("igHashtags", c.igHashtagsLabel, {
-                    rows: 2,
-                    measure: tagMeasure(shown("igHashtags"), PLATFORM_LIMITS.instagram.hashtags),
-                    copyLabel: c.copyHashtags,
-                  })}
-                  <div className="pub-actions">
-                    <CopyButton label={c.copyFullCaption} text={instagramCaption(view.metadata)} />
-                  </div>
-                </div>
-
-                <Hint>{c.regenerateHint}</Hint>
-              </section>
-
-              <ThumbnailPicker
-                thumbnails={view.thumbnails}
-                choices={view.thumbChoices}
-                busy={thumbBusy}
-                onChoose={(platform, key) => void chooseThumbnail(platform, key)}
+              <PublishFlow
+                key={view.episodeId}
+                view={view}
+                episodeId={view.episodeId}
+                onView={accept}
+                youtubeFields={youtubeFields}
+                instagramFields={instagramFields}
               />
 
-              <section className="flex flex-col gap-2" aria-labelledby="pub-platforms">
-                <h3 id="pub-platforms" className="eyebrow">
-                  {c.platformsHeading}
-                </h3>
-                <div className="pub-platforms">
-                  {view.platforms.map((p) => (
-                    <PlatformCard
-                      key={p.platform}
-                      state={p}
-                      recording={busy?.kind === "record" && busy.platform === p.platform}
-                      onRecord={() => void record(p.platform)}
-                      episodeId={id}
-                      owned={view.owned}
-                      onPublished={accept}
-                    />
-                  ))}
-                </div>
-              </section>
+              {/* Still here, folded: the per-platform cover choice (YouTube favours the wide crops,
+                  Instagram the tall ones) the upload and the hand-off both use. */}
+              <Disclosure summary={fl.chooseThumbnail}>
+                <ThumbnailPicker
+                  thumbnails={view.thumbnails}
+                  choices={view.thumbChoices}
+                  busy={thumbBusy}
+                  onChoose={(platform, key) => void chooseThumbnail(platform, key)}
+                />
+              </Disclosure>
+
+              {/* The by-hand route, for the day the operator would rather post it themselves. */}
+              {handoffs.length > 0 && (
+                <Disclosure summary={fl.handoffSummary}>
+                  <Hint>{fl.handoffHint}</Hint>
+                  <div className="pub-platforms">
+                    {handoffs.map((p) => (
+                      <HandoffCard
+                        key={p.platform}
+                        state={p}
+                        recording={busy?.kind === "record" && busy.platform === p.platform}
+                        onRecord={() => void record(p.platform)}
+                      />
+                    ))}
+                  </div>
+                </Disclosure>
+              )}
             </>
           )}
 
@@ -1201,5 +1085,64 @@ export default function PublishCenter({ episode }: { episode: EpisodeState | nul
         </div>
       )}
     </Panel>
+  );
+}
+
+/**
+ * The video and its thumbnail, side by side, each with its Download beneath it. The player is small on
+ * purpose -- the full-size one is the preview above this page -- and is here to confirm WHICH video is
+ * about to go out. A Download that would 404 is not rendered.
+ */
+function MediaRow({ view }: { view: PublishView }) {
+  const c = strings.publishCenter;
+  const f = c.flow;
+  const facts =
+    view.videoBytes === null && view.durationSec === null
+      ? null
+      : f.videoFacts(
+          view.videoBytes === null ? c.noValue : c.sizeValue(view.videoBytes),
+          view.durationSec === null ? c.noValue : c.durationValue(view.durationSec),
+        );
+
+  return (
+    <section className="pub-media" aria-label={f.mediaLabel}>
+      <div className="pub-media-col">
+        <div className="pub-stage">
+          {view.videoUrl ? (
+            <video key={view.episodeId} controls playsInline preload="metadata" src={view.videoUrl}>
+              {c.unsupported}
+            </video>
+          ) : (
+            <p className="preview-note">{c.noVideoYet}</p>
+          )}
+        </div>
+        {facts && <span className="hint">{facts}</span>}
+        {view.videoUrl && (
+          <a className="chip" href={view.videoUrl} download>
+            <span className="truncate">{c.downloadVideo}</span>
+          </a>
+        )}
+      </div>
+
+      <div className="pub-media-col">
+        <div className="pub-poster" style={view.poster ? { aspectRatio: `${view.poster.width} / ${view.poster.height}` } : undefined}>
+          {view.poster ? (
+            /* A plain <img>: the bytes come from a session-guarded route, not
+               from `public/`, so `next/image` has nothing to optimise and would
+               only add a second fetch. */
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={view.poster.url} alt={c.posterAlt(view.title ?? view.bookTitle)} />
+          ) : (
+            <p className="preview-note">{c.noPosterYet}</p>
+          )}
+        </div>
+        {view.poster && <span className="hint">{view.poster.key}</span>}
+        {view.poster && (
+          <a className="chip" href={view.poster.url} download>
+            <span className="truncate">{c.downloadPoster}</span>
+          </a>
+        )}
+      </div>
+    </section>
   );
 }

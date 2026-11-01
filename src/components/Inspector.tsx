@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { strings, VOICES, VIDEO_THEMES, AUTO_THEME_OPTION, recordedVoiceName } from "@/lib/strings";
+import { strings, VOICES, VIDEO_THEMES, AUTO_THEME_OPTION, recordedVoiceName, GENERATION_ENGINES, GEMINI_MODELS, DEFAULT_GEMINI_MODEL_ID, type GeminiModelId, type GenerationEngineId } from "@/lib/strings";
+import type { EngineSnapshot } from "./EngineSelectorModal";
 import { EMPTY_TRACK, displayed, stepTrack, type Track, type WriteEvent } from "@/lib/setting-writes";
 import { Badge, Disclosure, EmptyState, Hint, RailToggle } from "./ui";
 import Thumbnails from "./Thumbnails";
@@ -79,6 +80,7 @@ const SUGGESTION_COUNT = 3;
  * new runtime dependency. Four 24px paths cost less than either.
  */
 const GLYPH = {
+  engine: "M13 2L4 14h7l-1 8 9-12h-7l1-8z",
   theme: "M12 4a8 8 0 1 0 0 16h1.5a1.5 1.5 0 0 0 1.1-2.5 1.5 1.5 0 0 1 1.1-2.5H18a2 2 0 0 0 2-2 8 8 0 0 0-8-9zM7.5 12.5h.01M10 8.5h.01M14 8h.01",
   voice: "M12 4a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3zM6 11a6 6 0 0 0 12 0M12 17v3",
   music: "M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z",
@@ -113,11 +115,19 @@ export default function Inspector({
   episode,
   collapsed = false,
   onToggleCollapsed,
+  engineSnapshot,
+  onOpenEngineModal,
+  onSelectEngine,
+  onRecheckEngine,
 }: {
   episode: EpisodeState | null;
   /** Folded to a strip of chips by the operator. Defaults to open. */
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  engineSnapshot?: EngineSnapshot | null;
+  onOpenEngineModal?: () => void;
+  onSelectEngine?: (provider: GenerationEngineId, confirmUnconfigured?: boolean, geminiModel?: GeminiModelId) => Promise<unknown>;
+  onRecheckEngine?: () => Promise<unknown>;
 }) {
   const toast = useToast();
   const voiceFieldId = useId();
@@ -363,6 +373,10 @@ export default function Inspector({
     : strings.themePanel.summaryUnknown;
 
   const thumbSummary = strings.thumbnails.summary(thumbCount);
+  const currentEngineId = (engineSnapshot?.provider ?? settings.cliProvider) as GenerationEngineId | undefined;
+  const currentEngine = GENERATION_ENGINES.find((e) => e.id === currentEngineId);
+  const currentEngineStatus = currentEngineId ? engineSnapshot?.status?.[currentEngineId] : undefined;
+  const engineSummary = currentEngine ? strings.enginePanel.summary(currentEngine.label) : strings.enginePanel.summaryUnknown;
 
   /**
    * One tree, two shapes — never an early return.
@@ -407,6 +421,7 @@ export default function Inspector({
 
       <div className="rail-strip-chips" hidden={!collapsed}>
         {[
+          { key: "engine", glyph: GLYPH.engine, text: engineSummary },
           { key: "theme", glyph: GLYPH.theme, text: themeSummary },
           { key: "voice", glyph: GLYPH.voice, text: voiceSummary },
           { key: "music", glyph: GLYPH.music, text: musicSummary },
@@ -445,6 +460,118 @@ export default function Inspector({
           that was always open. Eleven themes is six rows of chips; naming the
           chosen one in the summary means the rail answers "what will this
           render look like" without any of that being on screen. */}
+      <Disclosure className="disclosure-panel engine-group" summary={engineSummary} defaultOpen>
+        <div
+          role="group"
+          aria-label={strings.enginePanel.heading}
+          className="chip-grid"
+          style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}
+        >
+          {GENERATION_ENGINES.map((eng) => {
+            const selected = currentEngineId === eng.id;
+            return (
+              <button
+                key={eng.id}
+                type="button"
+                className="chip"
+                data-state={selected ? "on" : "off"}
+                aria-pressed={selected}
+                title={eng.description}
+                onClick={() => {
+                  save("cliProvider", eng.id);
+                  void onSelectEngine?.(eng.id);
+                }}
+              >
+                <span className="truncate">{eng.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {currentEngineId === "gemini" && (
+          <div className="mt-2.5 flex flex-col gap-1.5">
+            <span className="font-mono text-[10.5px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
+              {strings.enginePanel.geminiModelLabel}
+            </span>
+            <div
+              role="group"
+              aria-label={strings.enginePanel.geminiModelLabel}
+              className="chip-grid"
+              style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
+            >
+              {GEMINI_MODELS.map((m) => {
+                const currentGeminiModel = (settings.geminiModel ?? engineSnapshot?.geminiModel ?? DEFAULT_GEMINI_MODEL_ID) as GeminiModelId;
+                const selectedModel = currentGeminiModel === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className="chip"
+                    data-state={selectedModel ? "on" : "off"}
+                    data-gemini-model={m.id}
+                    aria-pressed={selectedModel}
+                    title={`${m.label} — ${m.note}`}
+                    onClick={() => {
+                      save("geminiModel", m.id);
+                      void onSelectEngine?.("gemini", false, m.id);
+                    }}
+                  >
+                    <span className="truncate">{m.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-2.5 flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span
+              className="engine-status-pill"
+              data-ready={currentEngineStatus ? String(currentEngineStatus.signedIn) : undefined}
+            >
+              {currentEngineStatus
+                ? currentEngineStatus.signedIn
+                  ? strings.enginePanel.connected
+                  : strings.enginePanel.notConnected
+                : currentEngine?.label ?? strings.enginePanel.summaryUnknown}
+            </span>
+            <div className="flex items-center gap-1.5">
+              {onRecheckEngine && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  aria-disabled={false}
+                  onClick={() => void onRecheckEngine()}
+                >
+                  {strings.enginePanel.recheckButton}
+                </button>
+              )}
+              {onOpenEngineModal && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  aria-disabled={false}
+                  onClick={onOpenEngineModal}
+                >
+                  {strings.enginePanel.chooseButton}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {currentEngineStatus?.detail && (
+            <p
+              className="hint"
+              style={{ color: currentEngineStatus.signedIn ? "var(--mute)" : "var(--amber)" }}
+            >
+              {currentEngineStatus.detail}
+            </p>
+          )}
+          <Hint>{strings.enginePanel.hint}</Hint>
+        </div>
+      </Disclosure>
+
       <Disclosure className="disclosure-panel theme-group" summary={themeSummary} defaultOpen>
         {/* Still five real buttons carrying aria-pressed — a shorter row, not
             a weaker control. The name is the label; the description moved to

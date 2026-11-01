@@ -36,6 +36,7 @@
  * "posted".
  */
 import { prisma } from "@/lib/db";
+import { recordAttempt } from "@/lib/publish/history";
 import { AppError } from "@/lib/errors";
 import { isPublishRefused, type PreparedPublish, type PublishOutcome } from "../contract";
 import { PLATFORM_LABELS, type PlatformId } from "../limits";
@@ -45,15 +46,19 @@ import type { PublishView } from "../view";
 import type { EnvLike } from "../youtube/secrets";
 import {
   browserOptionProblems,
-  chromiumProblem,
+  browserProblem,
   type BrowserDeps,
   type BrowserPublishOptions,
   type BrowserPublisher,
 } from "./engine";
 import { markLive, unmarkLive, isBrowserJobLive } from "./live";
 import { recoverInterruptedBrowserJobs } from "./recover";
+import { assertPublishingEnabled } from "../execution";
+import type { PublishRequest } from "../contract";
 
 export interface StartBrowserOptions extends BrowserPublishOptions {
+  /** Internal, server-owned snapshot from an activated schedule. */
+  frozenRequest?: PublishRequest;
   /**
    * The caller's statement that they have looked at the platform after an
    * AWAITING_HUMAN stop and want to go again. Anything but `true` is refused.
@@ -77,6 +82,7 @@ type JobRow = {
   id: string;
   status: string;
   externalId: string | null;
+  remoteDraftId: string | null;
   mode: string | null;
   attempts: number;
   updatedAt: Date;
@@ -102,15 +108,20 @@ async function claim(
   platform: PlatformId,
   existing: JobRow | null,
   prepared: PreparedPublish,
+  options: BrowserPublishOptions,
 ): Promise<boolean> {
   const fresh = {
     status: "PREPARING",
     mode: "browser",
+    workerPid: process.pid,
+    heartbeatAt: new Date(),
+    optionsJson: JSON.stringify({ scheduledAt: options.scheduledAt, visibility: options.visibility, madeForKids: options.madeForKids, audienceMode: options.audienceMode, timezone: options.timezone, queueOrigin:options.queueOrigin, confirmPublic:options.confirmPublic }),
     metadata: JSON.stringify(prepared.metadata),
     preparedAt: prepared.preparedAt,
     // A new attempt starts from nothing: no old error, no old id, no old schedule.
     lastError: null,
-    externalId: null,
+    progress: null,
+    externalId: existing?.externalId ?? null,
     externalUrl: null,
     publishedAt: null,
     scheduledFor: null,
@@ -124,7 +135,9 @@ async function claim(
 
   if (!existing) {
     try {
-      await prisma.publishJob.create({ data: { episodeId, platform, attempts: 1, ...fresh } });
+      await withCriticalDbRetry("claim create", () =>
+        prisma.publishJob.create({ data: { episodeId, platform, attempts: 1, ...fresh } }),
+      );
       return true;
     } catch (err) {
       if (isUniqueViolation(err)) return false;
@@ -132,15 +145,17 @@ async function claim(
     }
   }
 
-  const swap = await prisma.publishJob.updateMany({
-    where: {
-      id: existing.id,
-      updatedAt: existing.updatedAt,
-      externalId: null,
-      status: { notIn: [...IN_FLIGHT, ...SETTLED] },
-    },
-    data: { attempts: { increment: 1 }, ...fresh },
-  });
+  const swap = await withCriticalDbRetry("claim update", () =>
+    prisma.publishJob.updateMany({
+      where: {
+        id: existing.id,
+        updatedAt: existing.updatedAt,
+        externalId: existing.externalId,
+        status: { notIn: [...IN_FLIGHT, ...SETTLED] },
+      },
+      data: { attempts: { increment: 1 }, ...fresh },
+    }),
+  );
   return swap.count === 1;
 }
 
@@ -163,7 +178,10 @@ export async function startBrowserPublish(
   // OWNERSHIP FIRST: this posts under an account and cannot be taken back from
   // here, so it is the strict rule (`userId === user.id`), not the generous one
   // the read paths use.
-  const { request } = await loadPublishRequest(userId, episodeId, platform);
+  const { request: currentRequest } = await loadPublishRequest(userId, episodeId, platform);
+  assertPublishingEnabled(platform, env);
+  const request = options.frozenRequest ?? currentRequest;
+  if (request.episodeId !== episodeId) throw new AppError("bad_snapshot", "The saved upload belongs to another video.", 409);
 
   // A restart's leftovers become AWAITING_HUMAN before anything is decided, so
   // the rules below see the truth rather than a row stuck on PREPARING.
@@ -174,7 +192,7 @@ export async function startBrowserPublish(
 
   // Rule 1. The platform has it (or showed it): never run again.
   if (existing && SETTLED.includes(existing.status)) return publishView(userId, episodeId, { env });
-  if (existing?.externalId) {
+  if (existing?.externalId && !options.scheduledAt) {
     throw new AppError(
       "already_on_platform",
       `${label} already showed a video for this episode (id ${existing.externalId}), so this app will not start another upload. ` +
@@ -196,7 +214,9 @@ export async function startBrowserPublish(
     );
   }
 
-  const problems = browserOptionProblems(platform, options);
+  // Scheduling retries inspect the saved remote object before choosing any file.
+  options = { ...options, resumeDraftId: existing?.remoteDraftId ?? existing?.externalId ?? null };
+  const problems = browserOptionProblems(platform, options, Date.now(), env);
   if (problems.length > 0) {
     const first = problems[0];
     throw new AppError(first.code, problems.map((p) => p.message).join(" "), first.code === "needs_confirmation" ? 409 : 400);
@@ -211,7 +231,8 @@ export async function startBrowserPublish(
   if (!(await publisher.isConfigured())) {
     throw new AppError(
       "requires_connection",
-      chromiumProblem(options.deps) ?? `The ${label} browser route is not available on this server. Nothing was sent.`,
+      (await browserProblem(platform, { env, ...options.deps })) ??
+        `The ${label} browser route is not available on this server. Nothing was sent.`,
       409,
     );
   }
@@ -231,7 +252,7 @@ export async function startBrowserPublish(
   if (!markLive(platform, episodeId)) return publishView(userId, episodeId, { env });
   let claimed: boolean;
   try {
-    claimed = await claim(episodeId, platform, existing, prepared);
+    claimed = await claim(episodeId, platform, existing, prepared, options);
   } catch (err) {
     unmarkLive(platform, episodeId);
     throw err;
@@ -242,7 +263,11 @@ export async function startBrowserPublish(
     return publishView(userId, episodeId, { env });
   }
 
-  const work = runBrowserJob(episodeId, platform, prepared, publisher).finally(() => unmarkLive(platform, episodeId));
+  await recordAttempt(episodeId, platform).catch(error=>console.error("[publish history]",error instanceof Error?error.message:String(error)));
+  const work = runBrowserJob(episodeId, platform, prepared, publisher).finally(async () => {
+    unmarkLive(platform, episodeId);
+    await recordAttempt(episodeId, platform).catch(error=>console.error("[publish history]",error instanceof Error?error.message:String(error)));
+  });
   if (options.waitForCompletion) {
     await work;
   } else {
@@ -313,6 +338,36 @@ export function rowFor(outcome: PublishOutcome): Record<string, unknown> {
   return { status: outcome.status, lastError: outcome.error };
 }
 
+/** Detect transient SQLite write-lock or socket timeout errors that can occur during concurrent progress writes. */
+export function isSqliteLockError(err: unknown): boolean {
+  const code = typeof err === "object" && err !== null && "code" in err ? String((err as { code?: unknown }).code) : "";
+  if (code === "P1008" || code === "P2028" || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /P1008|P2028|SQLITE_BUSY|SQLITE_LOCKED|database is locked|Socket timeout|Operations timed out/i.test(message);
+}
+
+async function withCriticalDbRetry<T>(
+  label: string,
+  op: () => Promise<T>,
+  attempts = 4,
+  baseDelayMs = 75,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await op();
+    } catch (err) {
+      lastErr = err;
+      if (!isSqliteLockError(err) || i === attempts - 1) {
+        console.error(`[publish db critical] ${label} failed:`, err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * The job itself, and the single place a browser outcome becomes a row.
  *
@@ -327,18 +382,68 @@ async function runBrowserJob(
   publisher: BrowserPublisher,
 ): Promise<void> {
   const where = { episodeId_platform: { episodeId, platform } };
+  let writeChain: Promise<void> = Promise.resolve();
+  const enqueueNonCritical = (label: string, op: () => Promise<unknown>): Promise<void> => {
+    const next = writeChain.then(async () => {
+      try {
+        await op();
+      } catch (err) {
+        console.warn(
+          `[publish db progress] Non-critical ${label} write skipped (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+    });
+    writeChain = next.catch(() => {});
+    return next;
+  };
+  const enqueueCritical = <T>(label: string, op: () => Promise<T>): Promise<T> => {
+    const next = writeChain.then(() => withCriticalDbRetry(label, op));
+    writeChain = next.then(
+      () => {},
+      () => {},
+    );
+    return next;
+  };
+  const heartbeat = setInterval(() => {
+    void enqueueNonCritical("heartbeat", () =>
+      prisma.publishJob.updateMany({
+        where: { episodeId, platform, workerPid: process.pid, status: { in: IN_FLIGHT } },
+        data: { heartbeatAt: new Date() },
+      }),
+    );
+  }, 30_000);
+  heartbeat.unref?.();
   try {
     const outcome = await publisher.publish(prepared, {
+      onLog: async (message) => {
+        console.log(`[publish ${platform} ${episodeId}] ${message}`);
+        await enqueueNonCritical("progress log", () =>
+          prisma.publishJob.updateMany({
+            where: { episodeId, platform, status: { in: IN_FLIGHT } },
+            data: { progress: message.slice(0, 1000), heartbeatAt: new Date() },
+          }),
+        );
+      },
+      onMetadata: async (metadata) => {
+        await enqueueCritical("metadata update", () =>
+          prisma.publishJob.update({ where, data: { metadata: JSON.stringify(metadata), heartbeatAt: new Date() } }),
+        );
+      },
+      onCheckpoint: async (remoteDraftId) => {
+        await enqueueCritical("checkpoint update", () =>
+          prisma.publishJob.update({ where, data: { remoteDraftId, heartbeatAt: new Date() } }),
+        );
+      },
       onStage: async (stage) => {
-        await prisma.publishJob.update({ where, data: { status: stage } }).catch(() => {
-          // Losing one stage write must not abort a job that is working.
-        });
+        await enqueueNonCritical("stage update", () =>
+          prisma.publishJob.update({ where, data: { status: stage } }),
+        );
       },
     });
-    await prisma.publishJob.update({ where, data: rowFor(outcome) });
+    await enqueueCritical("outcome update", () => prisma.publishJob.update({ where, data: rowFor(outcome) }));
   } catch (err) {
-    await prisma.publishJob
-      .update({
+    await enqueueCritical("failure state update", () =>
+      prisma.publishJob.update({
         where,
         data: {
           status: "AWAITING_HUMAN",
@@ -346,7 +451,11 @@ async function runBrowserJob(
             `The browser job stopped unexpectedly (${err instanceof Error ? err.message : String(err)}). ` +
             `It is not known how far it got: check ${PLATFORM_LABELS[platform]} before trying again.`,
         },
-      })
-      .catch(() => {});
+      }),
+    ).catch((dbErr) => {
+      console.error("[publish db critical] Could not record AWAITING_HUMAN stop:", dbErr instanceof Error ? dbErr.message : String(dbErr));
+    });
+  } finally {
+    clearInterval(heartbeat);
   }
 }

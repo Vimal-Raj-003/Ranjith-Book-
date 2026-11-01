@@ -49,13 +49,19 @@ export function interruptedMessage(platformLabel: string): string {
 export async function recoverInterruptedBrowserJobs(episodeId?: string): Promise<number> {
   const rows = await prisma.publishJob.findMany({
     where: { mode: "browser", status: { in: IN_FLIGHT }, ...(episodeId ? { episodeId } : {}) },
-    select: { id: true, episodeId: true, platform: true, status: true, updatedAt: true },
+    select: { id: true, episodeId: true, platform: true, status: true, updatedAt: true, workerPid: true, heartbeatAt: true },
   });
 
   let changed = 0;
   for (const row of rows) {
     if (!isPlatformId(row.platform)) continue;
     if (isBrowserJobLive(row.platform, row.episodeId)) continue;
+    // Another local worker is not an interrupted job. Unknown OS permissions
+    // also fail closed; never steal a browser from a possibly live process.
+    if (row.workerPid && row.workerPid !== process.pid) {
+      try { process.kill(row.workerPid, 0); continue; }
+      catch (err) { if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue; }
+    }
     const swap = await prisma.publishJob.updateMany({
       where: { id: row.id, mode: "browser", status: row.status, updatedAt: row.updatedAt },
       data: { status: "AWAITING_HUMAN", lastError: interruptedMessage(PLATFORM_LABELS[row.platform]) },

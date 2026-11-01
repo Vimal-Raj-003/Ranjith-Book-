@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractJson, CliError, run, cliBin, discardScratch, type CliProvider } from "./cli";
+import { extractJson, CliError, run, cliBin, discardScratch, resolveProvider, runCodexCli, runGemini, type CliProvider } from "./cli";
 import { recordCall } from "./cli-metrics";
 
 const TIMEOUT_MS = 6 * 60_000;
@@ -28,7 +28,22 @@ export async function runCliVisionJson<T>(
   schema: object,
   model?: string,
 ): Promise<T> {
-  if (provider !== "claude-cli") {
+  const resolved = resolveProvider(provider);
+  const schemaContract =
+    `\n\nReturn ONLY a single JSON object — no prose, no markdown fence, no explanation before or after.` +
+    ` It must validate against this JSON Schema:\n${JSON.stringify(schema)}`;
+
+  if (resolved === "gemini") {
+    const reply = await runGemini(system + schemaContract, user, model, imagePaths);
+    return extractJson<T>(reply);
+  }
+
+  if (resolved === "codex-cli") {
+    const reply = await runCodexCli(system + schemaContract, user, model, imagePaths);
+    return extractJson<T>(reply);
+  }
+
+  if (resolved !== "claude-cli") {
     throw new CliError(
       "Reading book pages needs the Claude Code CLI. Choose it under Settings → Provider, or add an Anthropic API key.",
     );
@@ -62,12 +77,13 @@ export async function runCliVisionJson<T>(
       "--strict-mcp-config",
       "--disable-slash-commands",
       "--no-session-persistence",
+      ...(process.env.BOOKREEL_CLI_ISOLATE === "0" ? [] : ["--setting-sources", "project"]),
       "--permission-mode", "acceptEdits",
     ];
     if (model) args.push("--model", model);
 
     const t0 = Date.now();
-    let envelope: { result?: string; subtype?: string } | null = null;
+    let envelope: { is_error?: boolean; result?: string; subtype?: string } | null = null;
     try {
       const { stdout } = await run(cliBin(provider), args, {
         cwd,
@@ -83,9 +99,17 @@ export async function runCliVisionJson<T>(
         );
       }
 
+      if (envelope!.is_error && envelope!.subtype !== "error_max_turns") {
+        const detail =
+          typeof envelope!.result === "string" && envelope!.result.trim()
+            ? envelope!.result.trim()
+            : `The Claude CLI failed while reading a page (${envelope!.subtype ?? "error"}).`;
+        throw new CliError(detail);
+      }
       if (typeof envelope!.result === "string" && envelope!.result.trim()) {
+        const parsed = extractJson<T>(envelope!.result);
         await recordCall("page-reader", Date.now() - t0, envelope);
-        return extractJson<T>(envelope!.result);
+        return parsed;
       }
 
       throw new CliError(

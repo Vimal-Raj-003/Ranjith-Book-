@@ -24,7 +24,10 @@ export interface CallContext {
   step?: string;
 }
 
-export const callContext = new AsyncLocalStorage<CallContext>();
+// Route bundles/alias imports must share the context, just like cancel.ts.
+// Otherwise provider metrics lose the episode and review step at that boundary.
+const metricsGlobal = globalThis as unknown as { bookreelCallContext?: AsyncLocalStorage<CallContext> };
+export const callContext = metricsGlobal.bookreelCallContext ??= new AsyncLocalStorage<CallContext>();
 
 export const METRICS_FILE = path.join(WORK_ROOT, "logs", "model-calls.jsonl");
 

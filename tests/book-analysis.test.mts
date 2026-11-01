@@ -461,3 +461,226 @@ test("the lexical fallback embedder ranks related text above unrelated text", as
   assert.ok(cosine(a, b) > cosine(a, c));
   assert.deepEqual([...fromBytes(toBytes(a))], [...a], "vectors survive the database round trip");
 });
+
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { prisma } from "../src/lib/db";
+import { uploadDir } from "../src/lib/paths";
+import { runBookAnalysis } from "../src/lib/analysis/run";
+
+test("runBookAnalysis fails fast with a clear error on provider ConnectionRefused without wiping existing ideas, and recovers cleanly on retry", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "book-analysis-e2e-"));
+  const fakeBin = path.join(tmpDir, "fake-claude.mjs");
+  const modeFile = path.join(tmpDir, "mode.txt");
+  const countFile = path.join(tmpDir, "count.txt");
+  const prevBin = process.env.CLAUDE_CLI_BIN;
+
+  const b = await prisma.book.create({ data: { title: `Analysis Recovery ${randomUUID()}` } });
+  const u = await prisma.upload.create({
+    data: {
+      bookId: b.id,
+      kind: "pdf",
+      sourcePath: path.join(tmpDir, "book.pdf"),
+      pageCount: 1,
+      status: "FAILED",
+      step: "Finding content ideas",
+    },
+  });
+
+  try {
+    const pagesDir = path.join(uploadDir(u.id), "pages");
+    await fs.mkdir(pagesDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pagesDir, "manifest.json"),
+      JSON.stringify({ pageCount: 1, toc: [] }),
+      "utf8",
+    );
+
+    const paragraph =
+      "Habits are the compound interest of self improvement and getting one percent better every single day counts for a lot in the long run. " +
+      lorem(80);
+    const words = paragraph.split(" ");
+    await prisma.page.create({
+      data: {
+        uploadId: u.id,
+        pageIndex: 0,
+        filePath: path.join(pagesDir, "page-0000.jpg"),
+        derivedPath: path.join(pagesDir, "page-0000.jpg"),
+        width: 1000,
+        height: 1400,
+        visionText: JSON.stringify({
+          pageIndex: 0,
+          chapterHeading: "Chapter 1",
+          paragraphs: [paragraph],
+          legible: true,
+          note: null,
+          headings: [{ text: "Chapter 1", scale: 1.5, top: 0.1 }],
+        }),
+        alignment: JSON.stringify(words.map((word, idx) => ({ word, index: idx, box: { x0: 10, y0: 10, x1: 50, y1: 30 } }))),
+        alignmentConfidence: 1,
+        pageLabel: "1",
+        textSource: "text-layer",
+      },
+    });
+
+    // Seed a pre-existing ContentIdea to prove a failed re-analysis does not wipe it out prematurely.
+    await prisma.contentIdea.create({
+      data: {
+        uploadId: u.id,
+        bookId: b.id,
+        rank: 1,
+        ideaKey: "existing-idea",
+        title: "Existing Idea",
+        coreIdea: "Preserved on failure",
+        hook: "h",
+        whyItMatters: "w",
+        angle: "mental-model",
+        hookPotential: "",
+        storyPotential: "",
+        practicalValue: "",
+        visualPotential: "",
+        sourcePages: "[0]",
+        sourceRefs: "[]",
+        sourceText: "Habits are the compound interest",
+        relatedPages: "[]",
+        scores: "{}",
+        score: 8,
+      },
+    });
+
+    await fs.writeFile(modeFile, "fail", "utf8");
+    await fs.writeFile(countFile, "0", "utf8");
+    await fs.writeFile(
+      fakeBin,
+      `import fs from "node:fs";
+       const mode = fs.readFileSync(${JSON.stringify(modeFile)}, "utf8").trim();
+       const n = Number(fs.readFileSync(${JSON.stringify(countFile)}, "utf8")) + 1;
+       fs.writeFileSync(${JSON.stringify(countFile)}, String(n));
+       let input = "";
+       process.stdin.on("data", d => input += d);
+       process.stdin.on("end", () => {
+         if (mode === "fail") {
+           console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: Unable to connect to API (ConnectionRefused)" }));
+           return;
+         }
+         const isRank = process.argv.some(a => a.includes("commissioning editor"));
+         if (isRank) {
+           console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify({ scores: [] }) }));
+         } else {
+           console.log(JSON.stringify({
+             type: "result",
+             subtype: "success",
+             is_error: false,
+             result: JSON.stringify({
+               ideas: [{
+                 title: "Compound Habits",
+                 coreIdea: "Small daily improvements compound.",
+                 hook: "One percent better.",
+                 whyItMatters: "Long run results.",
+                 angle: "mental-model",
+                 hookPotential: "High",
+                 storyPotential: "High",
+                 practicalValue: "High",
+                 visualPotential: "High",
+                 strength: 9,
+                 quotes: [{ page: 1, text: "Habits are the compound interest of self improvement and getting one percent better" }]
+               }]
+             })
+           }));
+         }
+       });`,
+      "utf8",
+    );
+    process.env.CLAUDE_CLI_BIN = fakeBin;
+
+    await assert.rejects(runBookAnalysis(u.id), /Unable to connect to API \(ConnectionRefused\)/);
+    const failedUpload = await prisma.upload.findUniqueOrThrow({ where: { id: u.id } });
+    assert.equal(failedUpload.status, "FAILED");
+    assert.match(failedUpload.error ?? "", /Unable to connect to API \(ConnectionRefused\)/);
+    assert.doesNotMatch(failedUpload.error ?? "", /Could not read JSON/);
+    const preservedIdeas = await prisma.contentIdea.findMany({ where: { uploadId: u.id } });
+    assert.equal(preservedIdeas.length, 1, "existing ideas are not deleted when Step 4 fails");
+
+    // Now switch the provider to succeed and verify clean recovery.
+    await fs.writeFile(modeFile, "ok", "utf8");
+    await runBookAnalysis(u.id);
+    const recoveredUpload = await prisma.upload.findUniqueOrThrow({ where: { id: u.id } });
+    assert.equal(recoveredUpload.status, "DONE");
+    assert.equal(recoveredUpload.step, "Done");
+    assert.equal(recoveredUpload.error, null);
+    const newIdeas = await prisma.contentIdea.findMany({ where: { uploadId: u.id } });
+    assert.equal(newIdeas.length, 1);
+    assert.equal(newIdeas[0].title, "Compound Habits");
+  } finally {
+    if (prevBin === undefined) delete process.env.CLAUDE_CLI_BIN;
+    else process.env.CLAUDE_CLI_BIN = prevBin;
+    await prisma.book.delete({ where: { id: b.id } }).catch(() => {});
+    await fs.rm(uploadDir(u.id), { recursive: true, force: true }).catch(() => {});
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("PATCH /api/books/[id]/ideas bulk-selects and bulk-deselects all ideas for a book", async () => {
+  const { setIdeasSelection } = await import("../src/lib/ideas-selection");
+  const b = await prisma.book.create({ data: { title: `Bulk Select ${randomUUID()}` } });
+  const u = await prisma.upload.create({
+    data: {
+      bookId: b.id,
+      kind: "pdf",
+      sourcePath: "book.pdf",
+      pageCount: 1,
+      status: "DONE",
+      step: "Done",
+    },
+  });
+  try {
+    const mk = (rank: number) =>
+      prisma.contentIdea.create({
+        data: {
+          uploadId: u.id,
+          bookId: b.id,
+          rank,
+          ideaKey: `idea-${rank}`,
+          title: `Idea ${rank}`,
+          coreIdea: "Core",
+          hook: "Hook",
+          whyItMatters: "Why",
+          angle: "mental-model",
+          hookPotential: "",
+          storyPotential: "",
+          practicalValue: "",
+          visualPotential: "",
+          sourcePages: "[0]",
+          sourceRefs: "[]",
+          sourceText: "Quote",
+          relatedPages: "[]",
+          scores: "{}",
+          score: 8,
+          status: "PROPOSED",
+        },
+      });
+    const i1 = await mk(1);
+    const i2 = await mk(2);
+    const i3 = await mk(3);
+
+    const selectBody = await setIdeasSelection(u.id, null, true);
+    assert.equal(selectBody.ok, true);
+    assert.equal(selectBody.selected, true);
+    assert.equal(selectBody.updated, 3);
+
+    const afterSelect = await prisma.contentIdea.findMany({ where: { uploadId: u.id } });
+    assert.ok(afterSelect.every((i) => i.status === "SELECTED"), "every idea is marked SELECTED");
+
+    const deselectBody = await setIdeasSelection(u.id, null, false, [i1.id, i2.id, i3.id]);
+    assert.equal(deselectBody.ok, true);
+    assert.equal(deselectBody.selected, false);
+    assert.equal(deselectBody.updated, 3);
+
+    const afterDeselect = await prisma.contentIdea.findMany({ where: { uploadId: u.id } });
+    assert.ok(afterDeselect.every((i) => i.status === "PROPOSED"), "every idea is marked PROPOSED");
+  } finally {
+    await prisma.book.delete({ where: { id: b.id } }).catch(() => {});
+  }
+});

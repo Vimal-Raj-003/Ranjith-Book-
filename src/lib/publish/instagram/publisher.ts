@@ -55,6 +55,7 @@ import {
 import { handoffSteps, manualHandoff } from "../manual";
 import { identitySentence, judgeIdentity, type ConnectionView } from "../connect";
 import { expectedHandle } from "../identity";
+import { publishingEnabled } from "../execution";
 import { DEFAULT_MEDIA_TTL_MS, isMediaLinkError, signMediaUrl } from "../media-link";
 import type { EnvLike } from "../youtube/secrets";
 import { ENV, publicBaseProblem } from "./config";
@@ -291,6 +292,7 @@ export function instagramPublisher(ctx: InstagramContext): InstagramPublisher {
     },
 
     publish: async (prepared, hooks: InstagramHooks = {}): Promise<PublishOutcome> => {
+      if (!publishingEnabled("instagram", env)) return { status: "REQUIRES_CONNECTION", error: "Instagram publishing is disabled. YouTube scheduling remains available." };
       const g = await gate().catch((): InstagramGate | null => null);
       if (!g) return { status: "REQUIRES_CONNECTION", error: "Instagram's connection state could not be read." };
       if (!g.ready) return refusal(prepared, g);

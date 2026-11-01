@@ -51,7 +51,8 @@ import type {
 import { handoffSteps } from "../manual";
 import { ENV, publicConfig, studioUrlFor, watchUrlFor } from "./config";
 import type { EnvLike } from "./secrets";
-import { YouTubeNotConnected, accessTokenFor, connectionFor, noteChannel } from "./accounts";
+import { YouTubeNotConnected, accessTokenFor, connectionFor, noteChannel, verifyChannelIdentity } from "./accounts";
+import { judgeApiSchedule } from "../native-schedule";
 import { TAGS_MAX_CHARS, YouTubeApiError, setThumbnail, uploadVideo } from "./upload";
 import type { Fetcher } from "./oauth";
 
@@ -79,6 +80,9 @@ export function categoryId(env: EnvLike = process.env): string {
 }
 
 export interface YouTubeContext {
+  schedule?: { at: Date; madeForKids: boolean };
+  /** Only an explicit operator declaration; never infer this from the video. */
+  madeForKids?: boolean;
   /** Whose grant to use. Null means "nobody", which reads as not connected. */
   userId: string | null;
   env?: EnvLike;
@@ -114,7 +118,8 @@ export function tagsLength(tags: string[]): number {
 
 export function youTubePublisher(ctx: YouTubeContext): Publisher {
   const env = ctx.env ?? process.env;
-  const doFetch = ctx.fetchImpl ?? fetch;
+  const fetcher = ctx.fetchImpl ?? fetch;
+  const doFetch: Fetcher = (url, init) => fetcher(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(120_000) });
   const platform = "youtube" as const;
 
   const capabilities = (): PlatformCapabilities => ({
@@ -126,11 +131,9 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
     // not show a Publish button.
     canUpload: true,
     canSetThumbnail: true,
-    // Not implemented, and so stated as false. YouTube's API can schedule
-    // (`status.publishAt`), but this app uploads as private for the operator to
-    // review, and a scheduler that publishes unreviewed video is the opposite
-    // of that. Saying `true` here would offer a control that does nothing.
-    canSchedule: false,
+    // Explicitly activated plans use private + future publishAt with readback.
+    // Ordinary API uploads retain the existing private-review behavior.
+    canSchedule: true,
     // It reports the video id and the privacy the platform recorded.
     canReportBack: true,
     limits: PLATFORM_LIMITS[platform],
@@ -244,6 +247,13 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
       }
 
       await hooks.onProgress?.({ status: "PREPARING", bytesSent: 0, totalBytes: prepared.video.bytes });
+      // For scheduling, a live channel identity is mandatory. No cached identity
+      // or missing readonly scope can authorize a future public upload.
+      if (ctx.schedule) {
+        if (!Number.isFinite(ctx.schedule.at.getTime()) || ctx.schedule.at.getTime() < Date.now() + 15 * 60_000) return { status: "FAILED", error: "YouTube needs a future schedule at least 15 minutes away." };
+        const identity = await verifyChannelIdentity(ctx.userId, env, doFetch);
+        if (identity.verdict !== "match") return { status: "REQUIRES_CONNECTION", error: "The active YouTube API channel could not be verified against BookReel's account. Nothing was uploaded." };
+      }
 
       let result;
       try {
@@ -260,6 +270,8 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
           },
           {
             resumeFrom: hooks.resumeFrom ?? null,
+            schedule: ctx.schedule ? { publishAt: ctx.schedule.at.toISOString(), madeForKids: ctx.schedule.madeForKids } : undefined,
+            madeForKids: ctx.madeForKids,
             onSession: hooks.onSession,
             onProgress: (acknowledged, total) =>
               hooks.onProgress?.({ status: "UPLOADING", bytesSent: acknowledged, totalBytes: total }),
@@ -274,7 +286,7 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
           if (err.failure.code === "reauth_required" || err.failure.code === "not_connected") {
             return { status: "REQUIRES_CONNECTION", error: err.failure.message };
           }
-          return { status: "FAILED", error: err.failure.message };
+          return { status: "FAILED", error: err.failure.message, retryable: err.failure.retryable };
         }
         return { status: "FAILED", error: err instanceof Error ? err.message : String(err) };
       }
@@ -282,6 +294,10 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
       // The video is up. Everything from here is extra, and nothing from here
       // may turn a successful upload into a reported failure.
       await noteChannel(ctx.userId, result.channelId, result.channelTitle);
+      if (ctx.schedule) {
+        const receipt = judgeApiSchedule({ privacyStatus: result.privacyStatus ?? undefined, publishAt: result.publishAt ?? undefined }, ctx.schedule.at);
+        if (!receipt.confirmed) return { status: "AWAITING_HUMAN", error: receipt.problems.join(" "), externalId: result.videoId, externalUrl: watchUrlFor(result.videoId) };
+      }
 
       let thumbnail: { applied: boolean; reason: string | null } = {
         applied: false,
@@ -305,6 +321,7 @@ export function youTubePublisher(ctx: YouTubeContext): Publisher {
         confirmedAt: new Date(),
         thumbnail,
         reviewUrl: studioUrlFor(result.videoId),
+        ...(ctx.schedule ? { visibility: "scheduled" as const, scheduledFor: new Date(result.publishAt!) } : {}),
       };
     },
   };

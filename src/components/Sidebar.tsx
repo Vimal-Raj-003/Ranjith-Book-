@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { strings } from "@/lib/strings";
 import { Badge, RailToggle } from "./ui";
 import ThemeToggle from "./ThemeToggle";
@@ -130,6 +131,7 @@ export default function Sidebar({
       </div>
 
       <nav aria-label={strings.nav.label} className="rail-strip-nav" hidden={!collapsed}>
+        <Link href="/schedule" className="rail-chip" aria-label="Weekly Schedule" title="Weekly Schedule"><span aria-hidden>▦</span><span className="rail-text">Schedule</span></Link>
         {ITEMS.map((item) => (
           <button
             key={item.id}
@@ -150,6 +152,7 @@ export default function Sidebar({
 
       <nav className="side-nav" aria-label={strings.nav.label} hidden={collapsed}>
         <ul role="list" className="flex flex-col gap-1">
+          <li><Link href="/schedule" className="nav-item"><span className="nav-glyph" aria-hidden>▦</span><span className="flex-1">Weekly Schedule</span></Link></li>
           {ITEMS.map((item) => (
             <li key={item.id}>
               <button

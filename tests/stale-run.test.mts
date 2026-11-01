@@ -316,3 +316,32 @@ test("an episode this process is genuinely running is NEVER reaped, even with a 
     await prisma.book.delete({ where: { id: book.id } });
   }
 });
+
+test("an Upload this process is actively analysing is never reaped, and a dead RUNNING Upload is reaped", async () => {
+  requireIsolation("these tests create and reap uploads");
+  const book = await prisma.book.create({ data: { title: `Stale upload fixture ${randomUUID()}` } });
+  const upload = await prisma.upload.create({
+    data: { bookId: book.id, kind: "pdf", status: "RUNNING", step: "Finding content ideas" },
+  });
+  const globalRuns = globalThis as unknown as { bookAnalysisRuns?: Set<string> };
+  const running = (globalRuns.bookAnalysisRuns ??= new Set<string>());
+  try {
+    await prisma.$executeRaw`UPDATE Upload SET updatedAt = ${LONG_AGO()} WHERE id = ${upload.id}`;
+
+    running.add(upload.id);
+    try {
+      await reapStaleRuns();
+    } finally {
+      running.delete(upload.id);
+    }
+    const stillAlive = await prisma.upload.findUniqueOrThrow({ where: { id: upload.id } });
+    assert.deepEqual([stillAlive.status, stillAlive.step], ["RUNNING", "Finding content ideas"]);
+
+    await reapStaleRuns();
+    const reaped = await prisma.upload.findUniqueOrThrow({ where: { id: upload.id } });
+    assert.deepEqual([reaped.status, reaped.step], ["FAILED", "Interrupted"]);
+    assert.match(reaped.error ?? "", /stopped responding during "Finding content ideas"/);
+  } finally {
+    await prisma.book.delete({ where: { id: book.id } });
+  }
+});

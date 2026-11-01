@@ -27,9 +27,9 @@
  *
  * WHAT IT WILL NOT DO. It never answers a sign-in, CAPTCHA, two-step prompt or
  * any verification: `assertNoWall` stops the job the moment one is on screen,
- * touching nothing. It never answers "made for kids" itself -- that is a legal
- * declaration, so the request has to carry the operator's answer (the API path
- * leaves it unset for the same reason). And if Studio keeps Next disabled because
+ * touching nothing. Before file selection it reviews the stored script; only a
+ * grounded general-audience assessment allows Not made for kids. Child-directed
+ * or uncertain content is held for human review. If Studio keeps Next disabled because
  * some other required declaration is unanswered, it stops rather than guessing
  * one.
  *
@@ -51,14 +51,20 @@ import type {
 import { handoffSteps } from "../manual";
 import { judgeIdentity } from "../connect";
 import { expectedHandle } from "../identity";
+import type { Page } from "playwright-core";
+import { youtubeScheduleControls, type YouTubeScheduleControls } from "./native-controls";
 import { studioUrlFor, watchUrlFor } from "../youtube/config";
 import { uploadTags, youTubePublisher } from "../youtube/publisher";
+import { reviewStudioVideo, STUDIO_REVIEW_TIMEOUT_MS, type StudioReview } from "./youtube-review";
 import type { EnvLike } from "../youtube/secrets";
 import {
   NeedsHuman,
   assertNoWall,
   browserOptionProblems,
-  chromiumProblem,
+  browserChannel,
+  browserProblem,
+  cdpEndpoint,
+  channelName,
   clickOn,
   desiredVisibility,
   fillIn,
@@ -85,11 +91,11 @@ import {
 export const YT = {
   studio: "https://studio.youtube.com/",
   /** The signed-in shell. Its presence is what "Studio loaded and you are in" means. */
-  appShell: "#create-icon, ytcp-app",
+  appShell: '#create-icon, button[aria-label="Create"], #home-button',
   dialog: "ytcp-uploads-dialog, ytcp-dialog, tp-yt-paper-dialog",
-  createButton: "#create-icon",
+  createButton: '#create-icon, button[aria-label="Create"]',
   uploadItem: "#text-item-0",
-  uploadsDialog: "ytcp-uploads-dialog",
+  uploadsDialog: "ytcp-uploads-dialog tp-yt-paper-dialog, ytcp-uploads-dialog #dialog",
   fileInput: 'ytcp-uploads-dialog input[type="file"], input[type="file"]',
   title: "#title-textarea #textbox",
   description: "#description-textarea #textbox",
@@ -112,7 +118,8 @@ export const YT = {
   dateInput: "ytcp-date-picker input, tp-yt-paper-dialog ytcp-date-picker input",
   timeInput: "#time-of-day-container input, ytcp-time-of-day-picker input",
   done: "#done-button",
-  videoLink: ".video-url-fadeable a, ytcp-video-info a, ytcp-video-share-dialog a[href*='youtu']",
+  videoLink: ".video-url-fadeable a, ytcp-video-info a, ytcp-video-share-dialog a[href*='youtu'], a#video-link",
+  uploadVideoLink: "ytcp-uploads-dialog a[href*='youtube.com/shorts/'], ytcp-uploads-dialog a[href*='youtu.be/'], ytcp-uploads-dialog a[href*='youtube.com/watch?'], ytcp-uploads-dialog a[href*='studio.youtube.com/video/']",
   shareDialog: "ytcp-video-share-dialog",
   editTitle: "#title-textarea #textbox",
   editVisibility: "ytcp-video-metadata-visibility, #visibility-text, ytcp-video-metadata-editor-sidepanel .visibility",
@@ -290,22 +297,35 @@ export function browserYouTubePublisher(ctx: BrowserYouTubeContext = {}): Browse
     label: PLATFORM_LABELS[platform],
     canUpload: true,
     canSetThumbnail: true,
-    // Studio's own "Schedule" control. The API path does not offer this.
+    // Studio's own "Schedule" control; the API route uses native publishAt.
     canSchedule: true,
     // It reads the video's own page back before saying anything succeeded.
     canReportBack: true,
     limits: PLATFORM_LIMITS[platform],
-    requires: [
-      "A Chromium on this server (found automatically; install with `npx playwright-core install chromium` if missing)",
-      "A one-time sign-in to YouTube Studio by you, in the browser window this app opens -- it never types or stores your password",
-      "That window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can sign in and clear any security check yourself",
-      "A verified channel, for the custom thumbnail only -- the video uploads either way",
-    ],
+    requires: cdpEndpoint(env)
+      ? [
+          "Your own Chrome, started by you with remote debugging on (BOOKREEL_PUBLISH_CHROME_CDP) -- this app attaches to it and never launches or closes a browser",
+          "You signed in to YouTube Studio in that Chrome, on the channel this install publishes to -- it never types or stores your password",
+          "A verified channel, for the custom thumbnail only -- the video uploads either way",
+        ]
+      : browserChannel(env)
+        ? [
+            `${channelName(browserChannel(env)!)} installed on this computer (BOOKREEL_PUBLISH_BROWSER_CHANNEL) -- opened on a dedicated BookReel profile, never your personal one`,
+            "A one-time sign-in to YouTube Studio by you, in a normal Chrome window the Sign in button opens on that same profile, on the channel this install publishes to -- it never types or stores your password or copies cookies",
+            "The publishing window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can clear any security check yourself",
+            "A verified channel, for the custom thumbnail only -- the video uploads either way",
+          ]
+      : [
+          "A Chromium on this server (found automatically; install with `npx playwright-core install chromium` if missing)",
+          "A one-time sign-in to YouTube Studio by you, in the browser window this app opens -- it never types or stores your password",
+          "That window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can sign in and clear any security check yourself",
+          "A verified channel, for the custom thumbnail only -- the video uploads either way",
+        ],
   });
 
   const validate = (request: PublishRequest): PublishValidation => requestChecks.validate(request);
 
-  const isConfigured = async (): Promise<boolean> => chromiumProblem(deps) === null;
+  const isConfigured = async (): Promise<boolean> => (await browserProblem(platform, deps)) === null;
 
   return {
     capabilities,
@@ -319,6 +339,7 @@ export function browserYouTubePublisher(ctx: BrowserYouTubeContext = {}): Browse
         platform,
         episodeId: request.episodeId,
         metadata: request.metadata,
+        sourceText: request.sourceText,
         video: request.video,
         poster: request.poster,
         preparedAt: new Date(),
@@ -332,7 +353,17 @@ export function browserYouTubePublisher(ctx: BrowserYouTubeContext = {}): Browse
       const options = ctx.options ?? {};
       const problems = browserOptionProblems(platform, options);
       if (problems.length > 0) return { status: "FAILED", error: problems.map((p) => p.message).join(" ") };
-      return runInSession(platform, deps, (session) => youtubeFlow(session, prepared, options, hooks, env));
+      const review = deps.youtubeReview ?? reviewStudioVideo;
+      let preflight: StudioReview | undefined;
+      if (!options.resumeDraftId) {
+        try {
+          await hooks.onStage?.("PREPARING");
+          preflight = await reviewForUpload(prepared, options, hooks, review);
+        } catch (error) {
+          return finishStop("youtube", isNeedsHuman(error) ? error : new NeedsHuman("ui", `Audience/tag review failed: ${error instanceof Error ? error.message : String(error)}. No browser was opened and no file was selected. Review the failure before retrying.`), false);
+        }
+      }
+      return runInSession(platform, deps, (session) => youtubeFlow(session, prepared, options, hooks, env, deps.youtubeSchedule ?? youtubeScheduleControls, review, preflight));
     },
   };
 }
@@ -357,7 +388,8 @@ async function settleSignedIn(session: BrowserSession): Promise<void> {
     );
   }
   if (verdict.kind === "signed_out") {
-    throw new NeedsHuman("sign_in", humanSentence("youtube", "sign_in", { headless: session.headless }));
+    const { channel } = session;
+    throw new NeedsHuman("sign_in", humanSentence("youtube", "sign_in", { headless: session.headless, channel }));
   }
   if (verdict.kind === "challenge") {
     throw new NeedsHuman("challenge", humanSentence("youtube", "challenge", { headless: session.headless, detail: verdict.why }));
@@ -373,41 +405,59 @@ async function settleSignedIn(session: BrowserSession): Promise<void> {
  * anything that is not private -- a private upload can be deleted, a public or
  * scheduled one on the wrong channel cannot be unseen.
  */
-async function confirmChannel(
+export async function confirmChannel(
   session: BrowserSession,
   visibility: StudioVisibility,
   env: EnvLike,
 ): Promise<void> {
   const { page } = session;
   const channelId = channelIdFrom(page.url());
+  const configuredId = env.BOOKREEL_YOUTUBE_CHANNEL_ID?.trim();
+  if (configuredId) {
+    if (channelId === configuredId) return;
+    throw new NeedsHuman("mismatch", `The active Studio channel (${channelId ?? "unknown"}) does not match BookReel's configured channel ID. Nothing was uploaded.`);
+  }
   let handle: string | null = null;
   if (channelId) {
     try {
-      await page.goto(`https://www.youtube.com/channel/${channelId}`, { waitUntil: "domcontentloaded", timeout: 45_000 });
-      handle = handleFromChannelUrl(page.url());
+      // Read the public redirect in a separate tab, preserving the loaded dashboard.
+      const context = (page as unknown as Page).context?.();
+      const reader = context ? await context.newPage() : page;
+      try {
+        await reader.goto(`https://www.youtube.com/channel/${channelId}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        handle = handleFromChannelUrl(reader.url());
+      } finally {
+        if (reader !== page) await (reader as Page).close().catch(() => {});
+      }
     } catch {
       handle = null;
     }
-    await page.goto(YT.studio, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await settleSignedIn(session);
+    if (!channelIdFrom(page.url())) {
+      await page.goto(YT.studio, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await settleSignedIn(session);
+    }
   }
 
   const expected = expectedHandle("youtube", env);
   const verdict = judgeIdentity(handle, expected);
   if (verdict === "match") return;
   if (verdict === "mismatch") {
+    // Exact, step-by-step guidance. It verifies the handle (`expected`, still
+    // configurable via BOOKREEL_YOUTUBE_HANDLE) and tells the operator how to
+    // switch -- it NEVER switches the channel itself and never claims it did:
+    // the person does it in the open window, then presses Retry.
     throw new NeedsHuman(
       "mismatch",
-      `Wrong YouTube channel. This window is signed in to ${handle}, but this install publishes to ${expected}. ` +
-        "Nothing was published. Switch to the right channel in the open window (or sign in as the right account), then press Retry.",
+      "Wrong YouTube channel. In the open YouTube Studio window, click your profile icon → Switch account → " +
+        `select between_pages (${expected}). ` +
+        "Confirm the channel dashboard, then return to BookReel and click Retry.",
     );
   }
-  if (visibility !== "private") {
+  {
     throw new NeedsHuman(
       "mismatch",
       `YouTube did not say which channel this window is signed in to, so it cannot be checked against ${expected}. ` +
-        "A public, unlisted or scheduled post is not made without that check. Nothing was published. " +
-        "Publish it as private instead, or open the channel in the window and press Retry.",
+        "No file is uploaded without that check. Open the correct channel in the window and press Retry.",
     );
   }
 }
@@ -415,6 +465,12 @@ async function confirmChannel(
 /** A video id the page is showing, from any link that carries one. */
 async function seenVideoId(session: BrowserSession): Promise<string | null> {
   const { page } = session;
+  // Shorts links can sit outside Studio's older video-info container. Prefer
+  // this upload's link over unrelated videos on the dashboard behind it.
+  const uploadHref = await page.locator(YT.uploadVideoLink).first().getAttribute("href", { timeout: 2_000 }).catch(() => null);
+  const uploadId = videoIdFrom(uploadHref);
+  if (uploadId) return uploadId;
+  if (await isShown(page, "ytcp-uploads-dialog")) return null;
   const href = await page.locator(YT.videoLink).first().getAttribute("href", { timeout: 2_000 }).catch(() => null);
   return videoIdFrom(href) ?? videoIdFrom(await readText(page, YT.videoLink));
 }
@@ -526,10 +582,36 @@ async function readVideoPage(session: BrowserSession, videoId: string): Promise<
   if (!(await waitShown(session, YT.editTitle, 45_000))) return null;
   // Studio fills the visibility label in a moment after the title.
   await waitShown(session, YT.editVisibility, 15_000);
+  let visibilityText = await readText(page, YT.editVisibility);
+  if (visibilityWord(visibilityText) === "scheduled" && !parseScheduledText(visibilityText)) {
+    if (!(await isShown(page, YT.dateTrigger))) {
+      await page.locator(YT.editVisibility).first().click({ timeout: 5_000 }).catch(() => {});
+      await waitShown(session, YT.dateTrigger, 5_000);
+    }
+    const dateText = await readText(page, YT.dateTrigger);
+    const timeText = squash(await page.locator(YT.timeInput).first().inputValue({ timeout: 3_000 }).catch(() => ""));
+    if (dateText && timeText) visibilityText = `${visibilityText} ${dateText}, ${timeText}`;
+  }
   return {
     title: await readText(page, YT.editTitle),
-    visibilityText: await readText(page, YT.editVisibility),
+    visibilityText,
   };
+}
+
+async function safeLog(hooks: BrowserHooks, message: string): Promise<void> {
+  try {
+    await hooks.onLog?.(message);
+  } catch (err) {
+    console.warn(`[publish youtube progress] Non-critical progress log skipped (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
+async function reviewForUpload(prepared: PreparedPublish, options: BrowserPublishOptions, hooks: BrowserHooks, review: typeof reviewStudioVideo): Promise<StudioReview> {
+  if (options.madeForKids === true) throw new NeedsHuman("ui", "This video is marked as made for kids. Human audience review is required; BookReel will not change that answer to No.");
+  await safeLog(hooks, `Reviewing the stored video script for audience and relevant tags (${STUDIO_REVIEW_TIMEOUT_MS / 1000}s limit); ${options.resumeDraftId ? "existing draft preserved" : "before opening Studio"}; no new file selected`);
+  const reviewed = await review(prepared);
+  await safeLog(hooks, `Audience review supports a general audience: ${reviewed.reason}`);
+  return reviewed;
 }
 
 async function youtubeFlow(
@@ -538,6 +620,9 @@ async function youtubeFlow(
   options: BrowserPublishOptions,
   hooks: BrowserHooks,
   env: EnvLike,
+  scheduleControls: YouTubeScheduleControls,
+  review: typeof reviewStudioVideo,
+  preflight?: StudioReview,
 ): Promise<PublishOutcome> {
   const { page } = session;
   const visibility = desiredVisibility(options);
@@ -545,14 +630,18 @@ async function youtubeFlow(
   const wall = { appShell: YT.appShell, dialog: YT.dialog };
   let committed = false;
   let videoId: string | null = null;
+  const log = (message: string) => { void safeLog(hooks, message); };
 
   try {
-    await hooks.onStage?.("PREPARING");
+    await Promise.resolve(hooks.onStage?.("PREPARING")).catch(() => {});
 
     // 1. Open Studio. Failing to reach it at all is the one failure that is
     //    certainly harmless: nothing has been touched.
     try {
-      await page.goto(YT.studio, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      log("1. Opening Studio or reusing the loaded dashboard (60s limit)");
+      if (!channelIdFrom(page.url()) || !(await isShown(page, YT.appShell))) {
+        await page.goto(YT.studio, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      }
     } catch (err) {
       return {
         status: "FAILED",
@@ -560,17 +649,39 @@ async function youtubeFlow(
       };
     }
     await settleSignedIn(session);
+    log("2. Verifying BookReel's active YouTube channel (30s limit)");
     await confirmChannel(session, visibility, env);
+    log(`Channel verified: ${channelIdFrom(page.url())}. Next: inspect a saved upload or open Create.`);
+
+    if (options.resumeDraftId) {
+      const id = options.resumeDraftId;
+      if (!scheduledAt || !/^[\w-]{11}$/.test(id)) throw new NeedsHuman("unconfirmed", "An earlier upload has no verified draft ID. Inspect Studio before retrying; another file was not uploaded.");
+      log(`3. Reading existing video ${id}; no new upload`);
+      videoId = id;
+      const inspected = await scheduleControls.inspectRetry(page, id, prepared.metadata, prepared.episodeId, scheduledAt);
+      if (inspected === "confirmed") return { status: "PUBLISHED", externalId: id, externalUrl: watchUrlFor(id), confirmedAt: new Date(), visibility: "scheduled", scheduledFor: scheduledAt };
+      if (await readAriaChecked(session, YT.kidsYes)) throw new NeedsHuman("ui", "The existing Studio draft is marked Made for Kids. Human review is required; BookReel will not replace its audience answer with No.");
+      log("Resuming the verified Studio draft without selecting the video file again");
+    }
+
+    const reviewed = preflight ?? await reviewForUpload(prepared, options, hooks, review);
+    prepared = { ...prepared, metadata: { ...prepared.metadata, tags: reviewed.tags } };
+    await hooks.onMetadata?.(prepared.metadata);
 
     // 2. Create -> Upload videos -> attach the render.
+    if (!videoId) {
+    log("3. Opening Create > Upload videos (each control: 30s limit)");
     await clickOn(session, YT.createButton, "the Create button");
     await clickOn(session, YT.uploadItem, "the \"Upload videos\" menu item");
     if (!(await waitPresent(session, YT.fileInput, 30_000))) {
       throw new NeedsHuman("ui", "The upload dialog did not offer a file picker.");
     }
-    await page.locator(YT.fileInput).first().setInputFiles(prepared.video.path);
-    await hooks.onStage?.("UPLOADING");
+    log("3. Uploading the approved BookReel render (file picker: 60s limit)");
+    await hooks.onCheckpoint?.("youtube-upload-unconfirmed");
+    await page.locator(YT.fileInput).first().setInputFiles(prepared.video.path, { timeout: 60_000 });
+    await Promise.resolve(hooks.onStage?.("UPLOADING")).catch(() => {});
     await assertNoWall("youtube", session, wall);
+    }
 
     // 3. The Details step: either the title box, or a reason Studio will not go on.
     const reachedDetails = await waitShown(session, YT.title, 120_000);
@@ -582,7 +693,9 @@ async function youtubeFlow(
       throw new NeedsHuman("ui", "Studio did not reach the video details step.");
     }
     await assertNoWall("youtube", session, wall);
-    videoId = await seenVideoId(session);
+    videoId = videoId ?? await seenVideoId(session);
+    if (videoId) await hooks.onCheckpoint?.(videoId);
+    log("4. Filling and verifying title, description, thumbnail, audience and tags");
 
     // 4. Title and description, each filled whole and read back.
     await fillIn(session, YT.title, "the title box", prepared.metadata.title);
@@ -595,8 +708,10 @@ async function youtubeFlow(
     }
 
     const thumbnail = await setThumbnail(session, prepared.poster?.path ?? null);
-    await setAudience(session, options.madeForKids === true);
-    await setTags(session, uploadTags(prepared.metadata));
+    await setAudience(session, false); // Only reached after the content review above.
+    await scheduleControls.details?.(page, env, log);
+    if (scheduleControls.tags) await scheduleControls.tags(page, uploadTags(prepared.metadata), log);
+    else await setTags(session, uploadTags(prepared.metadata));
 
     // 5. Next until Visibility. A Next that stays disabled is Studio waiting on
     //    something this app does not answer for the operator.
@@ -621,9 +736,14 @@ async function youtubeFlow(
       throw new NeedsHuman("ui", "Studio never reached the Visibility step.");
     }
     videoId = videoId ?? (await seenVideoId(session));
+    if (videoId) await hooks.onCheckpoint?.(videoId);
 
     // 6. Visibility, then the point of no return.
-    await chooseVisibility(session, visibility, scheduledAt);
+    log(`5. Setting ${visibility} and verifying the platform's date/time`);
+    if (scheduledAt) await scheduleControls.apply(page, scheduledAt, log);
+    else await chooseVisibility(session, visibility, scheduledAt);
+    if (videoId) await hooks.onCheckpoint?.(videoId);
+    if (scheduledAt) await scheduleControls.uploadComplete(page, log);
 
     const ready = await waitUntil(session.clock, async () => (await finalButton(session)).enabled || null, {
       timeoutMs: 10 * 60_000,
@@ -641,8 +761,9 @@ async function youtubeFlow(
     }
     await assertNoWall("youtube", session, wall);
 
-    await page.locator(YT.done).first().click({ timeout: 15_000 });
     committed = true;
+    log(`6. Pressing ${final.label} once; awaiting platform confirmation`);
+    await page.locator(YT.done).first().click({ timeout: 15_000 });
 
     // 7. Wait for Studio to finish the save before leaving the page: navigating
     //    away mid-save could drop it. The share dialog (public/unlisted/scheduled)
@@ -671,6 +792,12 @@ async function youtubeFlow(
     }
 
     // 8. THE CONFIRMATION: the video's own page, read back.
+    log("7. Reading the saved video's platform status");
+    if (scheduledAt) {
+      const result = await scheduleControls.confirm(page, videoId, prepared.metadata.title, scheduledAt);
+      if (!result.ok) throw new NeedsHuman("unconfirmed", result.problem ?? "The saved schedule was not confirmed.", { externalId: videoId, externalUrl: watchUrlFor(videoId) });
+      return { status: "PUBLISHED", externalId: videoId, externalUrl: watchUrlFor(videoId), confirmedAt: new Date(), thumbnail, visibility: "scheduled", scheduledFor: scheduledAt };
+    }
     const read = await readVideoPage(session, videoId);
     if (!read) {
       throw new NeedsHuman(

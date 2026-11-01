@@ -192,6 +192,8 @@ const EPISODE_FIELDS = {
   description: true,
   hashtags: true,
   youtubeTags: true,
+  script: true,
+  voScript: true,
   igHook: true,
   igCaption: true,
   igHashtags: true,
@@ -212,6 +214,8 @@ const EPISODE_FIELDS = {
 } as const;
 
 type EpisodeRow = {
+  script?: string | null;
+  voScript?: string | null;
   id: string;
   userId: string | null;
   status: string;
@@ -349,6 +353,12 @@ function readinessInput(row: EpisodeRow, a: Assets): ReadinessInput {
   };
 }
 
+/** Shared by Weekly Schedule: use the publisher's canonical assets and readiness rules. */
+export async function publishingReadiness(row: EpisodeRow) {
+  const measured = await assets(row);
+  return { ...checkReadiness(readinessInput(row, measured)), videoBytes: measured.videoBytes };
+}
+
 /**
  * The request a publisher is handed, carrying the cover for THAT platform.
  *
@@ -369,7 +379,7 @@ function requestFor(row: EpisodeRow, a: Assets, meta: PublishMetadata, cover: Co
     cover && cover.file && cover.bytes !== null
       ? { path: cover.file, bytes: cover.bytes, url: cover.url, contentType: "image/jpeg" }
       : null;
-  return { episodeId: row.id, metadata: meta, durationSec: row.durationSec, video, poster };
+  return { episodeId: row.id, metadata: meta, durationSec: row.durationSec, video, poster, sourceText: [row.voScript, row.script].filter(Boolean).join("\n\n") || undefined };
 }
 
 export type PublishJobRow = {
@@ -519,7 +529,7 @@ export async function publishView(
       handoff,
       requires: caps.requires,
       // The optional browser-window route: whether it can run here, never whether it has.
-      browser: browserModeFor(platform, { userId, ...ctx }),
+      browser: await browserModeFor(platform, { userId, ...ctx }),
       job: jobView(recorded as PublishJobRow | null, platform),
     });
   }

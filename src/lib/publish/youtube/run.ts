@@ -36,8 +36,9 @@
  * are the ones that matter, and the in-memory one only removes a race.
  */
 import { prisma } from "@/lib/db";
+import { recordAttempt } from "@/lib/publish/history";
 import { AppError } from "@/lib/errors";
-import { isPublishRefused, type PreparedPublish, type PublishProgress } from "../contract";
+import { isPublishRefused, type PreparedPublish, type PublishProgress, type PublishRequest } from "../contract";
 import { loadPublishRequest, publishView } from "../state";
 import type { PublishView } from "../view";
 import { YOUTUBE_PROVIDER, UPLOAD_PRIVACY, publicConfig } from "./config";
@@ -50,11 +51,16 @@ import { expectedHandle } from "../identity";
 import { browserHolds } from "../limits";
 
 /** Episodes with an upload running in THIS process. See layer 3 above. */
-const RUNNING = new Set<string>();
+const apiState = globalThis as unknown as { bookreelYouTubeUploads?: Set<string> };
+const RUNNING = (apiState.bookreelYouTubeUploads ??= new Set<string>());
 
 const keyOf = (episodeId: string) => `${YOUTUBE_PROVIDER}:${episodeId}`;
 
 export interface StartOptions {
+  queueOrigin?: "operator-immediate";
+  scheduledAt?: Date;
+  madeForKids?: boolean;
+  frozenRequest?: PublishRequest;
   env?: EnvLike;
   fetchImpl?: Fetcher;
   /**
@@ -73,10 +79,37 @@ export function isUploading(episodeId: string): boolean {
   return RUNNING.has(keyOf(episodeId));
 }
 
+/** Recover only resumable API work. Uncertain work without a durable session
+ * stays with a person; a browser job is never converted to an API upload. */
+export async function recoverYouTubeUploads(): Promise<void> {
+  const jobs = await prisma.publishJob.findMany({ where: { platform: "youtube", mode: "api", status: { in: ["PREPARING", "UPLOADING"] } } });
+  for (const job of jobs) {
+    if (isUploading(job.episodeId)) continue;
+    if (job.workerPid && job.workerPid !== process.pid) {
+      try { process.kill(job.workerPid, 0); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue; }
+    }
+    await prisma.publishJob.updateMany({ where: { id: job.id, status: job.status, updatedAt: job.updatedAt }, data: {
+      status: job.sessionUrlEnc ? "QUEUED" : "AWAITING_HUMAN",
+      lastError: job.sessionUrlEnc ? "The server restarted; the saved resumable session will be checked before sending bytes." : "The server restarted before a resumable session was durably recorded. Inspect Studio before retrying.",
+    } });
+  }
+}
+
+/** A validation failure must clear durable retry eligibility instead of spinning each tick. */
+export async function stopYouTubeRetry(episodeId: string, error: unknown): Promise<void> {
+  await prisma.publishJob.updateMany({
+    where: { episodeId, platform: "youtube", mode: "api", status: { in: ["QUEUED", "FAILED"] }, externalId: null },
+    data: { status: "FAILED", retryAt: null, lastError: error instanceof Error ? error.message : String(error) },
+  });
+}
+
 type JobRow = {
+  id: string;
+  updatedAt: Date;
   status: string;
   externalId: string | null;
   sessionUrlEnc: string | null;
+  optionsJson?: string | null;
   attempts: number;
   mode?: string | null;
 };
@@ -106,7 +139,10 @@ export async function startYouTubePublish(
   // credential is touched: this is an external, irreversible action, and
   // `loadPublishRequest` is the strict rule (`userId === user.id`), not the
   // generous one the rest of this surface reads with.
-  const { request } = await loadPublishRequest(userId, episodeId);
+  const { request: currentRequest } = await loadPublishRequest(userId, episodeId);
+  const request = options.frozenRequest ?? currentRequest;
+  if (request.episodeId !== episodeId) throw new AppError("bad_snapshot", "The saved upload belongs to another video.", 409);
+  if (options.scheduledAt && typeof options.madeForKids !== "boolean") throw new AppError("made_for_kids_required", "YouTube scheduling requires the saved made-for-kids answer.", 400);
 
   const existing = await currentJob(episodeId);
   if (existing?.externalId) {
@@ -118,6 +154,22 @@ export async function startYouTubePublish(
   if (RUNNING.has(keyOf(episodeId))) {
     // Layer 3. Already in flight in this process.
     return publishView(userId, episodeId, options);
+  }
+  if (existing?.mode === "api" && ["PREPARING", "UPLOADING"].includes(existing.status)) {
+    // A second server/request must not steal an in-flight resumable upload.
+    // Startup recovery alone changes a dead owner's job back to QUEUED.
+    return publishView(userId, episodeId, options);
+  }
+  if (existing?.mode === "api" && existing.status === "AWAITING_HUMAN" && !existing.sessionUrlEnc) {
+    throw new AppError("check_platform", "The previous upload has no durable resumable session. Inspect Studio before creating another upload. Nothing was sent.", 409);
+  }
+  if (existing?.sessionUrlEnc) {
+    let previous: { scheduledAt?: string };
+    try { previous = JSON.parse(existing.optionsJson ?? "{}"); }
+    catch { throw new AppError("unreadable_session", "The saved upload options cannot be read. Inspect Studio before retrying.", 409); }
+    if ((previous.scheduledAt ?? null) !== (options.scheduledAt?.toISOString() ?? null)) {
+      throw new AppError("schedule_changed", "The saved resumable upload belongs to a different publication time. Inspect and reschedule that video in Studio; no second upload was started.", 409);
+    }
   }
   if (browserHolds(existing)) {
     // The optional browser-window route holds this row: it is running, or it stopped
@@ -156,7 +208,8 @@ export async function startYouTubePublish(
     // action that cannot be taken back. A lookup that cannot be made at all
     // (network) falls back to the stored, API-sourced verdict above; a lookup
     // that answers with a different channel, or with none, stops the upload.
-    const live = await verifyChannelIdentity(userId, env, options.fetchImpl);
+    const identityFetch: Fetcher = (url, init) => (options.fetchImpl ?? fetch)(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(30_000) });
+    const live = await verifyChannelIdentity(userId, env, identityFetch);
     if (live.verdict === "mismatch" || (live.verdict === "unverified" && live.channelId !== null)) {
       throw new AppError(
         "identity_blocked",
@@ -166,7 +219,7 @@ export async function startYouTubePublish(
     }
   }
 
-  const publisher = youTubePublisher({ userId, env, fetchImpl: options.fetchImpl });
+  const publisher = youTubePublisher({ userId, env, fetchImpl: options.fetchImpl, madeForKids: options.madeForKids, schedule: options.scheduledAt ? { at: options.scheduledAt, madeForKids: options.madeForKids! } : undefined });
   if (!(await publisher.isConfigured())) {
     throw new AppError(
       "requires_connection",
@@ -193,16 +246,20 @@ export async function startYouTubePublish(
           return open(existing.sessionUrlEnc!, sessionAad(episodeId), env);
         } catch {
           // A session we can no longer decrypt is a session we cannot resume.
-          // Starting fresh is correct and costs one re-upload, which is better
-          // than refusing to publish at all.
-          return null;
+          // An unreadable receipt cannot authorize another upload.
+          throw new AppError("unreadable_session", "The earlier YouTube upload session cannot be decrypted. Inspect Studio before retrying; another upload was not started.", 409);
         }
       })()
     : null;
 
   const base = {
+    mode: "api",
+    workerPid: process.pid,
+    heartbeatAt: new Date(),
+    retryAt: null,
     status: "PREPARING",
     metadata: JSON.stringify(prepared.metadata),
+    optionsJson: JSON.stringify({ scheduledAt: options.scheduledAt?.toISOString() ?? null, madeForKids: options.madeForKids, queueOrigin:options.queueOrigin, confirmPublic:options.queueOrigin === "operator-immediate", frozenRequest:options.frozenRequest }),
     preparedAt: prepared.preparedAt,
     lastError: null,
     totalBytes: prepared.video.bytes,
@@ -211,15 +268,19 @@ export async function startYouTubePublish(
     thumbnailError: null,
     privacyStatus: UPLOAD_PRIVACY,
   };
-  await prisma.publishJob.upsert({
-    where: { episodeId_platform: { episodeId, platform: YOUTUBE_PROVIDER } },
-    create: { episodeId, platform: YOUTUBE_PROVIDER, attempts: 1, ...base },
-    update: { attempts: { increment: 1 }, ...base },
-  });
+  if (existing) {
+    const claimed = await prisma.publishJob.updateMany({ where: { id: existing.id, updatedAt: existing.updatedAt, externalId: null }, data: { attempts: { increment: 1 }, ...base } });
+    if (!claimed.count) return publishView(userId, episodeId, options);
+  } else {
+    try { await prisma.publishJob.create({ data: { episodeId, platform: YOUTUBE_PROVIDER, attempts: 1, ...base } }); }
+    catch (error) { if ((error as { code?: string }).code === "P2002") return publishView(userId, episodeId, options); throw error; }
+  }
 
   RUNNING.add(keyOf(episodeId));
-  const work = runUpload(userId, episodeId, prepared, resumeFrom, options).finally(() => {
+  await recordAttempt(episodeId, "youtube").catch(error=>console.error("[publish history]",error instanceof Error?error.message:String(error)));
+  const work = runUpload(userId, episodeId, prepared, resumeFrom, options).finally(async () => {
     RUNNING.delete(keyOf(episodeId));
+    await recordAttempt(episodeId, "youtube").catch(error=>console.error("[publish history]",error instanceof Error?error.message:String(error)));
   });
 
   if (options.waitForCompletion) {
@@ -250,7 +311,7 @@ async function runUpload(
 ): Promise<void> {
   const env = options.env ?? process.env;
   const where = { episodeId_platform: { episodeId, platform: YOUTUBE_PROVIDER } };
-  const publisher = youTubePublisher({ userId, env, fetchImpl: options.fetchImpl });
+  const publisher = youTubePublisher({ userId, env, fetchImpl: options.fetchImpl, madeForKids: options.madeForKids, schedule: options.scheduledAt ? { at: options.scheduledAt, madeForKids: options.madeForKids! } : undefined });
 
   const writeProgress = async (progress: PublishProgress) => {
     await prisma.publishJob
@@ -260,6 +321,7 @@ async function runUpload(
           status: progress.status,
           uploadedBytes: progress.bytesSent,
           totalBytes: progress.totalBytes,
+          heartbeatAt: new Date(),
         },
       })
       .catch(() => {
@@ -275,8 +337,7 @@ async function runUpload(
       // is what makes layer 2 (resume, never re-upload) possible.
       onSession: async (sessionUrl) => {
         await prisma.publishJob
-          .update({ where, data: { sessionUrlEnc: seal(sessionUrl, sessionAad(episodeId), env) } })
-          .catch(() => {});
+          .update({ where, data: { sessionUrlEnc: seal(sessionUrl, sessionAad(episodeId), env) } });
       },
       resumeFrom,
     });
@@ -285,10 +346,11 @@ async function runUpload(
       await prisma.publishJob.update({
         where,
         data: {
-          status: "PUBLISHED",
+          status: outcome.scheduledFor ? "SCHEDULED" : "PUBLISHED",
           externalId: outcome.externalId,
           externalUrl: outcome.externalUrl,
-          publishedAt: outcome.confirmedAt,
+          publishedAt: outcome.scheduledFor ? null : outcome.confirmedAt,
+          scheduledFor: outcome.scheduledFor ?? null,
           lastError: null,
           uploadedBytes: prepared.video.bytes,
           totalBytes: prepared.video.bytes,
@@ -305,11 +367,19 @@ async function runUpload(
       return;
     }
 
+    const job = await prisma.publishJob.findUnique({ where });
+    // Bounded API retry ladder (1m, 5m, 15m). Only a durable session can
+    // automatically resume; failures with unknown remote state require review.
+    const delays = [60_000, 300_000, 900_000];
+    const retryAt = outcome.status === "FAILED" && outcome.retryable && job?.sessionUrlEnc && job.attempts <= delays.length
+      ? new Date(Date.now() + delays[Math.max(0, job.attempts - 1)]) : null;
     await prisma.publishJob.update({
       where,
       data: {
         status: outcome.status,
+        retryAt,
         lastError: outcome.error,
+        ...(outcome.status === "AWAITING_HUMAN" ? { externalId: outcome.externalId, externalUrl: outcome.externalUrl } : {}),
         // A failed or unconnected attempt keeps its session: the next try
         // resumes rather than re-sending what YouTube already holds.
       },

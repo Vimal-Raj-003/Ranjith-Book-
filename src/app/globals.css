@@ -1680,6 +1680,229 @@ body {
   background: color-mix(in srgb, var(--slab-2) 30%, transparent);
 }
 
+/* The Publish page, as the wireframe draws it ------------------------------
+   Video and thumbnail side by side, each with its Download under it; every
+   metadata field with its buttons on the RIGHT; then Visibility, Schedule and
+   the publish buttons. Everything wraps rather than scrolls sideways: the page
+   sits in a 960px dialog and in a stage that is 320px on a phone. */
+.pub-media {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.pub-media-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pub-media .pub-stage,
+.pub-media .pub-poster {
+  width: min(100%, 220px);
+  max-height: 392px;
+}
+.pub-media .pub-poster {
+  aspect-ratio: 9 / 16;
+}
+.pub-media .chip {
+  width: auto;
+  justify-content: center;
+  padding: 5px 12px;
+}
+/* A field with its buttons beside it. The input takes the room; the buttons keep
+   their width, and drop under it when the stage is too narrow for both. */
+.pub-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.pub-field-input {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pub-field-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 92px;
+}
+.pub-field-actions .chip {
+  justify-content: center;
+  padding: 6px 8px;
+}
+/* Measured on the field row itself, not the window: the same page sits in a 960px dialog and in a
+   410px stage, and it is the room the row has that decides whether the buttons can stand beside it. */
+.pub-field-row {
+  container-type: inline-size;
+}
+@container (max-width: 420px) {
+  .pub-field-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+  }
+  .pub-field-actions .chip {
+    width: auto;
+    padding: 5px 12px;
+  }
+}
+/* The primary action: filled cyan, like the Publish button on an episode card. */
+.pub-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 96px;
+  padding: 7px 16px;
+  border-radius: var(--r-chip);
+  border: 1px solid transparent;
+  background: var(--cyan);
+  color: var(--on-accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pub-primary:hover:not([aria-disabled="true"]) {
+  filter: brightness(1.08);
+}
+.pub-primary[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pub-primary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.pub-publish-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.pub-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mute);
+}
+.pub-reasons li[data-kind="blocked"] {
+  color: var(--ink);
+}
+/* The confirmation for a post that stays private: a quiet box, not the warning tint. */
+.pub-confirm-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* What a platform's job says. The tint follows the status the engine recorded, nothing else. */
+.pub-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.pub-result-head {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.pub-result[data-tone="done"] {
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent);
+  background: color-mix(in srgb, var(--cyan) 7%, transparent);
+}
+.pub-result[data-tone="live"],
+.pub-result[data-tone="soon"] {
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+}
+.pub-result[data-tone="failed"] {
+  border-color: color-mix(in srgb, var(--rose) 40%, transparent);
+  background: color-mix(in srgb, var(--rose) 7%, transparent);
+}
+.pub-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+}
+.pub-strip li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* Visibility: a label and its select, one row per platform. */
+.pub-pair {
+  display: grid;
+  grid-template-columns: minmax(80px, 110px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.pub-pair .field-label {
+  margin-bottom: 0;
+}
+/* Schedule: the field, its calendar button, and Clear. */
+.pub-schedule-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.pub-datetime {
+  flex: 1 1 220px;
+  width: auto;
+  max-width: 320px;
+  color-scheme: dark light;
+}
+/* The calendar is its own button beside the field, so the browser's small built-in
+   one inside it is hidden: two of them would be one too many. */
+.pub-datetime::-webkit-calendar-picker-indicator {
+  display: none;
+}
+.pub-cal {
+  width: auto;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 8px 10px;
+}
+.pub-schedule-row .chip {
+  width: auto;
+}
+/* Inside the Publish dialog the dialog's own bar already reads "Publish — <title>", which is the
+   page's header: the panel's own copy of it is hidden there, and the READY badge keeps the row. */
+.dialog-body .pub-center > .panel-head {
+  justify-content: flex-end;
+}
+.dialog-body .pub-center > .panel-head > h3 {
+  display: none;
+}
+
 /* The per-platform cover picker: the six existing posters, tall and wide
    together, each with its own actions. `auto-fill` so narrow and wide posters
    both lay out without stretching. */
@@ -1951,4 +2174,244 @@ body {
 .app-shell[data-insp="collapsed"] .app-insp::-webkit-scrollbar {
   width: 0;
 }
+
+/* ==========================================================================
+   Generation Engine Selector Modal & Settings
+   ========================================================================== */
+
+.engine-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--void) 76%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.engine-modal-card {
+  width: 100%;
+  max-width: 680px;
+  border-radius: 16px;
+  border: 1px solid var(--line-2);
+  background: var(--slab);
+  color: var(--ink);
+  padding: 28px;
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--void) 70%, transparent);
+}
+
+.engine-modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.engine-modal-bolt {
+  color: var(--amber);
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+}
+
+.engine-modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.engine-modal-subtitle {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--mute);
+  margin-bottom: 22px;
+}
+
+.engine-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .engine-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.engine-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 18px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--slab-2);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
+}
+
+.engine-card:hover:not([aria-disabled="true"]) {
+  border-color: var(--mute);
+  background: color-mix(in srgb, var(--ink) 6%, var(--slab-2));
+}
+
+.engine-card[aria-pressed="true"] {
+  border-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, var(--slab-2));
+}
+
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+
+.engine-badge svg {
+  width: 20px;
+  height: 20px;
+}
+
+.engine-badge[data-engine="claude-cli"] {
+  background: color-mix(in srgb, var(--emerald) 18%, transparent);
+  color: var(--emerald);
+}
+
+.engine-badge[data-engine="codex-cli"] {
+  background: color-mix(in srgb, var(--violet) 22%, transparent);
+  color: var(--violet);
+}
+
+.engine-badge[data-engine="gemini"] {
+  background: color-mix(in srgb, var(--cyan) 20%, transparent);
+  color: var(--cyan);
+}
+
+.engine-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+
+.engine-card-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--mute);
+  margin-bottom: 12px;
+}
+
+.engine-status-pill {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-plex-mono), ui-monospace, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--mute);
+}
+
+.engine-status-pill[data-ready="true"] {
+  color: var(--emerald);
+  border-color: color-mix(in srgb, var(--emerald) 40%, transparent);
+  background: color-mix(in srgb, var(--emerald) 10%, transparent);
+}
+
+.engine-status-pill[data-ready="false"] {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+
+.engine-setup-box {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--void);
+}
+
+.gemini-model-box {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: color-mix(in srgb, var(--slab-2) 65%, var(--void));
+}
+
+.gemini-model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .gemini-model-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gemini-model-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--slab-2);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.gemini-model-btn:hover:not([aria-disabled="true"]) {
+  border-color: var(--mute);
+  background: color-mix(in srgb, var(--ink) 6%, var(--slab-2));
+}
+
+.gemini-model-btn[aria-pressed="true"] {
+  border-color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 14%, var(--slab-2));
+}
+
+.gemini-model-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.gemini-model-note {
+  font-size: 11.5px;
+  color: var(--mute);
+  margin-top: 2px;
+}
+
+.engine-modal-footer {
+  margin-top: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 

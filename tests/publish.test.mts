@@ -121,6 +121,7 @@ test("the status vocabulary is the seven the brief names plus the two browser mo
     "NOT_READY",
     "READY",
     "REQUIRES_CONNECTION",
+    "QUEUED",
     "PREPARING",
     "UPLOADING",
     "AWAITING_HUMAN",

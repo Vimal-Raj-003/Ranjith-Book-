@@ -61,6 +61,12 @@ export function currentSignal(): AbortSignal | undefined {
   return signalStore.getStore();
 }
 
+/** Scope a request deadline without registering/cancelling an episode run. */
+export function withAbortSignal<T>(signal: AbortSignal, work: () => T): T {
+  const parent = currentSignal();
+  return signalStore.run(parent ? AbortSignal.any([parent, signal]) : signal, work);
+}
+
 /** Throws if the run currently executing has been cancelled. Call between steps. */
 export function throwIfCancelled(): void {
   if (signalStore.getStore()?.aborted) throw new CancelledError();

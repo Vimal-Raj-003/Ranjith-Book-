@@ -235,6 +235,7 @@ test("only implemented themes are marked available", async () => {
  * each of which is dependency-free or close to it.
  */
 const CLIENT_SAFE_LIBS = new Set([
+  "@/lib/schedule/plan",
   "@/lib/strings",
   "@/lib/pipeline-steps",
   "@/lib/format-duration",
@@ -266,6 +267,20 @@ const CLIENT_SAFE_LIBS = new Set([
   // token could be put in, so nothing in `youtube/` (Prisma, node:crypto, the
   // client secret) can reach the browser through it.
   "@/lib/publish/connect",
+  // The Weekly Schedule panel's two: the zone-correct time maths and the wire shape of a
+  // schedule. Import-free, and held to that by `tests/schedule.test.mts` -- so neither can
+  // quietly become a route to `store.ts` or `activate.ts`, which import Prisma and the
+  // browser-publish engine and which no component may ever import.
+  "@/lib/schedule/time",
+  "@/lib/schedule/view",
+  // The Publish page's decisions (what a press sends, which route, what a job's report says). Pure;
+  // `tests/publish-page.test.mts` holds it to importing only `limits`, `strings` and the two
+  // schedule modules above, so it cannot become a route to Prisma or the publish engine.
+  "@/lib/publish/flow",
+  // The Instagram account card's wire shape and state rules: the four connection states, the stored look at
+  // the account, and how one becomes the other. Pure; `tests/instagram-connection.test.mts` holds it to
+  // importing nothing but `./connect`, so it cannot become a route to Prisma, Playwright or the browser engine.
+  "@/lib/publish/instagram-connection",
 ]);
 
 test("the poster helpers the client imports have no imports of their own", async () => {
@@ -561,4 +576,23 @@ test("the Regenerate copy is in the strings module, beside Cancel's", () => {
   assert.equal(strings.run.retrying, "Retrying…");
   assert.equal(typeof strings.run.retryError, "string");
   assert.ok(strings.run.retryError.length > 0);
+});
+
+test("BookAnalysis and WeeklySchedule offer Select all and Deselect all buttons wired to bulk selection", async () => {
+  assert.equal(strings.books.selectAll, "Select all");
+  assert.equal(strings.books.deselectAll, "Deselect all");
+  assert.equal(strings.schedule.selectAll, "Select all");
+  assert.equal(strings.schedule.deselectAll, "Deselect all");
+
+  const bookSrc = await fs.readFile(path.join(COMPONENTS, "BookAnalysis.tsx"), "utf8");
+  assert.match(bookSrc, /strings\.books\.selectAll/, "BookAnalysis renders the Select all button");
+  assert.match(bookSrc, /strings\.books\.deselectAll/, "BookAnalysis renders the Deselect all button");
+  assert.match(bookSrc, /toggleAll\(true\)/, "Select all calls toggleAll(true)");
+  assert.match(bookSrc, /toggleAll\(false\)/, "Deselect all calls toggleAll(false)");
+  assert.match(bookSrc, /fetch\(`\/api\/books\/\$\{uploadId\}\/ideas`,\s*\{\s*method:\s*"PATCH"/, "toggleAll persists via PATCH /api/books/[id]/ideas");
+
+  const schedSrc = await fs.readFile(path.join(COMPONENTS, "WeeklySchedule.tsx"), "utf8");
+  assert.match(schedSrc, /c\.selectAll/, "WeeklySchedule renders Select all for finished videos");
+  assert.match(schedSrc, /c\.deselectAll/, "WeeklySchedule renders Deselect all for finished videos");
+
 });

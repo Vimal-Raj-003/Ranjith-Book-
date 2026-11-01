@@ -10,9 +10,18 @@ export const DATABASE_URL =
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
+function sqliteDatasourceUrl(url: string): string {
+  if (!url.startsWith("file:")) return url;
+  const [base, query = ""] = url.split("?", 2);
+  const params = new URLSearchParams(query);
+  if (!params.has("connection_limit")) params.set("connection_limit", "1");
+  if (!params.has("socket_timeout")) params.set("socket_timeout", "30");
+  return `${base}?${params.toString()}`;
+}
+
 export const prisma =
   globalForPrisma.prisma ??
-  new PrismaClient({ datasources: { db: { url: DATABASE_URL } } });
+  new PrismaClient({ datasources: { db: { url: sqliteDatasourceUrl(DATABASE_URL) } } });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 

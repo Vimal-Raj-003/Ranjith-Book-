@@ -47,7 +47,7 @@ import { manualHandoff } from "./manual";
 import { instagramPublisher } from "./instagram/publisher";
 import { youTubePublisher } from "./youtube/publisher";
 import type { EnvLike } from "./youtube/secrets";
-import { chromiumProblem, isHeadless } from "./browser/engine";
+import { browserChannel, cdpEndpoint, cdpProblem, chromiumProblem, isHeadless } from "./browser/engine";
 import type { BrowserDeps, BrowserPublishOptions, BrowserPublisher } from "./browser/engine";
 import { browserInstagramPublisher } from "./browser/instagram";
 import { browserYouTubePublisher } from "./browser/youtube";
@@ -135,15 +135,45 @@ export function publisherFor(platform: PlatformId, ctx: PublisherContext = {}): 
   return make ? make(ctx) : manualHandoff(platform);
 }
 
-/** What the card needs to offer (or explain the absence of) the browser-window route. */
-export function browserModeFor(platform: PlatformId, ctx: PublisherContext = {}): BrowserModeView | null {
+/**
+ * What the card needs to offer (or explain the absence of) the browser-window route.
+ *
+ * With `BOOKREEL_PUBLISH_CHROME_CDP` set the route attaches to the operator's own
+ * Chrome instead of opening one, so `available` is "does that Chrome answer" and
+ * not "is a Chromium installed", and `headless` is false whatever
+ * `BOOKREEL_PUBLISH_HEADLESS` says -- it has no say over a browser it did not start.
+ * That outranks `BOOKREEL_PUBLISH_BROWSER_CHANNEL`: with both set the view is the
+ * attach one and carries no `channel`.
+ */
+export async function browserModeFor(platform: PlatformId, ctx: PublisherContext = {}): Promise<BrowserModeView | null> {
+  if (platform === "instagram" && (ctx.env ?? process.env).BOOKREEL_INSTAGRAM_PUBLISH_ENABLED !== "1") return {
+    available: false, reason: "Instagram publishing execution is disabled. YouTube scheduling remains available.", canSchedule: false, headless: isHeadless(ctx.env ?? process.env),
+    ...(cdpEndpoint(ctx.env ?? process.env) ? { attach: { endpoint: cdpEndpoint(ctx.env ?? process.env)! } } : {}),
+    ...(browserChannel(ctx.env ?? process.env) ? { channel: browserChannel(ctx.env ?? process.env)! } : {}),
+  };
   const publisher = browserPublisherFor(platform, ctx);
   if (!publisher) return null;
-  const problem = chromiumProblem(ctx.browser?.deps);
+  const deps = { env: ctx.env, ...ctx.browser?.deps };
+  const endpoint = cdpEndpoint(deps.env ?? process.env);
+  if (endpoint) {
+    const problem = await cdpProblem(endpoint, deps);
+    return {
+      available: problem === null,
+      reason: problem,
+      canSchedule: publisher.capabilities().canSchedule,
+      headless: false,
+      attach: { endpoint },
+    };
+  }
+  // Launch mode. `chromiumProblem` already knows whether "a browser" is the bundled Chromium
+  // or the installed Chrome/Edge a channel asks for; the view only adds WHICH, for the card's copy.
+  const channel = browserChannel(deps.env ?? process.env);
+  const problem = chromiumProblem(deps);
   return {
     available: problem === null,
     reason: problem,
     canSchedule: publisher.capabilities().canSchedule,
     headless: isHeadless(ctx.env ?? process.env),
+    ...(channel ? { channel } : {}),
   };
 }

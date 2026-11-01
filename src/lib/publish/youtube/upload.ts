@@ -23,10 +23,9 @@
  * WHAT IS DELIBERATELY NOT SET ON THE VIDEO:
  *  - `privacyStatus` is `private`, always, from a constant. There is no code
  *    path in this integration that sends anything else.
- *  - `selfDeclaredMadeForKids` is NOT sent. It is a legal declaration about the
- *    operator's content and this app has no business making it on their behalf;
- *    leaving it unset means YouTube asks them for it in Studio, which is
- *    exactly where this design wants them to finish.
+ *  - `selfDeclaredMadeForKids` is sent only for an explicit operator answer.
+ *    Without that answer, the private-review flow leaves the declaration for
+ *    YouTube Studio. It is never inferred from the video's content.
  *
  * The `fetch` is injectable throughout, which is what lets the test suite drive
  * every branch — a dead session, a 308 with no `Range`, a mid-upload network
@@ -73,6 +72,8 @@ export interface VideoSnippet {
 }
 
 export interface UploadHooks {
+  schedule?: { publishAt: string; madeForKids: boolean };
+  madeForKids?: boolean;
   /** Called once, the moment a resumable session exists, so a retry can resume. */
   onSession?: (sessionUrl: string) => void | Promise<void>;
   /** Called with the bytes YOUTUBE SAYS it holds, after every chunk. */
@@ -82,6 +83,7 @@ export interface UploadHooks {
 }
 
 export interface UploadResult {
+  publishAt: string | null;
   videoId: string;
   channelId: string | null;
   channelTitle: string | null;
@@ -93,7 +95,7 @@ export interface UploadResult {
 interface VideoResource {
   id?: string;
   snippet?: { channelId?: string; channelTitle?: string };
-  status?: { privacyStatus?: string };
+  status?: { privacyStatus?: string; publishAt?: string };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -141,6 +143,7 @@ function videoFrom(body: unknown, alreadyComplete: boolean): UploadResult {
     channelId: resource.snippet?.channelId ?? null,
     channelTitle: resource.snippet?.channelTitle ?? null,
     privacyStatus: resource.status?.privacyStatus ?? null,
+    publishAt: resource.status?.publishAt ?? null,
     alreadyComplete,
   };
 }
@@ -159,6 +162,8 @@ export async function createSession(
   totalBytes: number,
   contentType: string,
   doFetch: Fetcher = fetch,
+  schedule?: { publishAt: string; madeForKids: boolean },
+  madeForKids?: boolean,
 ): Promise<string> {
   const url = `${GOOGLE.videosUpload}?uploadType=resumable&part=snippet%2Cstatus`;
   const body = JSON.stringify({
@@ -166,8 +171,8 @@ export async function createSession(
     status: {
       // Review-first. From a constant, so there is no literal here to edit.
       privacyStatus: UPLOAD_PRIVACY,
-      // The operator declares "made for kids" in Studio; this app does not
-      // declare it for them. See the header comment.
+      ...(schedule ? { publishAt: schedule.publishAt, selfDeclaredMadeForKids: schedule.madeForKids } : typeof madeForKids === "boolean" ? { selfDeclaredMadeForKids: madeForKids } : {}),
+      // Never invent an audience declaration that the operator has not supplied.
     },
   });
 
@@ -269,12 +274,13 @@ export async function uploadVideo(
       // reason to start a new one. Anything else is a real refusal.
       const dead = err instanceof YouTubeApiError && err.failure.code === "upload_session_gone";
       if (!dead) throw err;
-      sessionUrl = await createSession(accessToken, snippet, totalBytes, contentType, doFetch);
+      if (hooks.schedule) throw new YouTubeApiError({ code: "upload_session_gone", message: "The earlier scheduled upload session cannot be read. Inspect Studio before starting another upload.", retryable: false });
+      sessionUrl = await createSession(accessToken, snippet, totalBytes, contentType, doFetch, hooks.schedule, hooks.madeForKids);
       await hooks.onSession?.(sessionUrl);
       offset = 0;
     }
   } else {
-    sessionUrl = await createSession(accessToken, snippet, totalBytes, contentType, doFetch);
+    sessionUrl = await createSession(accessToken, snippet, totalBytes, contentType, doFetch, hooks.schedule, hooks.madeForKids);
     await hooks.onSession?.(sessionUrl);
   }
 

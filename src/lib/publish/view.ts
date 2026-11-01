@@ -82,8 +82,22 @@ export interface BrowserModeView {
   reason: string | null;
   /** Can the platform's web uploader schedule? YouTube Studio can; Instagram web cannot. */
   canSchedule: boolean;
-  /** True when the window is hidden (`BOOKREEL_PUBLISH_HEADLESS`): a sign-in cannot be done in it. */
+  /** True when the window is hidden (`BOOKREEL_PUBLISH_HEADLESS`): a sign-in cannot be done in it. Always false when attaching. */
   headless: boolean;
+  /**
+   * Set when the route attaches to the operator's OWN Chrome (`BOOKREEL_PUBLISH_CHROME_CDP`)
+   * instead of opening one. `available` then means "that Chrome answers", not "a
+   * Chromium is installed". The endpoint is a loopback address, not a secret.
+   */
+  attach?: { endpoint: string } | null;
+  /**
+   * Set (to "chrome" or "msedge") when the route opens the browser INSTALLED on this
+   * computer, on a dedicated BookReel profile, instead of the bundled Chromium
+   * (`BOOKREEL_PUBLISH_BROWSER_CHANNEL`). Absent in the default mode, and never set
+   * together with `attach` (attaching outranks it). `available` then means "that
+   * browser is installed".
+   */
+  channel?: "chrome" | "msedge" | null;
 }
 
 /** Which fields the operator has typed over, as ISO timestamps. Null means "as written". */

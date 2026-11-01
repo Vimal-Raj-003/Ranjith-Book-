@@ -589,6 +589,15 @@ model PublishJob {
   /// nothing is published yet.
   scheduledFor DateTime?
 
+  /// Durable browser/API checkpoint. A draft ID is not a publication receipt.
+  remoteDraftId String?
+  progress String?
+  workerPid Int?
+  heartbeatAt DateTime?
+  /// Frozen execution options; null on historical jobs.
+  optionsJson String?
+  retryAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -671,4 +680,106 @@ model CatalogBook {
 
   @@id([generation, gutenbergId])
   @@index([generation, type])
+}
+
+/// A week's plan for putting one book's finished videos on YouTube, one slot at a
+/// time. It only PLANS: the publishing itself is `startBrowserPublish`, which
+/// writes `PublishJob.status = SCHEDULED` only after YouTube Studio read the exact
+/// time back. Nothing here ever claims a video is scheduled.
+///
+/// PLAIN STRING COLUMNS, NO RELATIONS. `uploadId` and `userId` are not Prisma
+/// relations, so neither `Upload` nor `User` gained a back-reference and no
+/// existing model changed: this is two new tables and nothing else. A schedule
+/// outliving its upload is harmless (its slots just stop resolving to episodes).
+///
+/// `weekStart` is a calendar date stored as UTC midnight of that date, read back
+/// with `toISOString().slice(0, 10)`. The moment a slot goes live is NOT derived
+/// from it later: `ScheduleSlot.assignedAt` is the exact UTC instant, computed once
+/// from (date, "HH:mm", `timezone`) when the draft was saved.
+model WeeklySchedule {
+  id          String   @id @default(cuid())
+  userId      String?
+  uploadId    String
+  /// Full-page plans can draw videos across this user's books. Legacy plans remain per book.
+  boardGrid Boolean @default(false)
+  name String @default("")
+  youtubePrivacy String @default("public")
+  activatedAt DateTime?
+  weekStart   DateTime
+  /// Full-page plans allow 1..31 consecutive days from `weekStart`.
+  days        Int
+  /// JSON string[] of "HH:mm" wall-clock times, ascending, in `timezone`.
+  timeSlots   String
+  timezone    String   @default("Asia/Kolkata")
+  /// YouTube's "made for kids" is a legal declaration: null until the operator answers.
+  madeForKids Boolean?
+  /// draft | active. Activating is the operator's go-live confirmation.
+  status      String   @default("draft")
+  /// Only explicitly activated v2 plans are picked up by the startup worker.
+  /// Historical active plans remain visible and require explicit reactivation.
+  workflowVersion Int @default(1)
+  windowsJson String?
+  seed Int @default(1)
+  endInclusive Boolean @default(false)
+  instagramOffsetMinutes Int @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([uploadId])
+}
+
+/// One video's place in a `WeeklySchedule`, for ONE platform. A schedule that
+/// targets both platforms holds two slots per video -- one `youtube`, one
+/// `instagram` -- at the same instant, so each platform's result is recorded on
+/// its own slot and an Instagram failure never touches a YouTube success.
+///
+/// `status` is what the runner saw happen: pending | scheduling | scheduled |
+/// published | failed | skipped. `scheduled` is written only from a `PublishJob`
+/// that is SCHEDULED (YouTube confirmed the time); `published` only from one that
+/// is PUBLISHED (Instagram confirmed the share); `skipped` means the video was
+/// already on the platform and nothing was sent.
+model ScheduleSlot {
+  id           String   @id @default(cuid())
+  scheduleId   String
+  episodeId    String
+  /// Independent of the upload result. Empty grid cells use episodeId="" and are never queued.
+  controlState String @default("active")
+  /// youtube | instagram. Which platform this slot publishes to; a free string,
+  /// not an enum, for the reason `PublishJob.platform` is. YouTube slots are
+  /// uploaded-and-scheduled at activation. New Instagram plans use native browser
+  /// scheduling when explicitly enabled; historical jobs remain separately guarded.
+  platform     String   @default("youtube")
+  /// The exact UTC instant this video should go live.
+  assignedAt   DateTime
+  /// Order of upload and of the grid fill.
+  position     Int
+  status       String   @default("pending")
+  /// The `PublishJob` this slot ended up with, once there is one.
+  publishJobId String?
+  /// A sentence: why it failed, or why it was skipped.
+  note         String?
+  /// Approved metadata/media snapshot, frozen at activation, not at upload time.
+  payloadJson  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([scheduleId])
+  @@index([episodeId])
+}
+
+/// Durable attempt receipts; no credentials or resumable capability URLs.
+model PublishAttempt {
+  id String @id @default(cuid())
+  jobId String
+  attempt Int
+  episodeId String
+  platform String
+  status String
+  message String?
+  externalUrl String?
+  scheduledFor DateTime?
+  startedAt DateTime
+  finishedAt DateTime?
+  @@unique([jobId, attempt])
+  @@index([episodeId])
 }

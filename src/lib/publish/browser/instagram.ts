@@ -53,12 +53,18 @@ import type {
 import { handoffSteps, manualHandoff } from "../manual";
 import { judgeIdentity } from "../connect";
 import { expectedHandle } from "../identity";
+import { publishingEnabled } from "../execution";
+import { igNativeScheduleEnabled } from "./engine";
+import { scheduleInstagram } from "./native-instagram";
 import type { EnvLike } from "../youtube/secrets";
 import {
   NeedsHuman,
   assertNoWall,
   browserOptionProblems,
-  chromiumProblem,
+  browserChannel,
+  browserProblem,
+  cdpEndpoint,
+  channelName,
   clickOn,
   fillIn,
   finishStop,
@@ -178,20 +184,33 @@ export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): Br
     canSetThumbnail: false,
     // Instagram's web uploader does not schedule for most accounts, and this flow
     // does not fake it.
-    canSchedule: false,
+      canSchedule: publishingEnabled("instagram", env) && igNativeScheduleEnabled(env),
     // It waits for Instagram's own "shared" sentence and finds the new reel's link.
     canReportBack: true,
     limits: PLATFORM_LIMITS[platform],
-    requires: [
-      "A Chromium on this server (found automatically; install with `npx playwright-core install chromium` if missing)",
-      "A one-time log-in to Instagram by you, in the browser window this app opens -- it never types or stores your password",
-      "That window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can log in and clear any security check yourself",
-      "The signed-in account's @handle matching the expected one, read from Instagram's own page",
-    ],
+    requires: cdpEndpoint(env)
+      ? [
+          "Your own Chrome, started by you with remote debugging on (BOOKREEL_PUBLISH_CHROME_CDP) -- this app attaches to it and never launches or closes a browser",
+          "You logged in to Instagram in that Chrome -- it never types or stores your password",
+          "The signed-in account's @handle matching the expected one, read from Instagram's own page",
+        ]
+      : browserChannel(env)
+        ? [
+            `${channelName(browserChannel(env)!)} installed on this computer (BOOKREEL_PUBLISH_BROWSER_CHANNEL) -- opened on a dedicated BookReel profile, never your personal one`,
+            "A one-time log-in to Instagram by you, in the window this app opens -- it never types or stores your password or copies cookies",
+            "That window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can log in and clear any security check yourself",
+            "The signed-in account's @handle matching the expected one, read from Instagram's own page",
+          ]
+      : [
+          "A Chromium on this server (found automatically; install with `npx playwright-core install chromium` if missing)",
+          "A one-time log-in to Instagram by you, in the browser window this app opens -- it never types or stores your password",
+          "That window left visible (BOOKREEL_PUBLISH_HEADLESS unset), so you can log in and clear any security check yourself",
+          "The signed-in account's @handle matching the expected one, read from Instagram's own page",
+        ],
   });
 
   const validate = (request: PublishRequest): PublishValidation => handoff.validate(request);
-  const isConfigured = async (): Promise<boolean> => chromiumProblem(deps) === null;
+  const isConfigured = async (): Promise<boolean> => (await browserProblem(platform, deps)) === null;
 
   return {
     capabilities,
@@ -214,17 +233,18 @@ export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): Br
     },
 
     publish: async (prepared, hooks: BrowserHooks = {}): Promise<PublishOutcome> => {
+      if (!publishingEnabled("instagram", env)) return { status: "REQUIRES_CONNECTION", error: "Instagram publishing is disabled. YouTube scheduling remains available." };
       const options = ctx.options ?? {};
-      const problems = browserOptionProblems(platform, options);
+      const problems = browserOptionProblems(platform, options, Date.now(), env);
       if (problems.length > 0) return { status: "FAILED", error: problems.map((p) => p.message).join(" ") };
-      return runInSession(platform, deps, (session) => instagramFlow(session, prepared, hooks, env));
+      return runInSession(platform, deps, (session) => instagramFlow(session, prepared, hooks, env, options));
     },
   };
 }
 
 // ----------------------------------------------------------------- the flow
 
-async function settleSignedIn(session: BrowserSession): Promise<void> {
+export async function settleSignedIn(session: BrowserSession): Promise<void> {
   const selectors = { appShell: IG.appShell, dialog: IG.dialog };
   const verdict = await waitUntil(
     session.clock,
@@ -249,7 +269,7 @@ async function settleSignedIn(session: BrowserSession): Promise<void> {
 }
 
 /** Dismiss the routine "Not Now" prompts (notifications, saving a log-in). Never anything that asks for a code. */
-async function dismissRoutinePrompts(session: BrowserSession): Promise<void> {
+export async function dismissRoutinePrompts(session: BrowserSession): Promise<void> {
   for (let i = 0; i < 2; i++) {
     if (!(await isShown(session.page, IG.notNow))) return;
     await session.page.locator(IG.notNow).first().click({ timeout: 10_000 }).catch(() => {});
@@ -310,6 +330,7 @@ async function instagramFlow(
   prepared: PreparedPublish,
   hooks: BrowserHooks,
   env: EnvLike,
+  options: BrowserPublishOptions,
 ): Promise<PublishOutcome> {
   const { page } = session;
   const wall = { appShell: IG.appShell, dialog: IG.dialog };
@@ -318,6 +339,7 @@ async function instagramFlow(
 
   try {
     await hooks.onStage?.("PREPARING");
+    await hooks.onLog?.("Instagram 1. Opening Instagram and verifying BookReel's active account");
 
     // 1. Open Instagram. Failing to reach it at all is certainly harmless.
     try {
@@ -352,6 +374,9 @@ async function instagramFlow(
       );
     }
 
+    if (options.scheduledAt) return await scheduleInstagram(session, prepared, caption, options, hooks, IG, () => { committed = true; });
+    if (options.resumeDraftId) throw new NeedsHuman("unconfirmed", "An earlier Instagram upload may already exist. Inspect the profile and drafts before starting another upload.");
+
     // 3. What is on the profile NOW, so the new Reel can be told apart afterwards.
     let before: Set<string>;
     try {
@@ -372,7 +397,8 @@ async function instagramFlow(
     if (!(await waitPresent(session, IG.fileInput, 30_000))) {
       throw new NeedsHuman("ui", "Instagram's new-post dialog did not offer a file picker.");
     }
-    await page.locator(IG.fileInput).first().setInputFiles(prepared.video.path);
+    await hooks.onCheckpoint?.("instagram-upload-unconfirmed");
+    await page.locator(IG.fileInput).first().setInputFiles(prepared.video.path, { timeout: 60_000 });
     await hooks.onStage?.("UPLOADING");
     await assertNoWall("instagram", session, wall);
 
@@ -404,8 +430,8 @@ async function instagramFlow(
     if (!(await waitShown(session, IG.share, 30_000)) || !(await page.locator(IG.share).first().isEnabled())) {
       throw new NeedsHuman("ui", "Instagram's Share button was not available.");
     }
-    await page.locator(IG.share).first().click({ timeout: 15_000 });
     committed = true;
+    await page.locator(IG.share).first().click({ timeout: 15_000 });
 
     // 7a. Instagram's own sentence that it was shared. A stop is RECORDED here and
     //     thrown after the wait: `waitUntil` swallows what its reader throws.

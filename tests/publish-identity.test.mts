@@ -59,6 +59,7 @@ const YT_ENV: EnvLike = {
 };
 
 const IG_ENV: EnvLike = {
+  BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1",
   META_APP_ID: "test-app-id",
   META_APP_SECRET: "test-app-secret",
   PUBLIC_BASE_URL: "https://reels.example.test",
@@ -669,10 +670,19 @@ test("both cards surface the verdict and gate their publish control on it", asyn
     assert.match(source, /<IdentityStatus platform=/, `${name} renders the identity block`);
     assert.match(source, /identityCopy\.publishBlocked/, `${name} says so where the publish control would be`);
   }
+  // The Connection cards are no longer a section of the Publish page (the wireframe drops them), so the
+  // page does not mount them. The identity gate does not live in a card: it is in the providers and the
+  // run modules, which refuse a wrong account whatever the page shows, and the page only offers the API
+  // route when the platform itself says it is connected AND identity-verified (`apiReady`).
   const center = await fs.readFile(fileURLToPath(new URL("../src/components/PublishCenter.tsx", import.meta.url)), "utf8");
-  assert.match(center, /<InstagramPublish /, "the Publish Center mounts the Instagram card");
-  assert.match(center, /state\.platform === "instagram" && state\.hasPublisher/);
+  assert.doesNotMatch(center, /<InstagramPublish /, "the Connection card is not laid out on the Publish page");
   assert.match(center, /c\.handoffHeading/, "and the hand-off section is still rendered for every platform");
+  const flow = await fs.readFile(fileURLToPath(new URL("../src/lib/publish/flow.ts", import.meta.url)), "utf8");
+  assert.match(flow, /state\.hasPublisher && state\.configured && state\.capabilities\.canUpload/, "the API route needs the verified, connected account");
+  for (const gate of ["youtube/run.ts", "instagram/run.ts"]) {
+    const run = await fs.readFile(fileURLToPath(new URL(`../src/lib/publish/${gate}`, import.meta.url)), "utf8");
+    assert.match(run, /identity/i, `${gate} still refuses a wrong account`);
+  }
 });
 
 // ------------------------------------------------------------------- a seeded episode

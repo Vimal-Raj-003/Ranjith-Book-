@@ -392,12 +392,12 @@ export const strings = {
     sizeValue: (bytes: number) =>
       bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`,
     downloadVideo: "Download video",
-    downloadPoster: "Download selected poster",
+    downloadPoster: "Download poster",
     unsupported: "Your browser cannot play this video. Download it instead.",
 
     metadataHeading: "Metadata",
     metadataHint:
-      "What the pipeline wrote, for you to edit. Saving keeps your words; Regenerate asks the writer for new ones from the book and this episode's own script.",
+      "What the pipeline wrote, for you to edit. Saving keeps your words; Rewrite asks the writer for new ones from the book and this episode's own script.",
     titleLabel: "Title",
     descriptionLabel: "Description",
     hashtagsLabel: "Hashtags",
@@ -406,22 +406,23 @@ export const strings = {
     saving: "Saving…",
     savedToast: "Saved.",
     saveFailed: "That edit could not be saved.",
-    regenerate: "Regenerate",
-    regenerating: "Regenerating…",
+    /** "Rewrite" is the wireframe's word for the per-field Regenerate: the same action, the same route. */
+    regenerate: "Rewrite",
+    regenerating: "Rewriting…",
     regeneratedToast: (field: string) => `New ${field} written.`,
     /** Shown beside a field the operator has typed over. */
     handEdited: "Your words",
     asWritten: "As written",
-    /** The confirmation a hand-edited field demands before Regenerate replaces it. */
-    confirmBody: (field: string) => `You edited this ${field} by hand. Regenerating replaces what you wrote.`,
+    /** The confirmation a hand-edited field demands before Rewrite replaces it. */
+    confirmBody: (field: string) => `You edited this ${field} by hand. Rewriting replaces what you wrote.`,
     confirmYes: "Replace it",
     confirmNo: "Keep mine",
     counter: (n: number, limit: number) => `${n} / ${limit}`,
     tagCounter: (n: number, limit: number) => `${n} / ${limit} tags`,
     overBy: (over: number) => `${over} over`,
-    /** The long-call warning on Regenerate: it is a real model call. */
+    /** The long-call warning on Rewrite: it is a real model call. */
     regenerateHint:
-      "Regenerate asks the writer for new words and can take a minute or two. Nothing is changed unless it answers.",
+      "Rewrite asks the writer for new words and can take a minute or two. Nothing is changed unless it answers.",
 
     platformsHeading: "Platforms",
     /**
@@ -434,6 +435,7 @@ export const strings = {
       NOT_READY: "Not ready",
       READY: "Ready",
       REQUIRES_CONNECTION: "Requires connection",
+      QUEUED: "Queued",
       PREPARING: "Preparing",
       UPLOADING: "Uploading",
       AWAITING_HUMAN: "Needs you",
@@ -448,6 +450,7 @@ export const strings = {
       REQUIRES_CONNECTION:
         "Nothing is connected to this platform, so this app cannot post for you. Everything is ready to hand over — do the upload yourself in the platform's own uploader.",
       PREPARING: "The upload is being prepared.",
+      QUEUED: "The approved upload is saved in the publishing queue.",
       UPLOADING: "The upload is in progress.",
       AWAITING_HUMAN:
         "The browser window stopped for you: a sign-in or security check needs a person, or what happened is not known. It is never retried automatically.",
@@ -470,6 +473,57 @@ export const strings = {
       recommend:
         "The official API above is the recommended route. This one drives a website, which can break whenever the site changes and which the platform's terms may not welcome.",
       unavailable: "This route is not available on this server.",
+      /**
+       * The same route when BOOKREEL_PUBLISH_CHROME_CDP is set: nothing is launched,
+       * BookReel attaches to a Chrome the operator started and signed in to. Plain
+       * about what it does NOT do -- it does not manage that Chrome, read its
+       * profile, or close it.
+       */
+      attachIntro: (platform: string, endpoint: string) =>
+        `Attaches to your own Chrome (the one you started with remote debugging, at ${endpoint}) and posts through ${platform}'s own website in a new tab there. ` +
+        "BookReel never types or stores your password, never reads or copies your Chrome profile, and never tries to get past a check: if you are asked to sign in or verify, do it in that tab, then press Retry.",
+      attachStepsHeading: "How to use your own Chrome",
+      attachSteps: (platform: string, port: string) => [
+        "Quit Chrome completely (every window).",
+        `Start it again with remote debugging and its own profile folder, for example: chrome.exe --remote-debugging-port=${port} --user-data-dir="%LOCALAPPDATA%\\bookreel-chrome". Chrome 136 and later ignore remote debugging on the default profile, so the --user-data-dir is required.`,
+        `In that Chrome, sign in to ${platform} yourself. For YouTube, pick the channel this install publishes to (@betweenpages08-l4d unless BOOKREEL_YOUTUBE_HANDLE says otherwise): BookReel stops if it is a different one.`,
+        "Keep that Chrome open, then publish. Choose Private for a first test.",
+      ],
+      attachNote: "BookReel leaves its tab open in your Chrome and never closes your browser.",
+      /**
+       * The same route when BOOKREEL_PUBLISH_BROWSER_CHANNEL is set: BookReel opens the
+       * browser INSTALLED on this computer, on a profile of its own. Plain about what that
+       * is (a real Chrome, not your personal one) and what it is not (not hidden from the
+       * site as automated, so a sign-in may still be refused).
+       */
+      channelIntro: (platform: string, browser: string) =>
+        `Opens your installed ${browser} in a window of its own, on a dedicated BookReel profile (not your personal ${browser} profile), and posts through ${platform}'s own website. ` +
+        "Sign in yourself the first time, in a normal window, and clear any security check yourself. " +
+        "BookReel never types or stores your password, never copies cookies, never reuses your personal profile, and never tries to get past a check.",
+      channelName: { chrome: "Google Chrome", msedge: "Microsoft Edge" } as Record<string, string>,
+      channelYouTube:
+        "For YouTube, sign in with the account that owns the channel and pick the channel this install publishes to (@betweenpages08-l4d unless BOOKREEL_YOUTUBE_HANDLE says otherwise): BookReel stops if it is a different one.",
+      channelNote:
+        "BookReel does not hide that its publishing window is automated, so Google may refuse a sign-in typed into it: that is why you sign in once in a normal window (the button below) and the publishing window reuses it. If Google still refuses, use your own Chrome instead (BOOKREEL_PUBLISH_CHROME_CDP).",
+      /**
+       * YouTube's one-time sign-in, in channel mode. The button opens a PLAIN Chrome (no automation, no
+       * debugging port) on the same dedicated profile the publishing window later opens, so the session
+       * saved there is the one the publish reuses. Plain about what it is and is not: not the personal
+       * Chrome, no password typed or stored, no cookie copied, and it must be closed before publishing.
+       */
+      signIn: {
+        heading: "Sign in to YouTube once",
+        button: "Sign in to YouTube",
+        opening: "Opening Chrome…",
+        intro: (browser: string) =>
+          "Google refuses a sign-in inside a window that an automation tool opened, so you sign in once in a normal one. " +
+          `This opens a normal ${browser} on a dedicated BookReel profile (not your personal ${browser}). ` +
+          "In it, open studio.youtube.com, sign in with the Google account that manages your channel and pick the channel @betweenpages08-l4d, then close that window and publish. " +
+          "BookReel reuses that saved session: it never types or stores your password and never copies cookies.",
+        closeFirst: "Close the sign-in window before you publish: the profile can only be open in one Chrome at a time. The session can expire; if it does, sign in again.",
+        opened: "A normal Chrome window is opening on this computer. Sign in there, then close it and publish.",
+        failed: "The sign-in window could not be opened.",
+      },
       headless:
         "BOOKREEL_PUBLISH_HEADLESS is on, so the window is hidden and a sign-in or security check cannot be done in it: the job will stop and say so. Unset it and restart to sign in.",
       notOwned:
@@ -504,6 +558,99 @@ export const strings = {
       scheduledFor: (when: string) => `Scheduled for ${when} (as the platform read it back)`,
       scheduledId: "Platform id",
       viaBrowser: "Posted through the browser window",
+    },
+    /**
+     * The Instagram account connection card. It is account-level, so it sits above the per-video
+     * flow. Plain about what it does NOT do: it never types or stores a password, never gets past
+     * a security check, never posts, and never turns a publishing flag on.
+     */
+    instagramConnect: {
+      heading: "Instagram account",
+      intro:
+        "BookReel never sees your Instagram password. You sign in by hand in a normal Chrome window on BookReel's own profile, " +
+        "and BookReel then looks, through that same profile, at which account is signed in and whether Instagram offers it Schedule content.",
+      stateLabel: {
+        not_connected: "Not Connected",
+        connected: "Connected",
+        eligible: "Eligible for Scheduling",
+        not_eligible: "Not Eligible",
+      },
+      stateNote: {
+        not_connected: "No verified Instagram account yet. Instagram publishing stays unavailable.",
+        connected: "The right account is signed in. Whether it can schedule is not known yet.",
+        eligible: "Instagram's composer offered Schedule content for this account.",
+        not_eligible: "The right account is signed in, but Instagram does not offer it scheduling.",
+      },
+      signedInAs: "Signed in as",
+      publishesTo: "Publishes to",
+      accountType: "Account type",
+      accountKind: {
+        professional: "Professional",
+        personal: "Personal",
+        unknown: "Not determined",
+      },
+      scheduleContent: "Schedule content",
+      composer: {
+        offers_schedule: "Offered by Instagram",
+        no_schedule_option: "Not offered",
+        unreachable: "Could not reach the last screen",
+        not_checked: "Not checked yet",
+      },
+      calendarLabel: "Scheduled posts",
+      calendar: {
+        readable: (n: number | null) => (n === null ? "Readable" : `Readable (${n} scheduled)`),
+        unreadable: "Could not be read",
+        not_checked: "Not checked yet",
+      },
+      lastChecked: "Last checked",
+      never: "Never",
+      stale: "That was over a week ago. Verify again before relying on it.",
+      connect: "Connect Instagram",
+      connectAgain: "Sign in again",
+      connecting: "Opening Chrome…",
+      verify: "Verify account",
+      verifying: "Checking…",
+      checkScheduling: "Check Schedule content",
+      checkingScheduling: "Checking…",
+      recheckScheduling: "Check Schedule content again",
+      stepsHeading: "To connect",
+      steps: (handle: string) => [
+        "Press Connect Instagram. A normal Chrome window opens on BookReel's Instagram profile.",
+        `In it, open instagram.com and sign in as ${handle} yourself. Clear any security check yourself.`,
+        "Close that Chrome window.",
+        "Press Verify account.",
+      ],
+      afterConnect: "Sign in there, then close that window and press Verify account.",
+      /** Above the sentence the sign-in route sent back when it did NOT open a window you can see. */
+      connectErrorHeading: "Chrome did not open",
+      scheduleDisclosureHeading: "What the Schedule content check does",
+      scheduleDisclosure:
+        "It opens Instagram's Create, then Reel, and loads a short blank placeholder clip that BookReel makes itself (never one of your videos) " +
+        "so the screen can reach its last page and show whether Schedule content is there. It never presses Share or Schedule, " +
+        "discards the draft afterwards, and posts nothing. Instagram may process the clip while the screen is open.",
+      scheduleConfirm: "I understand: nothing will be shared or scheduled.",
+      attachNote:
+        "BookReel is set to use your own Chrome (BOOKREEL_PUBLISH_CHROME_CDP). Sign in to Instagram in that Chrome; Connect Instagram is not used.",
+      bundledNote:
+        "Connect Instagram opens your installed Chrome. Set BOOKREEL_PUBLISH_BROWSER_CHANNEL=chrome and restart BookReel to use it.",
+      headlessNote:
+        "The browser is set to run hidden (BOOKREEL_PUBLISH_HEADLESS), so a security check could not be cleared. Unset it to verify.",
+      browserNotReady: (why: string) => `The browser is not ready: ${why}`,
+      running: "Checking Instagram…",
+      runningNote: "A Chrome window opens on BookReel's Instagram profile while this runs. Leave it alone.",
+      errorHeading: "The last check could not finish",
+      loadFailed: "The Instagram connection could not be read.",
+      retry: "Try again",
+      flagsHeading: "Instagram publishing switches",
+      flagsOff:
+        "Both switches are off. They stay off until the account is verified and Eligible for Scheduling, and BookReel never changes them itself.",
+      flagsPartial: "One switch is on and one is off. Set both, then restart BookReel.",
+      flagsOn: "Both switches are on.",
+      flagsNext: "To turn Instagram scheduling on, set these two lines in .env.local yourself, then restart BookReel:",
+      flagsLines: ["BOOKREEL_INSTAGRAM_PUBLISH_ENABLED=1", "BOOKREEL_IG_NATIVE_SCHEDULE=1"],
+      flagsBlocked:
+        "A publishing switch is on, but this account is not Eligible for Scheduling yet. Turn it off in .env.local until it is.",
+      fixAccount: "Switch the account to a professional (Business or Creator) account in Instagram, then press Verify account and Check Schedule content again.",
     },
     /** Named plainly, because an operator should know why a button is not there. */
     cannotUpload: "This app cannot upload to this platform yet.",
@@ -585,6 +732,143 @@ export const strings = {
     thumbDownload: "Download",
     thumbAspect: (aspect: string) => `${aspect} crop`,
     thumbAlt: (aspect: string) => `${aspect} poster for this episode`,
+
+    /**
+     * The Publish page, laid out the way the wireframe draws it: header, video and
+     * thumbnail, a YouTube block and an Instagram block, visibility, schedule, and the
+     * three publish buttons. Every sentence here is a statement of what a press WILL do
+     * or what the platform's own page CONFIRMED -- never what a request merely hoped for.
+     */
+    flow: {
+      headingFor: (title: string | null) => (title && title.trim() !== "" ? `Publish – ${title.trim()}` : "Publish"),
+      untitled: "Untitled video",
+
+      /* The fields' buttons. "Rewrite" is the existing Regenerate action, relabelled. */
+      copy: "Copy",
+      copyAria: (field: string) => `Copy ${field}`,
+      copied: "Copied",
+
+      /* The media row. */
+      mediaLabel: "The video and its thumbnail",
+      videoFacts: (size: string, length: string) => `${length} · ${size}`,
+      chooseThumbnail: "Choose a different thumbnail",
+      handoffSummary: "Post it by hand instead",
+      handoffHint: "Download the files and copy the text, then upload on the platform yourself. This never posts anything.",
+
+      /* A platform block. */
+      publish: "Publish",
+      publishing: "Publishing…",
+      retry: "Retry",
+      publishAria: (platform: string) => `Publish to ${platform}`,
+      retryAria: (platform: string) => `Retry publishing to ${platform}`,
+      confirmTitle: (platforms: string[]) => `Publish to ${platforms.join(" and ")}?`,
+      confirmOk: "OK",
+      confirmCancel: "Cancel",
+      confirmSkipped: (note: string) => `Not sent: ${note}`,
+      routeApi: (platform: string) => `Sent through the official ${platform} API.`,
+      routeBrowser: (platform: string) => `Sent through a browser window on this computer, signed in to ${platform}.`,
+
+      /* What OK will do. */
+      sumYtApi:
+        "Uploads to YouTube through the official API as a PRIVATE video. Nothing goes public: you review it in YouTube Studio.",
+      sumYtPrivate:
+        "Opens a browser window and uploads to YouTube as a PRIVATE video. Nothing goes public: you review it in YouTube Studio.",
+      sumYtUnlisted:
+        "Uploads to YouTube as UNLISTED: anyone with the link can watch it, and it is not shown on the channel.",
+      sumYtPublic:
+        "Posts to YouTube PUBLICLY, right now, with no review step. It goes live on the channel and cannot be taken back from here.",
+      sumYtScheduled: (when: string) =>
+        `Schedules it on YouTube to go PUBLIC at ${when}. It goes live on the channel with no review step and cannot be taken back from here.`,
+      sumIg:
+        "Shares it to Instagram as a Reel, PUBLICLY and at once. Instagram has no private or draft post, and it cannot be taken back from here.",
+      sumIgIgnoresSchedule:
+        "This quick-publish action shares Instagram now. Use Weekly Schedule for native Instagram scheduling when publishing is enabled.",
+
+      /* Why a press does nothing yet. */
+      notOwned: "This video does not belong to this account, so it cannot be posted from here.",
+      notReady: "This video is not ready to publish yet. The list at the top says what is missing.",
+      noBrowserRoute: (platform: string) => `There is no browser route for ${platform}, and its official API is not connected.`,
+      browserUnavailable: (platform: string) => `The ${platform} browser route is not available on this server.`,
+      cannotSchedule: (platform: string) => `${platform} cannot be scheduled from here. Clear the schedule to post it now.`,
+      kidsRequired:
+        "Say whether this video is made for kids, under Visibility. YouTube requires an answer and it is yours to give, so BookReel never picks one.",
+      donePosted: (platform: string) => `Already posted on ${platform}. Nothing was sent.`,
+      doneScheduled: (platform: string, when: string | null) =>
+        `Already scheduled on ${platform}${when ? ` for ${when}` : ""}. Nothing was sent.`,
+      doneInProgress: (platform: string) => `A ${platform} publish is already in progress. Nothing more was sent.`,
+      doneSeen: (platform: string, id: string) =>
+        `${platform} already showed a video for this one (id ${id}), so it will not be started again. Check ${platform}.`,
+      retryNeedsLook: (platform: string) =>
+        `Tick the box below to say you looked at ${platform}, then retry. It is never retried on its own.`,
+
+      /* Visibility. */
+      visibilityHeading: "Visibility",
+      visibilityYouTube: "YouTube",
+      visibilityInstagram: "Instagram",
+      visibilityScheduled: "Public at the scheduled time",
+      visibilityLockedBySchedule: "A schedule makes the post public at that time, so there is nothing to choose here.",
+      igVisibilityValue: "Public",
+      igVisibilityNote: "Instagram has no private or unlisted post: a share is public, at once.",
+      kidsFromSchedule: "Taken from the answer saved on your Weekly Schedule. Change it if it is wrong.",
+
+      /* Schedule. */
+      scheduleHeading: "Schedule",
+      scheduleField: "Date and time",
+      scheduleCalendar: "Open the calendar",
+      scheduleClear: "Clear",
+      scheduleOptional: "Leave empty to publish now.",
+      scheduleZone: "Times are India time (Asia/Kolkata, IST), whatever this computer's clock says.",
+      schedulePreview: (when: string) => `Goes public ${when}.`,
+      scheduleYouTubeOnly: "This quick-publish flow schedules YouTube only. Use Weekly Schedule for Instagram scheduling.",
+      scheduleInvalid: "That is not a valid date and time. Nothing was sent.",
+      scheduleTooSoon: (minutes: number) =>
+        `Pick a time at least ${minutes} minutes from now to schedule a YouTube post. Nothing was sent.`,
+      slotLocked: (when: string) =>
+        `From your Weekly Schedule: ${when}. This video is in an activated schedule, so it is posted at exactly that time and the time is locked here.`,
+      slotUnreadable: "The Weekly Schedule's time for this video could not be read. Nothing was sent.",
+      slotTooSoon: (when: string, minutes: number) =>
+        `Your Weekly Schedule set this video for ${when}, which has passed or is less than ${minutes} minutes away. BookReel will not post it at a different time: plan it again in Weekly Schedule. Nothing was sent.`,
+      slotChecking: "Checking your Weekly Schedule…",
+      slotCheckFailed:
+        "Your Weekly Schedule could not be checked, so scheduling is off for now (a video in a schedule must be posted at its own time).",
+      slotRetry: "Check again",
+
+      /* The three publish buttons. */
+      actionsHeading: "Publish to",
+      actionInstagram: "Instagram",
+      actionYouTube: "YouTube",
+      actionBoth: "Instagram & YouTube",
+
+      /* What happened, from the job. */
+      resultsHeading: "Where it stands",
+      reportPosted: (platform: string) => `Posted on ${platform}`,
+      reportPostedDetail: (when: string, id: string) => `${when} · confirmed by the platform · id ${id}`,
+      reportScheduled: (platform: string, when: string) => `Scheduled on ${platform} for ${when}`,
+      reportScheduledDetail: (platform: string) => `${platform} read the time back from its own page. Nothing is live yet.`,
+      reportInProgress: (platform: string) => `${platform}: working on it`,
+      reportInProgressDetail:
+        "A browser window or the platform is working on this. It is only recorded as posted or scheduled once the platform's own page confirms it.",
+      reportNeedsYou: (platform: string) => `${platform}: needs you`,
+      reportNeedsYouDetail: (platform: string) => `The attempt stopped for a person. Check ${platform}.`,
+      reportFailed: (platform: string) => `${platform}: failed`,
+      reportCheck: (platform: string) => `${platform}: check it`,
+      unconfirmedPosted: (platform: string) =>
+        `This is recorded as posted, but ${platform}'s own confirmation is not on record, so it is not shown as posted. Check ${platform}.`,
+      unconfirmedScheduled: (platform: string) =>
+        `This is recorded as scheduled, but ${platform}'s own confirmation is not on record, so it is not shown as scheduled. Check ${platform}.`,
+      openStudio: "Open in YouTube Studio",
+      statusPosted: "Posted",
+      statusScheduled: "Scheduled",
+      statusInProgress: "In progress",
+      statusNeedsYou: "Needs you",
+      statusFailed: "Failed",
+      statusNotReady: "Not ready",
+      statusNotPosted: "Not posted yet",
+      sentStarted: (platform: string) => `${platform}: started. The result appears here once the platform confirms it.`,
+      sentNothing: (platform: string) => `${platform}: nothing new was started.`,
+      sentFailed: (platform: string) => `${platform} could not be started.`,
+      sentNetwork: (platform: string) => `${platform} could not be reached from this page. Nothing was confirmed; check the platform before trying again.`,
+    },
   },
   library: {
     heading: "Library",
@@ -789,6 +1073,8 @@ export const strings = {
         CANCELLED: "Video cancelled",
       })[status] ?? status,
     select: "Select",
+    selectAll: "Select all",
+    deselectAll: "Deselect all",
     selectLabel: (title: string) => `Select “${title}” for a video`,
     selectError: "Could not save that selection. Try again.",
     hookLabel: "Opening line",
@@ -814,6 +1100,144 @@ export const strings = {
       "emotional-truth": "Emotional truth",
       other: "Idea",
     } as Record<string, string>,
+  },
+  /**
+   * The Weekly Schedule panel on the Book PDFs page. Plain about what it does: it
+   * uploads each video NOW through the operator's signed-in Chrome and YouTube
+   * publishes it at the slot time, and a video is only marked scheduled after
+   * YouTube's own page confirms that time. YouTube only: Instagram's website
+   * cannot schedule.
+   */
+  schedule: {
+    button: "Weekly Schedule",
+    buttonLabel: "Schedule this book's videos across a week on YouTube and Instagram",
+    title: "Weekly Schedule",
+    close: "Close the weekly schedule",
+    intro:
+      "Spread this book's finished videos across a week. Activating is your go-live confirmation: it works through the list below, one video at a time, " +
+      "using your connected YouTube account or signed-in Chrome, and each enabled platform receives its exact publication time.",
+    chromeNote:
+      "Browser uploads reuse your own signed-in Chrome session. Keep this computer on until each enabled platform confirms its schedule; the platform then holds the publication time.",
+    platformsHeading: "Where to publish",
+    platformYouTube: "YouTube",
+    platformInstagram: "Instagram",
+    needPlatform: "Choose at least one platform.",
+    youtubeNote:
+      "YouTube: each video is uploaded now and YouTube itself publishes it at its slot time. A video is only marked scheduled after YouTube's own page confirms the exact time.",
+    instagramNote:
+      "Instagram uses its own Schedule content controls and confirms the exact time from Scheduled content. It requires an eligible account and a signed-in BookReel browser session. Instagram execution remains disabled until explicitly enabled; YouTube can proceed independently.",
+    weekStart: "First day",
+    days: "Number of days",
+    daysOption: (n: number) => `${n} ${n === 1 ? "day" : "days"}`,
+    timesHeading: "Daily times",
+    timesNote: "Each day's times are filled in order, then the next day's, so the videos go live in the order listed below.",
+    addTime: "Add time",
+    newTimeLabel: "Time to add",
+    removeTime: (t: string) => `Remove ${t}`,
+    timezone: "Time zone",
+    timezoneValue: "Asia/Kolkata",
+    timezoneNote: "Every time here is Asia/Kolkata (IST), wherever this computer is.",
+    kidsLegend: "Are these videos made for kids?",
+    kidsNote: "YouTube requires an answer and it is yours to give, so BookReel never picks one for you.",
+    kidsNo: "No, they are not made for kids",
+    kidsYes: "Yes, they are made for kids",
+    videosHeading: "Videos",
+    videosNote: (picked: number, ready: number) => `${picked} of ${ready} finished videos chosen`,
+    selectAll: "Select all",
+    deselectAll: "Deselect all",
+    notFinished: "Not finished yet",
+    noVideos: "This book has no finished videos yet. Make some from its ideas first, then come back.",
+    previewHeading: "Preview",
+    previewNote: "Each video, in this order, with the exact time it will go live.",
+    previewEmpty: "Choose at least one video to see when each goes live.",
+    columns: { order: "#", video: "Video", slot: "Slot", live: "Goes live (Asia/Kolkata)" },
+    slotLabel: (day: number, time: string) => `Day ${day} at ${time}`,
+    tooSoon: "Too soon: YouTube needs at least 15 minutes. Move the first day later.",
+    capacity: (videos: number, room: number) =>
+      `${videos} videos do not fit: this grid has room for ${room}. Add a time, add days, or untick some videos.`,
+    saveDraft: "Save draft",
+    saving: "Saving…",
+    saved: "Draft saved.",
+    activate: "Activate schedule",
+    activating: "Activating…",
+    activated: "Schedule activated. The uploads have started.",
+    activateNote:
+      "Activate confirms that these videos go live on enabled platforms at those times, with no review step. A confirmed platform schedule must be changed on that platform.",
+    needKids: "Answer the made-for-kids question to activate.",
+    needFit: "Choose the videos and a grid they fit in to continue.",
+    needLead: "Move the first day later: every YouTube video must be at least 15 minutes away.",
+    needFuture: "Move the first day later: every enabled Instagram video must be at least 20 minutes away.",
+    statusHeading: "Schedule status",
+    status: {
+      pending: "Waiting",
+      scheduling: "Uploading",
+      scheduled: "Scheduled",
+      published: "Posted",
+      failed: "Needs attention",
+      skipped: "Skipped",
+    } as Record<string, string>,
+    // An Instagram slot not yet at its time, and one being posted now: the YouTube
+    // words ("Waiting"/"Uploading") would misdescribe what is happening.
+    waitingToPost: "Waiting for its time",
+    posting: "Posting",
+    running: "Working through the videos. This panel updates itself; you can close it and come back.",
+    statusDone: (done: number, total: number) => `${done} of ${total} are scheduled or posted.`,
+    openOnYouTube: "Open on YouTube",
+    openOnInstagram: "Open on Instagram",
+    runAgain: "Run again",
+    runAgainNote:
+      "Picks up where it stopped. Videos that are already scheduled or posted are skipped, never published twice. If a video stopped for you, check the platform and retry it from its own Publish panel first.",
+    planAnother: "Plan another week",
+    loading: "Loading…",
+    loadError: "The schedule could not be loaded.",
+    saveError: "The draft could not be saved.",
+    activateError: "The schedule could not be activated.",
+  },
+  engineModal: {
+    title: "Choose your generation engine",
+    subtitle:
+      "BookReel runs its generation pipeline on your account — pick Claude, Codex, or Gemini, then connect it.",
+    defaultHint: "Default: server's configured engine",
+    skipForNow: "Skip for now",
+    connectedBadge: "Connected",
+    needsSetupBadge: "Needs setup",
+    checkingBadge: "Checking…",
+    selectedBadge: "Selected",
+    useEngine: (label: string) => `Use ${label}`,
+    saveAndConnect: (label: string) => `Connect ${label}`,
+    saving: "Saving…",
+    recheck: "Check connection",
+    geminiModelHeading: "Choose Gemini model",
+    geminiModelHint: "Select which Gemini model powers book analysis, script writing, and page vision.",
+    apiKeyLabel: (label: string) => `${label} API key`,
+    apiKeyPlaceholder: {
+      "claude-cli": "Paste Anthropic API key (optional if Claude CLI is signed in)",
+      "codex-cli": "Paste OpenAI API key (or run codex login in terminal)",
+      gemini: "Paste Gemini API key from Google AI Studio (AIza…)",
+    } as Record<string, string>,
+    setupHelp: {
+      "claude-cli":
+        "Sign in with `claude login` in your terminal to use your Claude Code CLI subscription, or configure an Anthropic environment.",
+      "codex-cli":
+        "Sign in with `codex login` in your terminal to use your OpenAI Codex CLI session, or paste an OpenAI API key below.",
+      gemini:
+        "Paste a Gemini API key from Google AI Studio (or set GEMINI_API_KEY in .env.local) to run book analysis, scripts, and vision on Gemini 2.5.",
+    } as Record<string, string>,
+    close: "Close",
+  },
+  enginePanel: {
+    heading: "Generation engine",
+    summaryUnknown: "Engine",
+    summary: (label: string) => `Engine · ${label}`,
+    geminiModelLabel: "Gemini model",
+    hint: "Powers book analysis, idea finding, script writing, grounding checks, visual planning, and publishing copy. Never silently falls back to another provider.",
+    chooseButton: "Choose engine…",
+    recheckButton: "Recheck",
+    connected: "Connected",
+    notConnected: "Needs setup",
+    saveKeyButton: "Save key",
+    clearKeyButton: "Remove saved key",
+    keySavedNote: "API key saved on this server.",
   },
 } as const;
 
@@ -874,3 +1298,121 @@ export const MUSIC_DUCKS: MusicOption[] = [
 
 /** The level slider's range, in dB. `musicLevel` in `settings/keys.ts` accepts exactly this. */
 export const MUSIC_LEVEL_RANGE = { min: -40, max: -13, step: 1 } as const;
+
+export type GenerationEngineId = "claude-cli" | "codex-cli" | "gemini";
+
+export interface GenerationEngineOption {
+  id: GenerationEngineId;
+  label: string;
+  description: string;
+  shortNote: string;
+}
+
+export const GENERATION_ENGINES: GenerationEngineOption[] = [
+  {
+    id: "claude-cli",
+    label: "Claude",
+    description: "Anthropic's Claude powers the generation pipeline",
+    shortNote: "Anthropic Claude via signed-in Claude Code CLI",
+  },
+  {
+    id: "codex-cli",
+    label: "Codex",
+    description: "OpenAI's models power the generation pipeline",
+    shortNote: "OpenAI models via Codex CLI or OpenAI API key",
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    description: "Google's Gemini 2.5 powers the generation pipeline",
+    shortNote: "Google Gemini via Gemini API key or Gemini CLI",
+  },
+];
+
+export type GeminiModelId =
+  | "gemini-4-argon"
+  | "gemini-3.8-flash"
+  | "gemini-3.7-flash"
+  | "gemini-3.6-flash"
+  | "gemini-3.1-flash-lite"
+  | "gemini-flash-lite-latest"
+  | "gemini-3.5-flash"
+  | "gemini-3.5-flash-lite"
+  | "gemini-3.1-pro-preview"
+  | "gemini-3-pro-preview"
+  | "gemini-2.5-pro"
+  | "gemini-2.5-flash"
+  | "gemini-2.5-flash-lite"
+  | "gemma-4-31b-it";
+
+export interface GeminiModelOption {
+  id: GeminiModelId;
+  label: string;
+  tag: string;
+  note: string;
+}
+
+export const DEFAULT_GEMINI_MODEL_ID: GeminiModelId = "gemini-3.8-flash";
+
+export const GEMINI_MODELS: GeminiModelOption[] = [
+  {
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    tag: "3.8 Flash",
+    note: "Recommended · Latest fast multimodal model",
+  },
+  {
+    id: "gemini-4-argon",
+    label: "Gemini 4 Argon",
+    tag: "4.0 Argon",
+    note: "Next-gen Gemini 4 model",
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
+    tag: "3.7 Flash",
+    note: "High-speed multimodal reasoning",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    tag: "3.6 Flash",
+    note: "Fast high-quota multimodal model",
+  },
+  {
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    tag: "3.1 Lite",
+    note: "High-throughput lightweight model",
+  },
+  {
+    id: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    tag: "3.5 Flash",
+    note: "Balanced speed & reasoning",
+  },
+  {
+    id: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite",
+    tag: "3.5 Lite",
+    note: "Fast lightweight multimodal",
+  },
+  {
+    id: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro",
+    tag: "3.1 Pro",
+    note: "Deep reasoning for complex books",
+  },
+  {
+    id: "gemini-2.5-pro",
+    label: "Gemini 2.5 Pro",
+    tag: "2.5 Pro",
+    note: "High-precision thinking model",
+  },
+  {
+    id: "gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
+    tag: "2.5 Flash",
+    note: "Legacy 2.5 multimodal model",
+  },
+];

@@ -14,10 +14,12 @@
  *
  * WHAT IT IS NOT, and will not become:
  *  - It does not hide that a browser is automated. The launch options are the
- *    three in `LaunchOptions` and nothing else -- no extra Chromium flags, no
- *    user-agent, no injected scripts. `tests/publish-browser.test.mts` asserts
- *    that, on the real launch options and on the source of this folder, so a
- *    future edit that adds one fails a test instead of passing review.
+ *    three in `LaunchOptions` -- plus, only when the operator asks for it, WHICH
+ *    installed browser to open (`channel`: "chrome" or "msedge", see below) -- and
+ *    nothing else: no extra Chromium flags, no user-agent, no injected scripts.
+ *    `tests/publish-browser.test.mts` asserts that, on the real launch options and
+ *    on the source of this folder, so a future edit that adds one fails a test
+ *    instead of passing review.
  *  - It does not imitate a person. No randomised delays, no cursor paths, no
  *    per-keystroke typing. A form field is `fill`ed.
  *  - It does not answer a sign-in, a CAPTCHA, a two-step prompt or any other
@@ -29,11 +31,54 @@
  *    the Chromium profile directory, which holds what Chromium itself stores
  *    when a human signs in. This app never reads it, copies it or sends it.
  *
+ * THE OTHER WAY IN: ATTACHING TO THE OPERATOR'S OWN CHROME. When
+ * `BOOKREEL_PUBLISH_CHROME_CDP` names a loopback address, nothing is launched at
+ * all: the operator starts their own Chrome with remote debugging on, signs in to
+ * it themselves, and this file `connectOverCDP`s to it and opens one new tab. Same
+ * rules, plus the ones that matter for a browser that is not ours:
+ *  - It takes NO launch options -- there is no launch. It does not read, copy or
+ *    even locate the Chrome profile; it only talks to the port the operator opened.
+ *  - It NEVER closes the operator's browser, context or tabs. `finish` drops the
+ *    connection and nothing else (see `connectChrome` for what that is, exactly),
+ *    and the attached context is typed so that it has no `close` to call.
+ *  - It never falls back to a bundled Chromium. If the port cannot be reached the
+ *    job is REQUIRES_CONNECTION, with the steps to start Chrome that way.
+ * Unset (the default), none of this code runs and the launch path above is used.
+ *
+ * THE THIRD WAY: THE REAL INSTALLED CHROME, ON A PROFILE OF OUR OWN. When
+ * `BOOKREEL_PUBLISH_BROWSER_CHANNEL` is `chrome` (or `msedge`) the LAUNCH path is
+ * unchanged except for one option: `channel`, which makes Playwright open the
+ * browser installed on this computer instead of its bundled Chromium build. That
+ * is a choice of WHICH real browser, not a disguise -- Playwright still starts it
+ * as an automated browser, with its own flags, and this file does nothing to
+ * change that. The profile is still the empty, BookReel-created directory under
+ * the work root: never the operator's personal Chrome profile, never copied from
+ * it. If that browser is not installed the job is REQUIRES_CONNECTION, never a
+ * quiet fall back to the bundled Chromium (or to attaching).
+ *
+ * SIGN IN ONCE, THEN REUSE. Google refuses a sign-in typed into a browser an
+ * automation tool started, and this app does not hide that it is one. So the
+ * sign-in is never done in the automated window: `signin.ts` opens a PLAIN Chrome
+ * (an ordinary operating-system process, not Playwright, with nothing but the
+ * profile directory on its command line) on the very same dedicated profile; the
+ * operator signs in there by hand and closes it; and this file's launch then opens
+ * Chrome on that profile ALREADY SIGNED IN, lands on Studio, and never visits
+ * Google's sign-in page. One profile, one sign-in -- nothing is typed, copied or
+ * read. The cost is that a profile can be open in only one Chrome at a time, so a
+ * launch while the sign-in window is still open is REQUIRES_CONNECTION saying to
+ * close it (`profileBusyMessage`); no lock file is touched.
+ *
+ * PRECEDENCE: if BOTH `BOOKREEL_PUBLISH_CHROME_CDP` and
+ * `BOOKREEL_PUBLISH_BROWSER_CHANNEL` are set, ATTACHING WINS. It is the more
+ * operator-controlled route (the operator launched, and owns, that browser), and
+ * every check for "which mode am I in" asks `cdpEndpoint` first. Neither set (the
+ * default) is the bundled Chromium, exactly as before.
+ *
  * TESTABILITY. Everything the publishers touch goes through the small `PageLike`
- * / `ContextLike` shapes below, and the clock and the launcher are injectable, so
- * the confirmation gating can be driven against a scripted page with no browser
- * and no sleeping. The real objects are cast to these shapes at exactly one
- * place (`launchContext`).
+ * / `ContextLike` shapes below, and the clock, the launcher and the attacher are
+ * injectable, so the confirmation gating can be driven against a scripted page
+ * with no browser and no sleeping. The real objects are cast to these shapes at
+ * exactly two places (`launchContext`, `connectChrome`).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -65,6 +110,8 @@ export interface FileChooserLike {
 }
 
 export interface PageLike {
+  setDefaultTimeout?(timeout: number): void;
+  setDefaultNavigationTimeout?(timeout: number): void;
   goto(url: string, options?: { waitUntil?: "domcontentloaded" | "load"; timeout?: number }): Promise<unknown>;
   url(): string;
   title(): Promise<string>;
@@ -83,17 +130,36 @@ export interface ContextLike {
 // ----------------------------------------------------------------- launching
 
 /**
+ * The installed browsers that may be opened instead of Playwright's bundled
+ * Chromium. A closed list on purpose: the value goes to Playwright as `channel`,
+ * so it is only ever one of these two names -- never a path, never a free string.
+ */
+export type BrowserChannel = "chrome" | "msedge";
+
+/**
  * The ONLY options the browser is launched with.
  *
  * `headless` is the operator's choice, `viewport` is a window size so Studio's
- * dialogs lay out normally, and `timeout` bounds the launch itself. Anything
- * else would be a decision about how the browser presents itself, and the answer
- * to that is always "as Playwright does by default".
+ * dialogs lay out normally, and `timeout` bounds the launch itself. `channel` is
+ * present ONLY when the operator set `BOOKREEL_PUBLISH_BROWSER_CHANNEL`: it picks
+ * WHICH real browser opens (the installed Chrome or Edge rather than the bundled
+ * Chromium build), and says nothing about how that browser presents itself.
+ * Anything else would be a decision about how the browser presents itself, and
+ * the answer to that is always "as Playwright does by default".
  */
 export interface LaunchOptions {
   headless: boolean;
   viewport: { width: number; height: number };
   timeout: number;
+  /**
+   * TRUE: run Chrome WITH its own security sandbox. Playwright's default is to
+   * DISABLE it (it passes `--no-sandbox`), which weakens the browser and shows a
+   * yellow "unsupported command-line flag: --no-sandbox" banner. Turning the
+   * sandbox ON is a SECURITY setting, not a disguise -- it makes the window a
+   * normal, sandboxed browser and removes that flag. Always true here.
+   */
+  chromiumSandbox: boolean;
+  channel?: BrowserChannel;
 }
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
@@ -116,8 +182,40 @@ export function igNativeScheduleEnabled(env: EnvLike = process.env): boolean {
   return raw !== "" && raw !== "0" && raw !== "false";
 }
 
+/** Setting this to `chrome` (or `msedge`) launches that installed browser instead of the bundled Chromium. */
+export const CHANNEL_ENV = "BOOKREEL_PUBLISH_BROWSER_CHANNEL";
+
+/**
+ * The installed browser asked for, or null (the default: the bundled Chromium).
+ * Anything that is not exactly `chrome` or `msedge` -- a path, `chrome-beta`,
+ * `firefox`, a typo -- is null: it is ignored, never passed on.
+ *
+ * This only reads the setting. Which MODE is in force is decided by the callers,
+ * who ask `cdpEndpoint` first: attaching wins over a channel.
+ */
+export function browserChannel(env: EnvLike = process.env): BrowserChannel | null {
+  const raw = (env[CHANNEL_ENV] ?? "").trim().toLowerCase();
+  return raw === "chrome" || raw === "msedge" ? raw : null;
+}
+
+/** How a person would name it, in messages. */
+export function channelName(channel: BrowserChannel): string {
+  return channel === "chrome" ? "Google Chrome" : "Microsoft Edge";
+}
+
 export function launchOptionsFor(env: EnvLike = process.env): LaunchOptions {
-  return { headless: isHeadless(env), viewport: { width: 1366, height: 900 }, timeout: 60_000 };
+  const channel = browserChannel(env);
+  return {
+    headless: isHeadless(env),
+    viewport: { width: 1366, height: 900 },
+    timeout: 60_000,
+    // Run WITH the sandbox. Playwright would otherwise pass `--no-sandbox` (its
+    // default), which degrades security and shows a warning banner in the window.
+    // See the LaunchOptions doc above: this is a security setting, never a disguise.
+    chromiumSandbox: true,
+    // Absent, not undefined, when unset: the default options are byte-for-byte what they always were.
+    ...(channel ? { channel } : {}),
+  };
 }
 
 /**
@@ -142,6 +240,88 @@ export function locateChromium(): string | null {
   }
 }
 
+/** Where each installed browser lives, relative to a Program Files-style prefix on Windows and absolute elsewhere. */
+const CHANNEL_EXECUTABLE: Record<BrowserChannel, Partial<Record<NodeJS.Platform, string>>> = {
+  chrome: {
+    linux: "/opt/google/chrome/chrome",
+    darwin: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    win32: "\\Google\\Chrome\\Application\\chrome.exe",
+  },
+  msedge: {
+    linux: "/opt/microsoft/msedge/msedge",
+    darwin: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    win32: "\\Microsoft\\Edge\\Application\\msedge.exe",
+  },
+};
+
+/**
+ * Where the installed browser for a channel is, or null when it is not there.
+ *
+ * Looks in the same places Playwright looks for `channel: "chrome"` / `"msedge"`,
+ * so "found" here and "launchable" there agree. It only asks whether the browser's
+ * program file exists; it opens nothing and reads nothing from the browser's
+ * profile (it does not even know where that is).
+ */
+export function locateBrowserChannel(channel: BrowserChannel, env: EnvLike = process.env): string | null {
+  const suffix = CHANNEL_EXECUTABLE[channel][process.platform];
+  if (!suffix) return null;
+  const prefixes =
+    process.platform === "win32"
+      ? [
+          env.LOCALAPPDATA,
+          env.PROGRAMFILES,
+          env["PROGRAMFILES(X86)"],
+          env.HOMEDRIVE ? `${env.HOMEDRIVE}\\Program Files` : undefined,
+          env.HOMEDRIVE ? `${env.HOMEDRIVE}\\Program Files (x86)` : undefined,
+        ].filter((p): p is string => Boolean(p))
+      : [""];
+  for (const prefix of prefixes) {
+    const candidate = path.join(prefix, suffix);
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // Unreadable is as good as absent.
+    }
+  }
+  return null;
+}
+
+/** The one sentence for "the chosen browser cannot be opened", used before a launch and after a failed one. */
+function channelMissing(channel: BrowserChannel): string {
+  const short = channel === "chrome" ? "Chrome" : "Edge";
+  return (
+    `${channelName(channel)} is not installed, or Playwright could not find it; install ${short} or unset ${CHANNEL_ENV}. ` +
+    "Nothing was opened."
+  );
+}
+
+/**
+ * Does a failed launch look like "the profile is already open in another Chrome"?
+ *
+ * A Chrome started on a profile another Chrome process holds does not fail loudly:
+ * it hands its command line to that process and exits at once, which Playwright
+ * reports as "Opening in existing browser session" or as the browser having been
+ * closed straight away (the wording differs by platform and version, so both are
+ * recognised). It is only asked in channel mode, after the installed Chrome was
+ * found to exist, which is what makes "closed straight away" a reliable hint: the
+ * usual cause is the sign-in window (`signin.ts`) still being open on the profile.
+ */
+const PROFILE_IN_USE =
+  /opening in existing browser session|singletonlock|process_?singleton|profile.{0,40}(in use|locked)|(in use|locked).{0,40}profile|user data dir.{0,40}in use|target page, context or browser has been closed|browser has been closed/i;
+
+export function isProfileInUse(err: unknown): boolean {
+  return PROFILE_IN_USE.test(err instanceof Error ? err.message : String(err));
+}
+
+/** The sentence for "the dedicated profile is open elsewhere": what to close, and that nothing happened. */
+export function profileBusyMessage(platform: PlatformId, channel: BrowserChannel): string {
+  return (
+    `Close the ${PLATFORM_LABELS[platform]} sign-in window, then publish. ` +
+    `${channelName(channel)} could not open the BookReel profile, most likely because another ${channelName(channel)} window ` +
+    "is still using it (the sign-in window, or one an earlier publish left open). Nothing was opened and nothing was posted."
+  );
+}
+
 export interface Clock {
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -154,12 +334,22 @@ export const realClock: Clock = {
 
 /** Everything a test needs to replace. Production passes nothing. */
 export interface BrowserDeps {
+  youtubeReview?: typeof import("./youtube-review").reviewStudioVideo;
+  /** Test seam; production watchdog is 45 minutes, including platform processing. */
+  jobTimeoutMs?: number;
+  youtubeSchedule?: import("./native-controls").YouTubeScheduleControls;
   env?: EnvLike;
   clock?: Clock;
   /** Where Chromium is. Default: Playwright's own lookup. */
   locate?: () => string | null;
+  /** Where the installed Chrome/Edge is, in channel mode. Default: the standard install locations. */
+  locateChannel?: (channel: BrowserChannel) => string | null;
   /** Start a persistent context on `profileDir`. Default: Playwright's `launchPersistentContext`. */
   launch?: (profileDir: string, options: LaunchOptions) => Promise<ContextLike>;
+  /** Attach to the operator's running Chrome at `endpoint`. Default: Playwright's `connectOverCDP`. */
+  connect?: (endpoint: string) => Promise<AttachedBrowser>;
+  /** Asks the endpoint whether Chrome is there (`/json/version`). Default: the global `fetch`. */
+  fetchImpl?: typeof fetch;
   /** Root for the profile directories. Default: the work root. */
   profileRoot?: string;
 }
@@ -169,8 +359,20 @@ async function launchContext(profileDir: string, options: LaunchOptions): Promis
   return context as unknown as ContextLike;
 }
 
-/** The sentence that explains a missing Chromium, or null when one is present. */
+/**
+ * The sentence that explains a missing browser, or null when one is present --
+ * or when none is needed because the operator's own Chrome is attached to instead
+ * (`browserProblem` is the question to ask in that case).
+ *
+ * "A browser" is the bundled Chromium by default; with
+ * `BOOKREEL_PUBLISH_BROWSER_CHANNEL` set it is the installed Chrome/Edge instead,
+ * and the bundled one is irrelevant. Attaching outranks a channel.
+ */
 export function chromiumProblem(deps: BrowserDeps = {}): string | null {
+  const env = deps.env ?? process.env;
+  if (cdpEndpoint(env)) return null;
+  const channel = browserChannel(env);
+  if (channel) return (deps.locateChannel ?? locateBrowserChannel)(channel) ? null : channelMissing(channel);
   const located = (deps.locate ?? locateChromium)();
   return located
     ? null
@@ -178,27 +380,231 @@ export function chromiumProblem(deps: BrowserDeps = {}): string | null {
         "Install one with `npx playwright-core install chromium`, then try again. Nothing was sent.";
 }
 
+// ----------------------------------------------------------------- attaching to the operator's Chrome
+
+/** Setting this to the address of a Chrome the operator started themselves switches the engine from launching to attaching. */
+export const CDP_ENV = "BOOKREEL_PUBLISH_CHROME_CDP";
+
+/** The configured endpoint, or null when attaching is not configured (the default: launch Chromium). */
+export function cdpEndpoint(env: EnvLike = process.env): string | null {
+  const raw = (env[CDP_ENV] ?? "").trim();
+  return raw === "" ? null : raw;
+}
+
+/**
+ * Is this an address this app may attach to? A plain `http://` loopback address,
+ * and nothing else.
+ *
+ * Loopback only because the debugging port hands over the WHOLE browser (every
+ * tab, every signed-in session): it is meant to be reached from the same machine
+ * and from nowhere else. And an `http://` address only, so a bare name such as
+ * `chrome` (which Playwright would resolve by reading Chrome's profile directory)
+ * can never be what is attached to -- this app does not look inside the profile.
+ */
+export function cdpEndpointProblem(endpoint: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return `${CDP_ENV} is set to "${endpoint}", which is not an address. Use something like http://127.0.0.1:9222.`;
+  }
+  if (url.protocol !== "http:") {
+    return `${CDP_ENV} must be an http:// address on this computer, such as http://127.0.0.1:9222 (it is "${endpoint}").`;
+  }
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+    return `${CDP_ENV} points at ${url.hostname}, but Chrome's debugging port gives full control of the browser, so only this computer is allowed (127.0.0.1).`;
+  }
+  return null;
+}
+
+/** The steps that make Chrome attachable, as one sentence (the card lists the same steps). */
+export function chromeAttachHelp(platform: PlatformId, endpoint: string): string {
+  let port = "9222";
+  try {
+    port = new URL(endpoint).port || port;
+  } catch {
+    // The default port in the example is as good as any when the address itself is wrong.
+  }
+  return (
+    "To use your own Chrome: (1) quit Chrome completely; (2) start it again with remote debugging on its own profile folder, " +
+    `for example chrome.exe --remote-debugging-port=${port} --user-data-dir="%LOCALAPPDATA%\\bookreel-chrome" ` +
+    "(Chrome 136 and later ignore remote debugging on its default profile, so the --user-data-dir is required); " +
+    `(3) sign in to ${PLATFORM_LABELS[platform]} yourself in that Chrome, on the account this install publishes to; ` +
+    `(4) keep it open and try again. Nothing was sent.`
+  );
+}
+
+/**
+ * Why the operator's Chrome cannot be used right now, or null when it answers.
+ *
+ * A short sentence, with no steps in it (`browserProblem` adds those): the card
+ * shows this beside its own list of steps.
+ */
+export async function cdpProblem(endpoint: string, deps: BrowserDeps = {}): Promise<string | null> {
+  const bad = cdpEndpointProblem(endpoint);
+  if (bad) return bad;
+  const unreachable = `Could not reach a Chrome with remote debugging at ${endpoint}.`;
+  try {
+    const url = new URL("json/version", endpoint.endsWith("/") ? endpoint : `${endpoint}/`);
+    const res = await (deps.fetchImpl ?? fetch)(url, { signal: AbortSignal.timeout(2_000) });
+    if (!res.ok) return unreachable;
+    const body = (await res.json()) as { webSocketDebuggerUrl?: unknown } | null;
+    return typeof body?.webSocketDebuggerUrl === "string" ? null : unreachable;
+  } catch {
+    return unreachable;
+  }
+}
+
+/**
+ * Can a browser be had for this platform right now? The one question every
+ * caller asks before offering or starting a browser job.
+ *
+ * Launch mode (the default): is a Chromium installed. Attach mode: does the
+ * operator's own Chrome answer on its debugging port -- whether a bundled
+ * Chromium is installed is irrelevant there, and never consulted.
+ */
+export async function browserProblem(platform: PlatformId, deps: BrowserDeps = {}): Promise<string | null> {
+  const endpoint = cdpEndpoint(deps.env ?? process.env);
+  if (!endpoint) return chromiumProblem(deps);
+  const problem = await cdpProblem(endpoint, deps);
+  return problem ? `${problem} ${chromeAttachHelp(platform, endpoint)}` : null;
+}
+
+/**
+ * The operator's Chrome, attached to.
+ *
+ * `context` is deliberately only what a job needs -- it has no `close`, so no
+ * code written against it can close the operator's browser by accident.
+ * `disconnect` drops the connection and leaves Chrome and every tab as they are.
+ */
+export interface AttachedBrowser {
+  context: Pick<ContextLike, "pages" | "newPage">;
+  disconnect(): Promise<void>;
+}
+
+/** The attach attempt failed or was refused: the job is REQUIRES_CONNECTION, with the steps. */
+class CdpUnavailable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CdpUnavailable";
+  }
+}
+
+/** By name, not `instanceof`, like `isNeedsHuman`. */
+function isCdpUnavailable(err: unknown): err is CdpUnavailable {
+  return err instanceof Error && err.name === "CdpUnavailable";
+}
+
+/**
+ * The ONE place a running Chrome is attached to. No launch options exist here: the
+ * only things passed are that Chrome is on this computer (so a local video file can
+ * be handed over by path, not copied through the socket), that Playwright should
+ * not change the operator's browser-wide settings, and how long to wait.
+ *
+ * DISCONNECTING. Playwright has no separate `disconnect()`; for a browser obtained
+ * from `connectOverCDP`, `browser.close()` IS the disconnect -- in the installed
+ * playwright-core it ends the DevTools socket and nothing more (it does not send
+ * Chrome `Browser.close`, and no tab or window is closed). It is called here, in
+ * this closure, and nowhere else; the session never calls `close` on a context.
+ */
+async function connectChrome(endpoint: string): Promise<AttachedBrowser> {
+  const browser = await chromium.connectOverCDP(endpoint, { isLocal: true, noDefaults: true, timeout: 15_000 });
+  const disconnect = () => browser.close();
+  const context = browser.contexts()[0];
+  if (!context) {
+    await disconnect().catch(() => {});
+    throw new Error("Chrome answered, but exposed no browser to attach to");
+  }
+  return { context: context as unknown as AttachedBrowser["context"], disconnect };
+}
+
 // ----------------------------------------------------------------- the session
 
 export interface BrowserSession {
   page: PageLike;
   headless: boolean;
+  /**
+   * The installed browser this session was launched as (`BOOKREEL_PUBLISH_BROWSER_CHANNEL`), or
+   * null/absent for the bundled Chromium and for an attached Chrome. It only changes what a
+   * "you are signed out" stop tells the person to do (see `humanSentence`).
+   */
+  channel?: BrowserChannel | null;
   clock: Clock;
   /**
    * End the job. `leaveOpen` keeps the window up for a person -- only possible
    * when it is visible; a hidden window is closed, because nobody could use it.
    * Returns whether the window really was left open.
+   *
+   * When the operator's own Chrome is attached to, this only disconnects: the
+   * tab this job opened stays in their Chrome (so a sign-in can be finished in
+   * it, and a result can be looked at), and nothing of theirs is ever closed.
    */
   finish(options: { leaveOpen: boolean }): Promise<boolean>;
+}
+
+/**
+ * Attach to the operator's running Chrome and open one new tab for this job.
+ *
+ * A NEW tab, never one of theirs: navigating a tab they are using away to Studio
+ * would be taking something that is not ours. No window is registered with
+ * `live.ts` either -- there is no profile to free for a next job, and nothing here
+ * may be closed by `closeLeftOpenWindow`.
+ */
+async function attachSession(platform: PlatformId, endpoint: string, deps: BrowserDeps): Promise<BrowserSession> {
+  const refused = cdpEndpointProblem(endpoint);
+  if (refused) throw new CdpUnavailable(`${refused} ${chromeAttachHelp(platform, endpoint)}`);
+
+  let attached: AttachedBrowser;
+  try {
+    attached = await (deps.connect ?? connectChrome)(endpoint);
+  } catch (err) {
+    throw new CdpUnavailable(
+      `Could not attach to Chrome at ${endpoint} (${err instanceof Error ? err.message : String(err)}). ` +
+        chromeAttachHelp(platform, endpoint),
+    );
+  }
+
+  let page: PageLike;
+  try {
+    page = await attached.context.newPage();
+  } catch (err) {
+    await attached.disconnect().catch(() => {});
+    throw new CdpUnavailable(
+      `Attached to Chrome at ${endpoint} but could not open a tab in it (${err instanceof Error ? err.message : String(err)}). ` +
+        chromeAttachHelp(platform, endpoint),
+    );
+  }
+
+  return {
+    page,
+    // The operator's Chrome is whatever it is, and a person is looking at it: the headless setting is not theirs to hide.
+    headless: false,
+    channel: null,
+    clock: deps.clock ?? realClock,
+    finish: async () => {
+      await attached.disconnect().catch(() => {});
+      return true;
+    },
+  };
 }
 
 /**
  * Open the platform's window. Any window a previous job left open is closed first
  * (the profile can only be open once), which is also what a Retry is: the person
  * has done their part in that window, and the profile on disk carries it.
+ *
+ * With `BOOKREEL_PUBLISH_CHROME_CDP` set this is not a launch at all: see
+ * `attachSession` (and it outranks `BOOKREEL_PUBLISH_BROWSER_CHANNEL`). Unset,
+ * everything below is unchanged -- the one difference a channel makes is the
+ * `channel` field already inside `options`, which `launchOptionsFor` put there.
+ * The launched window belongs to this app and its dedicated profile, so `finish`
+ * may close it (or leave it for a person) exactly as it does for the bundled Chromium.
  */
 export async function openSession(platform: PlatformId, deps: BrowserDeps = {}): Promise<BrowserSession> {
   const env = deps.env ?? process.env;
+  const endpoint = cdpEndpoint(env);
+  if (endpoint) return attachSession(platform, endpoint, deps);
+
   const options = launchOptionsFor(env);
   const profileDir = profileDirFor(platform, deps.profileRoot);
 
@@ -213,6 +619,7 @@ export async function openSession(platform: PlatformId, deps: BrowserDeps = {}):
   return {
     page,
     headless: options.headless,
+    channel: options.channel ?? null,
     clock: deps.clock ?? realClock,
     finish: async ({ leaveOpen }) => {
       if (leaveOpen && !options.headless) {
@@ -234,6 +641,10 @@ export async function openSession(platform: PlatformId, deps: BrowserDeps = {}):
  * becomes AWAITING_HUMAN too, never FAILED -- an exception somewhere in a flow
  * that may already have pressed the final button is exactly the case where the
  * real outcome is unknown, and "failed" invites a retry that could post twice.
+ *
+ * Attached to the operator's own Chrome, the lock still serializes the platform's
+ * jobs, but releasing it closes nothing: `finish` only disconnects. If that Chrome
+ * cannot be reached the outcome is REQUIRES_CONNECTION, with the steps to start it.
  */
 export async function runInSession(
   platform: PlatformId,
@@ -243,13 +654,34 @@ export async function runInSession(
   const release = await acquirePlatformLock(platform);
   let session: BrowserSession | null = null;
   let leaveOpen = false;
+  let timedOut = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     const problem = chromiumProblem(deps);
     if (problem) return { status: "REQUIRES_CONNECTION", error: problem };
 
     try {
       session = await openSession(platform, deps);
+      session.page.setDefaultTimeout?.(15_000);
+      session.page.setDefaultNavigationTimeout?.(45_000);
     } catch (err) {
+      // The operator's Chrome could not be attached to: a connection to make, not a crash, and never a quiet fall back to Chromium.
+      if (isCdpUnavailable(err)) return { status: "REQUIRES_CONNECTION", error: err.message };
+      // The installed Chrome/Edge that was asked for would not open (most often: it is not installed). Also a
+      // connection to make, not a crash -- and never a quiet fall back to the bundled Chromium or to attaching.
+      const channel = browserChannel(deps.env ?? process.env);
+      if (channel && !cdpEndpoint(deps.env ?? process.env)) {
+        // The profile is open in another Chrome (most often the sign-in window): say to close it, which is not an install problem.
+        // FAILED, not REQUIRES_CONNECTION: the Publish Center shows a FAILED job's message, whereas a recorded
+        // REQUIRES_CONNECTION is recomputed away by `platformStatus` and its message would never be seen.
+        // Nothing was opened or posted, so a plain retry (the button is still there) is safe.
+        if (isProfileInUse(err)) return { status: "FAILED", error: profileBusyMessage(platform, channel) };
+        const why = (err instanceof Error ? err.message : String(err)).split("\n")[0].trim().slice(0, 200);
+        return {
+          status: "REQUIRES_CONNECTION",
+          error: `${channelName(channel)} did not start${why ? ` (${why})` : ""}. ${channelMissing(channel)}`,
+        };
+      }
       return {
         status: "FAILED",
         error:
@@ -259,7 +691,19 @@ export async function runInSession(
     }
 
     try {
-      const outcome = await work(session);
+      const activeSession = session;
+      const outcome = await Promise.race([
+        work(session),
+        new Promise<PublishOutcome>((resolve) => {
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            // Closing/disconnecting cancels pending automation before any retry
+            // is possible. The persisted uncertainty marker remains intact.
+            void activeSession.finish({ leaveOpen: false }).catch(() => {});
+            resolve({ status: "AWAITING_HUMAN", error: `The ${PLATFORM_LABELS[platform]} job exceeded its bounded execution time. Automation stopped; inspect the saved draft or schedule before retrying.` });
+          }, deps.jobTimeoutMs ?? 45 * 60_000);
+        }),
+      ]);
       leaveOpen = outcome.status === "AWAITING_HUMAN";
       return outcome;
     } catch (err) {
@@ -273,7 +717,8 @@ export async function runInSession(
       };
     }
   } finally {
-    if (session) await session.finish({ leaveOpen }).catch(() => {});
+    if (watchdog) clearTimeout(watchdog);
+    if (session && !timedOut) await session.finish({ leaveOpen }).catch(() => {});
     release();
   }
 }
@@ -476,7 +921,11 @@ export function judgePage(platform: PlatformId, snap: PageSnapshot): PageVerdict
     if (route.startsWith("/accounts/login") || route.startsWith("/accounts/emailsignup")) {
       return { kind: "signed_out", why: "Instagram's log-in page is showing" };
     }
-    if (!snap.hasAppShell && /\blog in\b/i.test(snap.title) && /\b(log in|sign up)\b/i.test(snap.bodyText)) {
+    if (
+      !snap.hasAppShell &&
+      ((/\blog in\b/i.test(snap.title) && /\b(log in|sign up)\b/i.test(snap.bodyText)) ||
+        /\b(log into instagram|mobile number, username or email)\b/i.test(snap.bodyText))
+    ) {
       return { kind: "signed_out", why: "Instagram is asking for a log-in" };
     }
   }
@@ -512,13 +961,22 @@ export async function snapshotOf(
 export function humanSentence(
   platform: PlatformId,
   reason: "sign_in" | "challenge",
-  options: { headless: boolean; detail?: string },
+  options: { headless: boolean; detail?: string; channel?: BrowserChannel | null },
 ): string {
   const label = PLATFORM_LABELS[platform];
   const where = options.headless
     ? "The browser is running hidden (BOOKREEL_PUBLISH_HEADLESS), so there is no window to do it in: unset that setting, restart, and try again."
     : "Do that in the open browser window, then press Retry.";
   if (reason === "sign_in") {
+    // YouTube in channel mode: Google refuses a sign-in typed into this automated window, so the person
+    // signs in once in a plain Chrome on the same profile (the Sign in button) and this window reuses it.
+    if (platform === "youtube" && options.channel) {
+      return (
+        `${label} wants you to sign in. This app never types or stores your password, and Google refuses a sign-in in a window that an automation tool opened. ` +
+        `Sign in once in a normal ${channelName(options.channel)} window instead: press "Sign in to ${label}" in the Publish panel, ` +
+        "sign in there, pick the channel, close that window, then press Retry."
+      );
+    }
     return `${label} wants you to sign in. This app never types or stores your password: sign in yourself. ${where}`;
   }
   const detail = options.detail ? ` (${options.detail})` : "";
@@ -563,7 +1021,7 @@ export async function assertNoWall(
 ): Promise<void> {
   const verdict = judgePage(platform, await snapshotOf(session.page, selectors));
   if (verdict.kind === "signed_out") {
-    throw new NeedsHuman("sign_in", humanSentence(platform, "sign_in", { headless: session.headless }));
+    throw new NeedsHuman("sign_in", humanSentence(platform, "sign_in", { headless: session.headless, channel: session.channel }));
   }
   if (verdict.kind === "challenge") {
     throw new NeedsHuman("challenge", humanSentence(platform, "challenge", { headless: session.headless, detail: verdict.why }));
@@ -578,21 +1036,32 @@ export async function assertNoWall(
  * posts publicly or declares anything on their behalf.
  */
 export interface BrowserPublishOptions {
+  /** Internal durable origin; set only after an explicit Publish-now confirmation. */
+  queueOrigin?: "operator-immediate";
+  /** Only the runner supplies these durable recovery facts. */
+  resumeDraftId?: string | null;
+  timezone?: string;
   /** YouTube: `private` unless asked otherwise. Instagram has no private post. */
   visibility?: "private" | "unlisted" | "public";
   /** YouTube only: schedule through Studio. Instagram's web uploader cannot. */
   scheduledAt?: Date | null;
   /**
-   * YouTube only: the operator's answer to "is this made for kids". Required, and
-   * never defaulted -- it is a legal declaration (the API path leaves it unset for
-   * the same reason), so it is asked, not assumed.
+   * Existing operator answer. A true value requires human review and is never
+   * overwritten with No. Browser uploads additionally review the video script.
    */
   madeForKids?: boolean;
+  /** Require content review; "studio" remains readable for older saved options. */
+  audienceMode?: "review" | "studio";
   /** The caller's explicit acknowledgement that this goes out publicly. */
   confirmPublic?: boolean;
 }
 
 export interface BrowserHooks extends PublishHooks {
+  /** Persist approved generated tags before any upload. */
+  onMetadata?: (metadata: import("../limits").PublishMetadata) => Promise<void>;
+  onLog?: (message: string) => void | Promise<void>;
+  /** Must be durable before a file is chosen or a final button is pressed. */
+  onCheckpoint?: (draftId: string) => void | Promise<void>;
   /** Which stage the job is in, for the row. Real stages only, never a percentage. */
   onStage?: (stage: "PREPARING" | "UPLOADING") => void | Promise<void>;
 }
@@ -627,8 +1096,8 @@ export function desiredVisibility(options: BrowserPublishOptions): "scheduled" |
  *
  *  - A public or scheduled YouTube post, and ANY Instagram post, must carry
  *    `confirmPublic: true`: they cannot be taken back from here.
- *  - YouTube's "made for kids" is the operator's own declaration and must be
- *    supplied, never defaulted.
+ *  - YouTube needs an explicit answer or the content-review path. Neither a
+ *    missing answer nor an existing false answer bypasses browser content review.
  *  - Instagram has no private post, so asking for one is refused rather than
  *    quietly turned into an immediate public one. An Instagram SCHEDULE is
  *    refused unless `BOOKREEL_IG_NATIVE_SCHEDULE` is on; when it is, the time is
@@ -638,6 +1107,7 @@ export function browserOptionProblems(
   platform: PlatformId,
   options: BrowserPublishOptions,
   now: number = Date.now(),
+  env: EnvLike = process.env,
 ): OptionProblem[] {
   const problems: OptionProblem[] = [];
   const scheduleAsked = options.scheduledAt !== undefined && options.scheduledAt !== null;
@@ -645,7 +1115,7 @@ export function browserOptionProblems(
 
   if (platform === "instagram") {
     if (scheduleAsked) {
-      if (!igNativeScheduleEnabled()) {
+      if (!igNativeScheduleEnabled(env)) {
         problems.push({
           code: "bad_options",
           message:
@@ -654,10 +1124,10 @@ export function browserOptionProblems(
         });
       } else if (!validDate) {
         problems.push({ code: "bad_options", message: "The scheduled time is not a valid date. Nothing was sent." });
-      } else if ((options.scheduledAt as Date).getTime() < now + MIN_SCHEDULE_LEAD_MS) {
+      } else if ((options.scheduledAt as Date).getTime() < now + 20 * 60_000) {
         problems.push({
           code: "bad_options",
-          message: "Pick a time at least 15 minutes from now to schedule an Instagram post. Nothing was sent.",
+          message: "Pick a time at least 20 minutes from now to schedule an Instagram post. Nothing was sent.",
         });
       }
     }
@@ -678,11 +1148,11 @@ export function browserOptionProblems(
     return problems;
   }
 
-  if (typeof options.madeForKids !== "boolean") {
+  if (typeof options.madeForKids !== "boolean" && options.audienceMode !== "studio" && options.audienceMode !== "review") {
     problems.push({
       code: "bad_options",
       message:
-        "Say whether this video is made for kids. YouTube requires an answer and it is a declaration only you can make, " +
+        "Say whether this video is made for kids, or use the Weekly Schedule content-review workflow. " +
         "so this app never assumes one. Nothing was sent.",
     });
   }

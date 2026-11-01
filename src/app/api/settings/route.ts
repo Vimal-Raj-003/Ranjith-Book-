@@ -96,7 +96,10 @@ export async function PUT(req: Request) {
       accepted.push([key, validated]);
     }
 
-    for (const [key, validated] of accepted) await setSetting(key, validated);
+    for (const [key, validated] of accepted) {
+      await setSetting(key, validated);
+      if (key === "cliProvider") await setSetting("engineChosen", "1");
+    }
     // Echo what was stored (the normalised form, not the raw input), so a
     // caller sees "-22" even if it sent -22. A theme-only PUT still answers
     // `{ theme }`, as it always did.

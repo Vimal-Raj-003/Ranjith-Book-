@@ -11,6 +11,7 @@ import VideoPreview from "./VideoPreview";
 import { Disclosure, EmptyState, Panel } from "./ui";
 import EpisodeCard, { POLL_MS } from "./EpisodeCard";
 import { useToast } from "./Toast";
+import Link from "next/link";
 
 /**
  * One book's analysis: its progress while it runs, then its ideas.
@@ -143,10 +144,40 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   if (loadError) return <EmptyState>{strings.books.loadError}</EmptyState>;
   if (!view) return <EmptyState>{strings.studio.loading}</EmptyState>;
 
+  async function toggleAll(selected: boolean) {
+    if (!view || view.ideas.length === 0) return;
+    const changedIds = view.ideas.filter((i) => i.selected !== selected).map((i) => i.id);
+    if (changedIds.length === 0) return;
+    const changedSet = new Set(changedIds);
+    setPending((s) => {
+      const next = new Set(s);
+      for (const id of changedIds) next.add(id);
+      return next;
+    });
+    setView((v) => v && { ...v, ideas: v.ideas.map((i) => (changedSet.has(i.id) ? { ...i, selected } : i)) });
+    try {
+      const res = await fetch(`/api/books/${uploadId}/ideas`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selected, ideaIds: changedIds }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setView((v) => v && { ...v, ideas: v.ideas.map((i) => (changedSet.has(i.id) ? { ...i, selected: !selected } : i)) });
+      show(strings.books.selectError, "error");
+    } finally {
+      setPending((s) => {
+        const next = new Set(s);
+        for (const id of changedIds) next.delete(id);
+        return next;
+      });
+    }
+  }
+
   const live = view.status !== "DONE";
   const selectedCount = view.ideas.filter((i) => i.selected).length;
   // Videos are listed in the order of the ideas they were made from.
-  const videoIds = view.ideas.map((i) => i.episode?.id).filter((id): id is string => Boolean(id));
+  const videoIds = view.ideas.flatMap((idea) => (idea.episodes ?? (idea.episode ? [idea.episode] : [])).map((episode) => episode.id));
   const activeVideo = selectedVideo && videoIds.includes(selectedVideo) ? selectedVideo : (videoIds[0] ?? null);
 
   return (
@@ -158,6 +189,14 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
         <span className="text-[12px]" style={{ color: "var(--mute)" }}>
           {strings.books.pages(view.pageCount)}
         </span>
+        {/* The Weekly Schedule sits in the header, centred in the space between the title and
+            the clock, once there is a video to schedule. It reads the same per-episode snapshots
+            the cards report, so a video is offered only when `publishEnabled` says it is finished. */}
+        {view.status === "DONE" && videoIds.length > 0 && (
+          <div className="mx-auto">
+            <Link href="/schedule" className="rounded-lg border px-3 py-1.5 text-[12px] font-mono" style={{borderColor:"var(--line)"}}>Weekly Schedule</Link>
+          </div>
+        )}
         {/* The run panel below is not drawn once the run is DONE, so the final
             duration is kept here; the same component, frozen, no remount reset. */}
         {!live && (
@@ -166,7 +205,7 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
             createdAt={view.createdAt}
             startedAt={view.startedAt}
             updatedAt={view.updatedAt}
-            className="ml-auto"
+            className={videoIds.length > 0 ? undefined : "ml-auto"}
           />
         )}
       </div>
@@ -270,6 +309,26 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
             <span className="font-mono text-[11.5px]" style={{ color: "var(--mute)" }}>
               {strings.books.selectedCount(selectedCount)}
             </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void toggleAll(true)}
+                disabled={view.ideas.length === 0 || selectedCount === view.ideas.length || pending.size > 0 || generating}
+                className="rounded-lg border px-2.5 py-1 text-[12px] font-medium disabled:opacity-50"
+                style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+              >
+                {strings.books.selectAll}
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleAll(false)}
+                disabled={selectedCount === 0 || pending.size > 0 || generating}
+                className="rounded-lg border px-2.5 py-1 text-[12px] font-medium disabled:opacity-50"
+                style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+              >
+                {strings.books.deselectAll}
+              </button>
+            </div>
             <button
               type="button"
               onClick={generate}
@@ -285,33 +344,31 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
             {selectedCount === 0 ? strings.books.generateNone : strings.books.generateHint}
           </p>
 
-          {videoIds.length > 0 && (
-            <section aria-labelledby="videos-heading" className="flex flex-col gap-2">
-              <h2 id="videos-heading" className="font-display text-[15px] font-semibold" style={{ color: "var(--ink)" }}>
-                {strings.books.videosHeading}
-              </h2>
-              <div className="books-videos grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
-                <div className="flex flex-col gap-2">
-                  {videoIds.map((id) => (
-                    <EpisodeCard
-                      key={id}
-                      episodeId={id}
-                      active={id === activeVideo}
-                      onSelect={setSelectedVideo}
-                      onState={handleEpisodeState}
-                      showPublish
-                    />
-                  ))}
-                </div>
-                <VideoPreview episode={activeVideo ? (episodeStates[activeVideo] ?? null) : null} />
-              </div>
-            </section>
-          )}
-
-          <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))" }}>
-            {view.ideas.map((idea) => (
-              <IdeaCard key={idea.id} idea={idea} busy={pending.has(idea.id)} onToggle={(sel) => toggle(idea.id, sel)} />
-            ))}
+          <div className="flex flex-col gap-5">
+            {view.ideas.map((idea) => {
+              const videos = idea.episodes ?? (idea.episode ? [idea.episode] : []);
+              return (
+                <section key={idea.id} aria-labelledby={`idea-${idea.id}`} data-idea-group={idea.id} className="@container flex min-w-0 flex-col gap-2">
+                  <IdeaCard idea={idea} busy={pending.has(idea.id)} onToggle={(sel) => toggle(idea.id, sel)} />
+                  {videos.length ? videos.map(({ id }) => (
+                    <div key={id} data-idea-video={id} className="books-videos grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
+                      <EpisodeCard
+                        episodeId={id}
+                        active={id === activeVideo}
+                        onSelect={setSelectedVideo}
+                        onState={handleEpisodeState}
+                        showPublish
+                      />
+                      <VideoPreview key={id} episode={episodeStates[id] ?? null} />
+                    </div>
+                  )) : (
+                    <p className="rounded-lg border px-3 py-2 text-[12px]" style={{ borderColor: "var(--line)", color: "var(--mute-2)" }}>
+                      No generated video yet
+                    </p>
+                  )}
+                </section>
+              );
+            })}
           </div>
         </section>
       )}

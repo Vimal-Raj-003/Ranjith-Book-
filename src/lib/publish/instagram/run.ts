@@ -34,6 +34,7 @@
  * through, not in the button — a second client cannot skip it.
  */
 import { prisma } from "@/lib/db";
+import { assertPublishingEnabled } from "../execution";
 import { AppError } from "@/lib/errors";
 import { isPublishRefused, type PreparedPublish } from "../contract";
 import { loadPublishRequest, publishView } from "../state";
@@ -123,6 +124,7 @@ export async function startInstagramPublish(
   // is touched: this is a public, irreversible action. `loadPublishRequest` is
   // the strict rule (`userId === user.id`), not the generous one reads use.
   const { request } = await loadPublishRequest(userId, episodeId, "instagram");
+  assertPublishingEnabled("instagram", env);
 
   const existing = await currentJob(episodeId);
   if (existing?.externalId) {

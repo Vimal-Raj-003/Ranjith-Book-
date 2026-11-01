@@ -49,6 +49,9 @@ export function ideaView(idea: IdeaRow, pages: Pick<Page, "id" | "pageIndex" | "
     sourceText: idea.sourceText,
     selected: idea.status === "SELECTED",
     episode: latestEpisode(idea.episodes),
+    episodes: [...(idea.episodes ?? [])]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id))
+      .map(({ id, status }) => ({ id, status })),
   };
 }
 

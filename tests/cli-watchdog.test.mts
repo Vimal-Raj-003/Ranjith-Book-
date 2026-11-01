@@ -153,7 +153,7 @@ test("calls outside an episode (book analysis, page reading, the rest) are left 
     const args = claudeArgs(system, { env: {} });
     assert.ok(!args.includes("--model"), system);
     assert.ok(!args.includes("--effort"), system);
-    assert.ok(!args.includes("--setting-sources"), system);
+    assert.equal(flagValue(args, "--setting-sources"), "project", system);
   }
 });
 
@@ -212,4 +212,82 @@ test("a model, when given, is passed through", () => {
   assert.equal(flagValue(claudeArgs("s", { env: {}, model: "claude-sonnet-4-6" }), "--model"), "claude-sonnet-4-6");
   assert.ok(!claudeArgs("s", { env: {} }).includes("--model"));
   assert.equal(flagValue(claudeArgs(WRITER, { env: {}, model: "claude-sonnet-4-6" }), "--model"), "claude-sonnet-4-6", "the app's cliModel setting beats the pin");
+});
+
+import { cleanEnv, runCli } from "../src/lib/content/cli";
+import fs from "node:fs/promises";
+import path from "node:path";
+
+test("cleanEnv strips ambient Anthropic API / local-proxy overrides and disables claude.ai remote MCP bloat", async () => {
+  const dirty: Record<string, string | undefined> = {
+    PATH: process.env.PATH,
+    ANTHROPIC_API_KEY: "ollama",
+    ANTHROPIC_BASE_URL: "http://localhost:11434/v1",
+    ANTHROPIC_MODEL: "qwen2.5-coder:7b",
+    ANTHROPIC_AUTH_TOKEN: "tok",
+    ANTHROPIC_SMALL_FAST_MODEL: "haiku",
+  };
+  const cleaned = cleanEnv(dirty);
+  assert.equal(cleaned.ANTHROPIC_API_KEY, undefined);
+  assert.equal(cleaned.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(cleaned.ANTHROPIC_MODEL, undefined);
+  assert.equal(cleaned.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(cleaned.ANTHROPIC_SMALL_FAST_MODEL, undefined);
+  assert.equal(cleaned.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
+  assert.equal(cleaned.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  const prevUrl = process.env.ANTHROPIC_BASE_URL;
+  process.env.ANTHROPIC_API_KEY = "ollama";
+  process.env.ANTHROPIC_BASE_URL = "http://localhost:11434/v1";
+  try {
+    const { stdout } = await run(
+      node,
+      ["-e", "console.log(JSON.stringify({ key: process.env.ANTHROPIC_API_KEY ?? null, url: process.env.ANTHROPIC_BASE_URL ?? null, mcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS }))"],
+      { cwd, timeoutMs: 10_000 },
+    );
+    assert.deepEqual(JSON.parse(stdout.trim()), { key: null, url: null, mcp: "false" });
+  } finally {
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+    if (prevUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = prevUrl;
+  }
+});
+
+test("runCli rejects is_error envelopes (such as ConnectionRefused) with CliError while still allowing error_max_turns", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cli-err-test-"));
+  const fakeBin = path.join(dir, "fake-claude.mjs");
+  const prevBin = process.env.CLAUDE_CLI_BIN;
+  try {
+    await fs.writeFile(
+      fakeBin,
+      `let input = ""; process.stdin.on("data", d => input += d); process.stdin.on("end", () => {
+        if (input.includes("MAX_TURNS")) {
+          console.log(JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true, result: '{"ok":true}' }));
+        } else {
+          console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "API Error: Unable to connect to API (ConnectionRefused)" }));
+        }
+      });`,
+      "utf8",
+    );
+    process.env.CLAUDE_CLI_BIN = fakeBin;
+
+    await assert.rejects(
+      runCli("claude-cli", EDITOR, "find ideas"),
+      (err: Error) => {
+        assert.ok(err instanceof CliError);
+        assert.match(err.message, /Unable to connect to API \(ConnectionRefused\)/);
+        assert.doesNotMatch(err.message, /Could not read JSON/);
+        return true;
+      },
+    );
+
+    const turnLimitReply = await runCli("claude-cli", EDITOR, "MAX_TURNS");
+    assert.equal(turnLimitReply, '{"ok":true}');
+  } finally {
+    if (prevBin === undefined) delete process.env.CLAUDE_CLI_BIN;
+    else process.env.CLAUDE_CLI_BIN = prevBin;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

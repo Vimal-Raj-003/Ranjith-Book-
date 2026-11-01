@@ -109,6 +109,8 @@ export interface IdeaView {
   /** The idea's latest video, if one has been generated. Polled for detail via
    *  `GET /api/episodes/[id]`. */
   episode: { id: string; status: string } | null;
+  /** All videos linked by Episode.contentIdeaId; latest first. */
+  episodes?: { id: string; status: string }[];
 }
 
 export interface AnalysisView {

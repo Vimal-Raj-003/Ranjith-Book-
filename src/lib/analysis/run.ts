@@ -32,7 +32,7 @@ import { readPage, wordsOf, type PageText } from "../ingest/vision";
 import { alignWords } from "../ingest/align";
 import { buildLineRuns } from "../ingest/lines";
 import { runCliJson } from "../content/cli-provider";
-import type { CliProvider } from "../content/cli";
+import { resolveProvider, type CliProvider } from "../content/cli";
 import { extractPdf, readRawPage, PdfError } from "../pdf/extract";
 import {
   bodyFontSize,
@@ -88,7 +88,7 @@ function message(err: unknown): string {
 }
 
 async function contentProvider(): Promise<CliProvider> {
-  return (await getSetting("cliProvider")) === "codex-cli" ? "codex-cli" : "claude-cli";
+  return resolveProvider(await getSetting("cliProvider"));
 }
 
 async function cliModel(): Promise<string | undefined> {
@@ -199,10 +199,11 @@ async function extractAndRead(
       .filter((i) => (ocrWords.get(i)?.length ?? 0) > 0 && meanConf(ocrWords.get(i)!) < OCR_REREAD_BELOW)
       .slice(0, MAX_VISION_REREADS);
     if (doubtful.length) {
+      const visionProvider = await contentProvider();
       let n = 0;
       await mapLimit(doubtful, 3, async (i) => {
         try {
-          const text = await readPage(imageOf(i), i, "claude-cli", model);
+          const text = await readPage(imageOf(i), i, visionProvider, model);
           if (text.legible && text.paragraphs.length) vision.set(i, text);
         } catch (err) {
           report.note(`Page ${i + 1}: the second reading failed (${message(err)}) — using OCR text as is.`);
@@ -381,7 +382,7 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
     await report.progress(`Embedding ${chunks.length} passages`, 0, chunks.length, true);
     const { vectors: chunkVectors, embedder } = await embedWithFallback(chunks.map((c) => c.text), report, stats);
 
-    await prisma.contentIdea.deleteMany({ where: { uploadId } });
+
     await prisma.chunk.deleteMany({ where: { uploadId } });
     await prisma.section.deleteMany({ where: { uploadId } });
     await prisma.section.createMany({
@@ -425,9 +426,23 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
     // of the first batch takes. `done`/`total` still count only FINISHED
     // windows — the progress bar itself never lies about how much is done —
     // only the label changes to say what is happening right now.
+    const inFlight = new Map<number, number>();
+    const progressLabel = (fallback: string) => {
+      if (inFlight.size === 0) return fallback;
+      const [idx, att] = [...inFlight.entries()].sort((a, b) => a[0] - b[0])[0];
+      return att > 1
+        ? `Reading passage ${idx + 1} of ${windows.length} again…`
+        : `Reading passage ${idx + 1} of ${windows.length}…`;
+    };
     const results = await mapLimit(windows, WINDOW_CONCURRENCY, async (w) => {
+      if (stats.windowsFailed >= WINDOW_CONCURRENCY && finished === stats.windowsFailed) {
+        stats.windowsFailed++;
+        ++finished;
+        return null;
+      }
       const prompt = windowPrompt(w, chunks, pages!, sections, bookTitle, perWindow);
       for (let attempt = 1; attempt <= 2; attempt++) {
+        inFlight.set(w.index, attempt);
         await report.progress(
           attempt === 1
             ? `Reading passage ${w.index + 1} of ${windows.length}…`
@@ -438,14 +453,20 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
         );
         try {
           const reply = await runCliJson<unknown>(provider, CANDIDATE_SYSTEM, prompt, CANDIDATE_SCHEMA, model);
-          await report.progress(`Read passage ${++finished} of ${windows.length}`, finished, windows.length, true);
+          inFlight.delete(w.index);
+          ++finished;
+          await report.progress(progressLabel(`Read passage ${finished} of ${windows.length}`), finished, windows.length, true);
+    
           return groundCandidates(reply, w, pages!, sections);
         } catch (err) {
           lastError = message(err);
         }
       }
+      inFlight.delete(w.index);
       stats.windowsFailed++;
-      await report.progress(`Read passage ${++finished} of ${windows.length}`, finished, windows.length, true);
+      ++finished;
+      await report.progress(progressLabel(`Read passage ${finished} of ${windows.length}`), finished, windows.length, true);
+
       const pagesOf = `${w.pages[0] + 1}–${w.pages[w.pages.length - 1] + 1}`;
       report.note(`Pages ${pagesOf} could not be analysed (${lastError}) — ideas from them are missing.`);
       return null;
@@ -525,6 +546,7 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
     // script writer can draw on beyond the quoted lines.
     const relatedFloor = embedder.id === "lexical" ? 0.25 : 0.45;
     const keys = ideaKeys(selected.map((c) => c.title));
+    await prisma.contentIdea.deleteMany({ where: { uploadId } });
     await prisma.contentIdea.createMany({
       data: selected.map((c, i) => {
         const own = new Set(c.refs.map((r) => r.pageIndex));

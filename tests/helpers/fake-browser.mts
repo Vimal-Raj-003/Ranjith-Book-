@@ -23,6 +23,8 @@ import type {
   LocatorLike,
   PageLike,
 } from "../../src/lib/publish/browser/engine";
+import type { Spawner } from "../../src/lib/publish/browser/signin";
+import { scriptedYouTubeSchedule } from "./schedule-controls.mjs";
 
 type Thunk<T> = T | (() => T);
 const val = <T,>(v: Thunk<T> | undefined, fallback: T): T =>
@@ -209,6 +211,123 @@ export function fakeClock(): Clock & { elapsed(): number } {
   };
 }
 
+/**
+ * The operator's OWN Chrome, as the engine sees it once attached: a context the
+ * engine is handed WITHOUT a `close` (see `AttachedBrowser`), that still counts any
+ * `close` that is called anyway. `closeCalls` must stay 0 on every outcome.
+ *
+ * It starts with one tab the operator already had open (`operatorTab`), which the
+ * job must never navigate or touch; the job gets a NEW tab (`page`) from `newPage`.
+ */
+export class FakeChromeContext {
+  closeCalls = 0;
+  readonly opened: FakePage[] = [];
+  constructor(
+    private readonly page: FakePage,
+    readonly operatorTab: FakePage,
+  ) {}
+  pages(): PageLike[] {
+    return [this.operatorTab, ...this.opened];
+  }
+  async newPage(): Promise<PageLike> {
+    this.opened.push(this.page);
+    return this.page;
+  }
+  async close(): Promise<void> {
+    this.closeCalls++;
+  }
+  on(): unknown {
+    return this;
+  }
+}
+
+export interface FakeChrome {
+  deps: BrowserDeps;
+  /** The endpoint of every attach, and how many arguments `connect` was called with. */
+  connects: Array<{ endpoint: string; argCount: number }>;
+  /** Every launch attempted. Attach mode must leave this empty -- a launch would be a silent fall back to Chromium. */
+  launches: Array<{ profileDir: string; options: LaunchOptions }>;
+  /** Every address asked about (the reachability probe). */
+  probes: string[];
+  disconnects: number;
+  context: FakeChromeContext;
+  operatorTab: FakePage;
+  clock: ReturnType<typeof fakeClock>;
+}
+
+/**
+ * `BrowserDeps` for the attach mode: `BOOKREEL_PUBLISH_CHROME_CDP` set, a `connect`
+ * that hands over `FakeChromeContext`, a probe that answers like Chrome's
+ * `/json/version`, and NO bundled Chromium (`locate` finds none), so anything that
+ * quietly fell back to launching one would show up in `launches`.
+ *
+ * `chrome`: `up` (default) answers; `down` refuses both the probe and the attach;
+ * `no-tab` attaches but cannot open a tab.
+ */
+export function fakeChrome(
+  page: FakePage,
+  options: {
+    profileRoot: string;
+    endpoint?: string;
+    env?: Record<string, string | undefined>;
+    chrome?: "up" | "down" | "no-tab";
+  },
+): FakeChrome {
+  const endpoint = options.endpoint ?? "http://127.0.0.1:9222";
+  const state = options.chrome ?? "up";
+  const connects: FakeChrome["connects"] = [];
+  const launches: FakeChrome["launches"] = [];
+  const probes: string[] = [];
+  const operatorTab = new FakePage();
+  const context = new FakeChromeContext(page, operatorTab);
+  if (state === "no-tab") {
+    context.newPage = async () => {
+      throw new Error("Target.createTarget failed");
+    };
+  }
+  const clock = fakeClock();
+  const result: FakeChrome = {
+    connects,
+    launches,
+    probes,
+    disconnects: 0,
+    context,
+    operatorTab,
+    clock,
+    deps: {
+      env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1", BOOKREEL_PUBLISH_CHROME_CDP: endpoint, ...options.env },
+      youtubeSchedule: scriptedYouTubeSchedule,
+      youtubeReview: async p => ({ tags: p.metadata.tags ?? [], reason: "Fixture reviewer approved the synthetic general-audience script." }),
+      clock,
+      profileRoot: options.profileRoot,
+      locate: () => null,
+      launch: async (profileDir, launchOptions) => {
+        launches.push({ profileDir, options: launchOptions });
+        return new FakeContext(page);
+      },
+      connect: async (...args: [string, ...unknown[]]) => {
+        connects.push({ endpoint: args[0], argCount: args.length });
+        if (state === "down") throw new Error(`connect ECONNREFUSED ${args[0]}`);
+        return {
+          context,
+          disconnect: async () => {
+            result.disconnects++;
+          },
+        };
+      },
+      fetchImpl: (async (input: string | URL | Request) => {
+        probes.push(String(input));
+        if (state === "down") throw new TypeError("fetch failed");
+        return new Response(
+          JSON.stringify({ Browser: "Chrome/140.0.0.0", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/abc" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch,
+    },
+  };
+  return result;
+}
+
 export interface FakeLaunches {
   deps: BrowserDeps;
   /** Every launch: the profile dir and the options it was given. */
@@ -220,7 +339,15 @@ export interface FakeLaunches {
 /** `BrowserDeps` that launch a `FakeContext` on `page`, record the launch, and find a "Chromium". */
 export function fakeBrowser(
   page: FakePage,
-  options: { profileRoot: string; env?: Record<string, string | undefined>; chromium?: boolean },
+  options: {
+    profileRoot: string;
+    env?: Record<string, string | undefined>;
+    chromium?: boolean;
+    /** Channel mode (`BOOKREEL_PUBLISH_BROWSER_CHANNEL`): is the installed Chrome/Edge "found"? Default yes. */
+    channelInstalled?: boolean;
+    /** Make the launch itself throw, as Playwright does when the channel's browser is missing. */
+    launchError?: Error;
+  },
 ): FakeLaunches {
   const launches: FakeLaunches["launches"] = [];
   const context = new FakeContext(page);
@@ -231,13 +358,41 @@ export function fakeBrowser(
     clock,
     deps: {
       env: options.env ?? {},
+      youtubeSchedule: scriptedYouTubeSchedule,
+      youtubeReview: async p => ({ tags: p.metadata.tags ?? [], reason: "Fixture reviewer approved the synthetic general-audience script." }),
       clock,
       profileRoot: options.profileRoot,
       locate: () => (options.chromium === false ? null : "C:/fake/chromium/chrome.exe"),
+      locateChannel: () => (options.channelInstalled === false ? null : "C:/fake/installed/chrome.exe"),
       launch: async (profileDir, launchOptions) => {
         launches.push({ profileDir, options: launchOptions });
+        if (options.launchError) throw options.launchError;
         return context;
       },
+    },
+  };
+}
+
+export interface FakeSpawn {
+  /** Every program the sign-in asked to start, with the exact argument list it was given. */
+  spawns: Array<{ executable: string; argv: string[] }>;
+  spawner: Spawner;
+}
+
+/**
+ * A `Spawner` that starts NOTHING: it records the program and its arguments, so the
+ * plain-Chrome command line can be asserted on without any Chrome existing. `fail`
+ * makes it refuse, as the operating system does for a program that will not start.
+ * `onSpawn` runs at the moment of the call, for "this had already happened by then" checks.
+ */
+export function fakeSpawner(options: { fail?: unknown; onSpawn?: () => void } = {}): FakeSpawn {
+  const spawns: FakeSpawn["spawns"] = [];
+  return {
+    spawns,
+    spawner: async (executable, argv) => {
+      options.onSpawn?.();
+      spawns.push({ executable, argv: [...argv] });
+      if (options.fail !== undefined) throw options.fail;
     },
   };
 }

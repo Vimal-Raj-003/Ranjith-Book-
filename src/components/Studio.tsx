@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastHost } from "./Toast";
 import UploadDropzone from "./UploadDropzone";
 import UploadRun from "./UploadRun";
@@ -11,7 +11,8 @@ import LibraryGrid from "./LibraryGrid";
 import Inspector from "./Inspector";
 import Sidebar from "./Sidebar";
 import { Badge, Disclosure, Panel, useMediaQuery, usePersistentFlag } from "./ui";
-import { strings } from "@/lib/strings";
+import { strings, type GeminiModelId, type GenerationEngineId } from "@/lib/strings";
+import EngineSelectorModal, { type EngineSnapshot } from "./EngineSelectorModal";
 import FreeBooks from "./FreeBooks";
 import BooksView from "./BooksView";
 import type { EpisodeState, View } from "./types";
@@ -52,7 +53,13 @@ import type { EpisodeState, View } from "./types";
  * only when the snapshot's `status` or `hasVideo` changes, never on the 1.5s
  * tick, because those are the only two things that can change its answer.
  */
-export default function Studio({ email }: { email: string }) {
+export default function Studio({
+  email,
+  initialEngine,
+}: {
+  email: string;
+  initialEngine?: { chosen: boolean; provider: GenerationEngineId };
+}) {
   const [view, setView] = useState<View>("studio");
 
   // Per-device UI state, not project data: which rails this person keeps open.
@@ -69,6 +76,80 @@ export default function Studio({ email }: { email: string }) {
   const [episodeIds, setEpisodeIds] = useState<string[]>([]);
   const [states, setStates] = useState<Record<string, EpisodeState>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [engineSnapshot, setEngineSnapshot] = useState<EngineSnapshot | null>(null);
+  const [engineLoading, setEngineLoading] = useState(false);
+  const [engineModalOpen, setEngineModalOpen] = useState<boolean>(
+    () => (initialEngine ? !initialEngine.chosen : false),
+  );
+  const skippedRef = useRef(false);
+
+  const loadEngineSnapshot = useCallback(async (openIfUnchosen = false) => {
+    setEngineLoading(true);
+    try {
+      const res = await fetch("/api/settings/engine", { cache: "no-store" });
+      if (!res.ok) return null;
+      const snap = (await res.json()) as EngineSnapshot;
+      setEngineSnapshot(snap);
+      if (openIfUnchosen && !snap.chosen && !skippedRef.current) {
+        setEngineModalOpen(true);
+      }
+      return snap;
+    } catch {
+      return null;
+    } finally {
+      setEngineLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadEngineSnapshot(true);
+  }, [loadEngineSnapshot]);
+
+  const handleSelectEngine = useCallback(
+    async (
+      provider: GenerationEngineId,
+      confirmUnconfigured = false,
+      geminiModel?: GeminiModelId,
+    ): Promise<EngineSnapshot | null> => {
+      const res = await fetch("/api/settings/engine", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          confirmUnconfigured,
+          ...(geminiModel ? { geminiModel } : {}),
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(body?.error?.message ?? "Could not save generation engine.");
+      }
+      const snap = body as EngineSnapshot;
+      setEngineSnapshot(snap);
+      return snap;
+    },
+    [],
+  );
+
+  const handleSaveApiKey = useCallback(async (provider: GenerationEngineId, apiKey: string): Promise<EngineSnapshot | null> => {
+    const res = await fetch("/api/settings/engine", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider, apiKey }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(body?.error?.message ?? "Could not save API key.");
+    }
+    const snap = body as EngineSnapshot;
+    setEngineSnapshot(snap);
+    return snap;
+  }, []);
+
+  const handleSkipEngineModal = useCallback(() => {
+    skippedRef.current = true;
+    setEngineModalOpen(false);
+  }, []);
 
   const watchEpisodes = useCallback((ids: string[]) => {
     setEpisodeIds((prev) => {
@@ -228,9 +309,26 @@ export default function Studio({ email }: { email: string }) {
             episode={active}
             collapsed={!inspOpen}
             onToggleCollapsed={() => setInspOpen(!inspOpen)}
+            engineSnapshot={engineSnapshot}
+            onOpenEngineModal={() => setEngineModalOpen(true)}
+            onSelectEngine={handleSelectEngine}
+            onRecheckEngine={() => loadEngineSnapshot(false)}
           />
         </aside>
       </div>
+
+      <EngineSelectorModal
+        open={engineModalOpen}
+        snapshot={engineSnapshot}
+        loading={engineLoading}
+        onSelectEngine={handleSelectEngine}
+        onSaveApiKey={handleSaveApiKey}
+        onRecheck={async () => {
+          await loadEngineSnapshot(false);
+        }}
+        onSkip={handleSkipEngineModal}
+        onClose={() => setEngineModalOpen(false)}
+      />
     </ToastHost>
   );
 }

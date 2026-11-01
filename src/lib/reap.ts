@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { isEpisodeLive } from "./episodes/live";
+import { isAnalysisRunning } from "./analysis/run";
 import { releaseIdea } from "./content/idea";
 import { recoverInterruptedBrowserJobs } from "./publish/browser/recover";
 
@@ -97,7 +98,8 @@ export async function reapStaleRuns(): Promise<number> {
     select: { id: true, step: true },
   });
 
-  for (const upload of staleUploads) {
+  const reapableUploads = staleUploads.filter((u) => !isAnalysisRunning(u.id));
+  for (const upload of reapableUploads) {
     await prisma.upload.update({
       where: { id: upload.id },
       data: {
@@ -116,5 +118,5 @@ export async function reapStaleRuns(): Promise<number> {
   // this process. See `publish/browser/recover.ts`.
   const handedToAPerson = await recoverInterruptedBrowserJobs().catch(() => 0);
 
-  return reapable.length + staleUploads.length + handedToAPerson;
+  return reapable.length + reapableUploads.length + handedToAPerson;
 }

@@ -87,7 +87,10 @@ const withoutComments = (source: string): string =>
 const KEY = crypto.randomBytes(32).toString("base64");
 
 /** A fully configured environment, with no real credential in it. */
+process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED = "1";
+
 const CONFIGURED: EnvLike = {
+  BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1",
   META_APP_ID: "test-app-id",
   META_APP_SECRET: "test-app-secret",
   PUBLIC_BASE_URL: "https://reels.example.test",
@@ -1237,7 +1240,7 @@ test("an unconfigured server, an unconnected user and an unreachable public addr
     const opts = { fetchImpl: graph.impl, confirmPublic: true, ...fakeClock() };
 
     await assert.rejects(
-      () => startInstagramPublish(s.ownerId, s.ownedEpisodeId, { env: {}, ...opts }),
+      () => startInstagramPublish(s.ownerId, s.ownedEpisodeId, { env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" }, ...opts }),
       (e: unknown) => {
         const err = e as { status?: number; code?: string; message?: string };
         assert.equal(err.status, 409);
@@ -1271,7 +1274,7 @@ test("an unconfigured server, an unconnected user and an unreachable public addr
 test("the registry hands Instagram its own provider, whose capabilities and steps are the handoff's until a verified account exists", async () => {
   assert.equal(hasRealPublisher("instagram"), true);
 
-  const unconfigured = publisherFor("instagram", { userId: "u1", env: {} });
+  const unconfigured = publisherFor("instagram", { userId: "u1", env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
   const handoff = manualHandoff("instagram");
   const caps = unconfigured.capabilities();
   const manualCaps = handoff.capabilities();
@@ -1336,7 +1339,7 @@ test("configured, connected and verified: the provider offers the API, still wit
     assert.equal(yt.status, "REQUIRES_CONNECTION", "YouTube is untouched by an Instagram connection");
 
     // With no Meta app in the environment the same user falls back to the handoff.
-    const fallback = await publishView(s.ownerId, s.ownedEpisodeId, { env: {} });
+    const fallback = await publishView(s.ownerId, s.ownedEpisodeId, { env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } });
     const igFallback = fallback.platforms.find((p) => p.platform === "instagram")!;
     assert.equal(igFallback.status, "REQUIRES_CONNECTION");
     assert.equal(igFallback.capabilities.canUpload, false);
@@ -1398,7 +1401,7 @@ function renderCard(state: Partial<PlatformState>, owned = true): string {
     platform: "instagram",
     label: "Instagram",
     status: "REQUIRES_CONNECTION",
-    capabilities: instagramPublisher({ userId: null, env: {} }).capabilities(),
+    capabilities: instagramPublisher({ userId: null, env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1" } }).capabilities(),
     hasPublisher: true,
     configured: false,
     problems: [],

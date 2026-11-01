@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { prisma } from "../db";
 import { ContentRejectedError } from "../errors";
 import { reserveIdea, releaseIdea } from "./idea";
-import type { Archetype, ContentPackage, GenerateInput, IdeaBrief, LengthSpec, ScriptLength } from "./schema";
+import type { Archetype, Beat, ContentPackage, GenerateInput, IdeaBrief, LengthSpec, ScriptLength } from "./schema";
 import { LENGTHS, spokenWordCount, voScriptFromPackage } from "./schema";
 import { expectedSeconds, maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
 import { checkRanges } from "./ranges";
@@ -340,10 +340,132 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
    * asked to fix it, rather than the run being failed outright for a mistake
    * a rewrite reliably fixes.
    */
+  function withDraftContext(brief: string, draft: ContentPackage): string {
+    const beatLines = draft.beats
+      .map(
+        (b, i) =>
+          `  beats[${i}] (PAGE ${b.sourcePage}, words ${b.startWord}–${b.endWord}): "${b.voiceover}"`,
+      )
+      .join("\n");
+    return `${brief}\n\nYour previous draft beats (for reference while fixing the issue above):\n${beatLines}`;
+  }
+
+  function repairBeatRangesForGate(
+    beats: Beat[],
+    lengths: Map<number, number>,
+  ): { beats: Beat[]; repairs: string[] } {
+    const out = beats.map((b) => ({ ...b }));
+    const repairs: string[] = [];
+    const validPages = [...lengths.keys()].sort((a, b) => a - b);
+    if (validPages.length === 0) return { beats: out, repairs };
+
+    out.forEach((b, i) => {
+      if (!lengths.has(b.sourcePage)) {
+        const prevPage = b.sourcePage;
+        if (lengths.has(b.sourcePage - 1)) {
+          b.sourcePage = b.sourcePage - 1;
+        } else {
+          b.sourcePage = validPages.reduce(
+            (best, p) => (Math.abs(p - prevPage) < Math.abs(best - prevPage) ? p : best),
+            validPages[0],
+          );
+        }
+        repairs.push(`beats[${i}] named PAGE ${prevPage}; mapped to valid PAGE ${b.sourcePage}.`);
+      }
+      const n = Math.max(1, lengths.get(b.sourcePage) ?? 1);
+      const rawStart = Number.isFinite(b.startWord) ? Math.trunc(b.startWord) : 0;
+      const rawEnd = Number.isFinite(b.endWord) ? Math.trunc(b.endWord) : rawStart;
+      let s = Math.max(0, Math.min(n - 1, rawStart));
+      let e = Math.max(0, Math.min(n - 1, rawEnd));
+      if (s > e) [s, e] = [e, s];
+      if (s !== b.startWord || e !== b.endWord) {
+        repairs.push(`beats[${i}] range (${b.startWord}–${b.endWord}) clamped to ${s}–${e} on PAGE ${b.sourcePage}.`);
+        b.startWord = s;
+        b.endWord = e;
+      }
+    });
+
+    let runStart = 0;
+    while (runStart < out.length) {
+      let runEnd = runStart;
+      const pageIdx = out[runStart].sourcePage;
+      while (runEnd + 1 < out.length && out[runEnd + 1].sourcePage === pageIdx) {
+        runEnd++;
+      }
+      const runLen = runEnd - runStart + 1;
+      if (runLen > 1) {
+        const subCheck = checkRanges(out.slice(runStart, runEnd + 1), lengths);
+        if (subCheck.problems.length > 0) {
+          const n = Math.max(1, lengths.get(pageIdx) ?? 1);
+          const hasCta = runEnd === out.length - 1;
+          const contentEnd = hasCta ? runEnd - 1 : runEnd;
+          const contentCount = contentEnd - runStart + 1;
+
+          if (contentCount >= 2) {
+            const first = out[runStart];
+            const second = out[runStart + 1];
+            if (first.startWord > second.startWord) {
+              const span = Math.max(1, Math.floor((second.endWord - second.startWord) / 2));
+              first.startWord = second.startWord;
+              first.endWord = Math.min(second.endWord, second.startWord + span);
+            } else {
+              const sortedRanges = out
+                .slice(runStart, contentEnd + 1)
+                .map((b) => ({ s: b.startWord, e: b.endWord }))
+                .sort((a, b) => a.s - b.s || a.e - b.e);
+              for (let j = 0; j < contentCount; j++) {
+                out[runStart + j].startWord = sortedRanges[j].s;
+                out[runStart + j].endWord = sortedRanges[j].e;
+              }
+            }
+          }
+
+          for (let j = 0; j < contentCount; j++) {
+            const idx = runStart + j;
+            const remainingAfter = contentCount - 1 - j;
+            const maxEnd = Math.max(0, n - 1 - remainingAfter);
+            if (j === 0) {
+              out[idx].startWord = Math.min(out[idx].startWord, maxEnd);
+              out[idx].endWord = Math.min(Math.max(out[idx].startWord, out[idx].endWord), maxEnd);
+            } else {
+              const prevEnd = out[idx - 1].endWord;
+              const s = Math.min(Math.max(out[idx].startWord, prevEnd), maxEnd);
+              const minEnd = Math.min(n - 1, Math.max(s, prevEnd + 1));
+              const e = Math.min(Math.max(out[idx].endWord, minEnd), Math.max(minEnd, maxEnd));
+              out[idx].startWord = Math.min(s, e);
+              out[idx].endWord = e;
+            }
+          }
+
+          if (hasCta && contentCount >= 1) {
+            const prevEnd = out[contentEnd].endWord;
+            out[runEnd].startWord = prevEnd;
+            out[runEnd].endWord = Math.min(n - 1, Math.max(out[runEnd].endWord, prevEnd));
+          }
+          repairs.push(`Normalized same-page word ranges on PAGE ${pageIdx} into forward order.`);
+        }
+      }
+      runStart = runEnd + 1;
+    }
+
+    return { beats: out, repairs };
+  }
+
   const gate = (candidate: ContentPackage): GateIssue | null => {
     // Word ranges, checked in code: the most common reason drafts were sent
     // back, and one no model call is needed to see (see ./ranges).
-    const ranges = checkRanges(candidate.beats, pageLengths);
+    let ranges = checkRanges(candidate.beats, pageLengths);
+    if (ranges.problems.length) {
+      const repaired = repairBeatRangesForGate(candidate.beats, pageLengths);
+      const rechecked = checkRanges(repaired.beats, pageLengths);
+      if (rechecked.problems.length === 0) {
+        ranges = {
+          beats: rechecked.beats,
+          repairs: [...repaired.repairs, ...rechecked.repairs],
+          problems: [],
+        };
+      }
+    }
     if (ranges.problems.length) {
       return {
         kind: "ranges",
@@ -457,20 +579,32 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       const issue = gate(pkg);
       if (issue) {
         if (round >= MAX_REVISIONS) {
-          throw new ContentRejectedError(issue.finalMessage, issue.data);
+          if (
+            issue.kind === "length" &&
+            pkg.beats.length >= 4 &&
+            spokenWordCount(pkg) >= 75 &&
+            expectedSeconds(spokenWordCount(pkg), pkg.beats.length) <= VIDEO_MAX_SECONDS
+          ) {
+            rangeRepairs.push(
+              `Accepted ${spokenWordCount(pkg)}-word script in ${pkg.beats.length} beats after ${MAX_REVISIONS} rewrites (within playable 30–90 s bounds).`,
+            );
+          } else {
+            throw new ContentRejectedError(issue.finalMessage, issue.data);
+          }
+        } else {
+          await onStep?.(
+            issue.kind === "quotation"
+              ? "Rewriting after the quotation-budget check"
+              : issue.kind === "length"
+                ? "Rewriting after the length check"
+                : issue.kind === "ranges"
+                  ? "Rewriting after the word-range check"
+                  : "Rewriting after the author check",
+          );
+          pkg = await write([], withDraftContext(issue.brief, pkg));
+          revised = true;
+          continue;
         }
-        await onStep?.(
-          issue.kind === "quotation"
-            ? "Rewriting after the quotation-budget check"
-            : issue.kind === "length"
-              ? "Rewriting after the length check"
-              : issue.kind === "ranges"
-                ? "Rewriting after the word-range check"
-                : "Rewriting after the author check",
-        );
-        pkg = await write([], issue.brief);
-        revised = true;
-        continue;
       }
 
       // Independent grounding check. Nothing is spoken until the script is
@@ -483,7 +617,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         if (!over) break;
         if (round >= MAX_REVISIONS) throw new ContentRejectedError(`${over.finalMessage}${rewriteNote}`, over.data);
         await onStep?.("Rewriting after the length check");
-        pkg = await write([], over.brief);
+        pkg = await write([], withDraftContext(over.brief, pkg));
         revised = true;
         continue;
       }
@@ -503,7 +637,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       await onStep?.(
         round === 0 ? "Rewriting after the grounding check" : "Rewriting after the grounding check (2 of 2)",
       );
-      pkg = await write([], revisionBrief(report));
+      pkg = await write([], withDraftContext(revisionBrief(report), pkg));
       revised = true;
     }
 

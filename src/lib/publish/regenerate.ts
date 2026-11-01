@@ -33,7 +33,7 @@ import { getSetting } from "@/lib/db";
 import { AppError } from "@/lib/errors";
 import { appendBookLink } from "@/lib/content/book-link";
 import { runCliJson } from "@/lib/content/cli-provider";
-import type { CliProvider } from "@/lib/content/cli";
+import { resolveProvider, type CliProvider } from "@/lib/content/cli";
 import type { Beat } from "@/lib/content/schema";
 import { stripEmoji } from "@/lib/content/emoji";
 import { DESCRIPTION_MAX, TITLE_MAX, TITLE_RULE, descriptionRule, hashtagRule } from "@/lib/content/metadata-rules";
@@ -52,7 +52,7 @@ import type { MetadataField } from "./state";
  */
 async function contentProvider(): Promise<CliProvider> {
   const v = await getSetting("cliProvider");
-  return v === "codex-cli" ? "codex-cli" : "claude-cli";
+  return resolveProvider(v);
 }
 
 /**

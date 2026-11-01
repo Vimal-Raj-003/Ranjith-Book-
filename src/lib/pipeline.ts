@@ -25,7 +25,7 @@ import { DESCRIPTION_MAX } from "./content/metadata-rules";
 import { runPlatformMetadataStep } from "./publish/generate";
 import { runCliJson } from "./content/cli-provider";
 import { numberedWordLines } from "./content/prompt";
-import type { CliProvider } from "./content/cli";
+import { resolveProvider, type CliProvider } from "./content/cli";
 import type { RightsStatus } from "./content/quotation";
 import { synthesizeVoiceover } from "./media/tts";
 import { voiceFields } from "./episode-view";
@@ -103,7 +103,7 @@ const PLATFORM_COPY_GRACE_MS = 60_000;
  */
 async function contentProvider(): Promise<CliProvider> {
   const v = await getSetting("cliProvider");
-  return v === "codex-cli" ? "codex-cli" : "claude-cli";
+  return resolveProvider(v);
 }
 
 /**
@@ -304,7 +304,7 @@ export async function runIngest(uploadId: string): Promise<string[]> {
     include: { book: true, pages: { orderBy: { pageIndex: "asc" } } },
   });
 
-  const visionProvider: CliProvider = "claude-cli";
+
   const provider = await contentProvider();
   const model = await cliModel();
   const notes: string[] = [];
@@ -330,7 +330,7 @@ export async function runIngest(uploadId: string): Promise<string[]> {
           `Page ${p.pageIndex + 1} has no derived image; re-upload this photograph.`,
         );
       }
-      const text = await readPage(p.derivedPath, p.pageIndex, visionProvider, model);
+      const text = await readPage(p.derivedPath, p.pageIndex, provider, model);
       await prisma.page.update({ where: { id: p.id }, data: { visionText: JSON.stringify(text) } });
       return text;
     });

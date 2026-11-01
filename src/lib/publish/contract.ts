@@ -40,6 +40,8 @@ export interface AssetRef {
 
 /** Everything a publisher is told about what it is being asked to post. */
 export interface PublishRequest {
+  /** Script associated with this render, retained in frozen schedule requests. */
+  sourceText?: string;
   episodeId: string;
   /** The metadata as stored right now, before any platform shaping. */
   metadata: PublishMetadata;
@@ -88,6 +90,7 @@ export interface PublishValidation {
  * was handed over rather than what happened to be in the database afterwards.
  */
 export interface PreparedPublish {
+  sourceText?: string;
   platform: PlatformId;
   episodeId: string;
   metadata: PublishMetadata;
@@ -165,7 +168,7 @@ export type PublishOutcome =
       /** The visibility the platform read back (`private`, `unlisted`, `public`, `scheduled`). */
       visibility?: string | null;
     }
-  | { status: "FAILED"; error: string }
+  | { status: "FAILED"; error: string; retryable?: boolean }
   | { status: "REQUIRES_CONNECTION"; error: string }
   /**
    * A browser-mode job that only a person can take further, and whose real
