@@ -18,7 +18,7 @@
  * the isolated database without starting a multi-minute render.
  */
 import { prisma } from "../db";
-import { releaseIdea } from "../content/idea";
+import { archiveGenerationEvidence } from "./generation-attempt";
 
 /** What `POST /api/episodes/[id]/retry` answers. */
 export type RetryOutcome =
@@ -47,85 +47,90 @@ export type RetryOutcome =
  * idea, the same source pages and the same saved settings from the same row,
  * which is why this needs no schema change.
  *
- * Not wrapped in a transaction, deliberately: every write is idempotent, and
- * the status flip is last, so a failure part-way leaves the row FAILED and
- * retryable rather than QUEUED with nothing behind it.
+ * Serialize the check, evidence archive and reset in a transaction: a second
+ * retry must never clear step records belonging to the first retry.
  */
 export async function prepareEpisodeRetry(episodeId: string): Promise<RetryOutcome> {
-  const episode = await prisma.episode.findUnique({
-    where: { id: episodeId },
-    select: { id: true, status: true, bookId: true, ideaKey: true },
-  });
-  if (!episode) {
-    return { ok: false, httpStatus: 404, code: "not_found", error: "Not found" };
-  }
-  if (episode.status !== "FAILED") {
-    return {
-      ok: false,
-      httpStatus: 409,
-      code: "not_failed",
-      error: `This episode is ${episode.status.toLowerCase()}, so there is nothing to regenerate.`,
-    };
-  }
-
-  // A newer video for the same idea already exists. "Generate videos" creates a NEW
-  // episode for an idea whose earlier one FAILED (a failed episode does not count
-  // as one in `createIdeaEpisodes`), so the stale FAILED row can sit beside a
-  // QUEUED/RUNNING/DONE sibling for the same (book, idea). The reservation is per
-  // (book, idea), not per episode: releasing it here would delete the SIBLING's
-  // claim, and the re-run would then reserve it again — two videos of one idea,
-  // which the unique index cannot catch because release and re-reserve are
-  // sequential. So refuse, before anything is released or reset.
-  //
-  // Only when there is a key to share. With `ideaKey` null the pipeline's
-  // reservation key is this episode's own id, which no other row has, so the
-  // release below can only ever free this episode's own claim.
-  if (episode.ideaKey !== null) {
-    const sibling = await prisma.episode.findFirst({
-      where: {
-        bookId: episode.bookId,
-        ideaKey: episode.ideaKey,
-        id: { not: episode.id },
-        status: { in: ["QUEUED", "RUNNING", "DONE"] },
-      },
-      select: { id: true },
+  return prisma.$transaction(async (tx): Promise<RetryOutcome> => {
+    const episode = await tx.episode.findUnique({
+      where: { id: episodeId },
     });
-    if (sibling) {
+    if (!episode) {
+      return { ok: false, httpStatus: 404, code: "not_found", error: "Not found" };
+    }
+    if (episode.status !== "FAILED") {
       return {
         ok: false,
         httpStatus: 409,
-        code: "superseded",
-        error: "A newer video for this idea already exists, so regenerate that one instead.",
+        code: "not_failed",
+        error: `This episode is ${episode.status.toLowerCase()}, so there is nothing to regenerate.`,
       };
     }
-  }
 
-  // The reservation a failed run can still be holding (a run that died with its
-  // process leaves one; the reaper and `runEpisode`'s own catch release it, but
-  // this does not depend on either having got there). The key is the one the
-  // pipeline reserves and releases with. Idempotent, and never throws.
-  await releaseIdea(episode.bookId, episode.ideaKey ?? episode.id);
+    // A newer video for the same idea already exists. "Generate videos" creates a NEW
+    // episode for an idea whose earlier one FAILED (a failed episode does not count
+    // as one in `createIdeaEpisodes`), so the stale FAILED row can sit beside a
+    // QUEUED/RUNNING/DONE sibling for the same (book, idea). The reservation is per
+    // (book, idea), not per episode: releasing it here would delete the SIBLING's
+    // claim, and the re-run would then reserve it again — two videos of one idea,
+    // which the unique index cannot catch because release and re-reserve are
+    // sequential. So refuse, before anything is released or reset.
+    //
+    // Only when there is a key to share. With `ideaKey` null the pipeline's
+    // reservation key is this episode's own id, which no other row has, so the
+    // release below can only ever free this episode's own claim.
+    if (episode.ideaKey !== null) {
+      const sibling = await tx.episode.findFirst({
+        where: {
+          bookId: episode.bookId,
+          ideaKey: episode.ideaKey,
+          id: { not: episode.id },
+          status: { in: ["QUEUED", "RUNNING", "DONE"] },
+        },
+        select: { id: true },
+      });
+      if (sibling) {
+        return {
+          ok: false,
+          httpStatus: 409,
+          code: "superseded",
+          error: "A newer video for this idea already exists, so regenerate that one instead.",
+        };
+      }
+    }
 
-  // The attempt that failed is history: clear its rail now, so the card does not
-  // show it under "Queued" while this waits behind other renders.
-  // `StepTimer.begin` does the same when the run starts; this covers the wait.
-  await prisma.stepRun.deleteMany({ where: { episodeId: episode.id } });
+    // The reservation a failed run can still be holding (a run that died with its
+    // process leaves one; the reaper and `runEpisode`'s own catch release it, but
+    // this does not depend on either having got there). The key is the one the
+    // pipeline reserves and releases with. The transaction also protects a
+    // concurrent retry from clearing the new run's claim or step history.
+    // Archive before clearing anything. On an archive failure the transaction
+    // leaves the original error, timings and reservation untouched.
+    const steps = await tx.stepRun.findMany({ where: { episodeId }, orderBy: { position: "asc" } });
+    await archiveGenerationEvidence(episodeId, { episode, steps, reason: "before-retry" });
+    await tx.usedIdea.deleteMany({ where: { bookId: episode.bookId, ideaKey: episode.ideaKey ?? episode.id } });
 
-  // `updateMany` on `status: "FAILED"` rather than `update` on the id: if two
-  // requests got past the check above together, only one of them matches here.
-  // The other sees `count: 0` and is told the same thing a later click would be.
-  const reset = await prisma.episode.updateMany({
-    where: { id: episode.id, status: "FAILED" },
-    data: { status: "QUEUED", step: "Queued", error: null, finishedAt: null, totalMs: null },
-  });
-  if (reset.count === 0) {
-    return {
-      ok: false,
-      httpStatus: 409,
-      code: "not_failed",
-      error: "This episode is no longer failed, so there is nothing to regenerate.",
-    };
-  }
+    // The attempt that failed is history: clear its rail now, so the card does not
+    // show it under "Queued" while this waits behind other renders.
+    // `StepTimer.begin` does the same when the run starts; this covers the wait.
+    await tx.stepRun.deleteMany({ where: { episodeId: episode.id } });
 
-  return { ok: true, status: "QUEUED" };
+    // `updateMany` on `status: "FAILED"` rather than `update` on the id: if two
+    // requests got past the check above together, only one of them matches here.
+    // The other sees `count: 0` and is told the same thing a later click would be.
+    const reset = await tx.episode.updateMany({
+      where: { id: episode.id, status: "FAILED" },
+      data: { status: "QUEUED", step: "Queued", error: null, finishedAt: null, totalMs: null },
+    });
+    if (reset.count === 0) {
+      return {
+        ok: false,
+        httpStatus: 409,
+        code: "not_failed",
+        error: "This episode is no longer failed, so there is nothing to regenerate.",
+      };
+    }
+
+    return { ok: true, status: "QUEUED" };
+  }, { timeout: 15_000 });
 }

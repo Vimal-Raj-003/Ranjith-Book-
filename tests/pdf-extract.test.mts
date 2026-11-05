@@ -11,10 +11,13 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractPdf, MAX_PDF_PAGES, readRawPage, resolvePython } from "../src/lib/pdf/extract";
+import { extractPdf, extractionTimeoutMs, MAX_PDF_PAGES, readRawPage, resolvePython } from "../src/lib/pdf/extract";
 import { bodyFontSize, linesFromOcr, linesFromRaw, needsOcr, structurePages, type LinedPage } from "../src/lib/pdf/page-text";
 import { detectSections } from "../src/lib/analysis/sections";
-import { chunkSections } from "../src/lib/analysis/chunks";
+import { buildWindows, chunkSections } from "../src/lib/analysis/chunks";
+import { groundCandidates, windowPrompt } from "../src/lib/analysis/candidates";
+import { strings } from "../src/lib/strings";
+import { requireIsolation } from "./setup/isolation";
 import { measurePage, disposeOcr } from "../src/lib/ingest/ocr";
 import { createPdfUpload } from "../src/lib/pdf/create-pdf-upload";
 import { prisma } from "../src/lib/db";
@@ -46,6 +49,7 @@ let py: { bin: string; args: string[] } | null = null;
 let dir = "";
 
 test.before(async () => {
+  requireIsolation("PDF tests create disposable uploads");
   try {
     py = await resolvePython();
   } catch {
@@ -171,6 +175,14 @@ d = pymupdf.open()
 for i in range(${pages}):
     p = d.new_page(width=432, height=648)
     p.insert_text((54, 120), "Page %d says that small habits compound into remarkable results over time." % (i + 1), fontsize=11)
+if ${pages} > 1:
+    p = d[-1]
+    p.insert_textbox(pymupdf.Rect(54, 160, 378, 460), "The final chapter explains how patient practice builds lasting skills. A gardener improves the soil before expecting a harvest. Careful preparation and consistent effort make growth possible even when immediate results are invisible. This final passage must remain available for grounded video ideas.", fontsize=14)
+    pix = p.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False)
+    image = pix.tobytes("png")
+    d.delete_page(len(d)-1)
+    p = d.new_page(width=432, height=648)
+    p.insert_image(p.rect, stream=image)
 d.save(sys.argv[1])`;
   execFileSync(py!.bin, [...py!.args, "-c", code, file], { windowsHide: true });
 }
@@ -182,13 +194,52 @@ function plainPdfOnce(n: number): string {
   return file;
 }
 
-test("page bounds: a 1-page and a 300-page PDF are accepted, a 301-page PDF is refused", async (t) => {
+test("300, 330 and 500 pages: full extraction, last-page OCR, all analysis windows and grounded ideas; 501 refused", async (t) => {
   if (!py) return t.skip("no Python with PyMuPDF");
-  assert.equal(MAX_PDF_PAGES, 300);
-  for (const n of [1, 300]) {
+  assert.equal(MAX_PDF_PAGES, 500);
+  for (const n of [1, 300, 330, 500]) {
+    const started = performance.now();
     const file = plainPdfOnce(n);
-    const manifest = await extractPdf(file, path.join(dir, `plain-${n}-out`), () => {});
+    const out = path.join(dir, `plain-${n}-out`);
+    let reported = 0;
+    const manifest = await extractPdf(file, out, p => {
+      assert.equal(p.pageCount, n);
+      assert.equal(p.done, ++reported);
+    });
     assert.equal(manifest.pageCount, n);
+    assert.equal(reported, n);
+    const extractedMs = performance.now() - started;
+    const raws = [];
+    for (let i = 0; i < n; i++) {
+      const raw = await readRawPage(out, i);
+      assert.equal(raw.index, i);
+      assert.ok((await fs.stat(path.join(out, raw.image))).size > 0);
+      raws.push(raw);
+    }
+    if (n === 1) continue;
+    assert.deepEqual(raws.filter(needsOcr).map(r => r.index), [n - 1]);
+    const ocrStarted = performance.now();
+    const words = await measurePage(path.join(out, raws[n - 1].image));
+    const ocrMs = performance.now() - ocrStarted;
+    assert.match(words.map(w => w.text).join(' '), /final chapter explains/i);
+    const inputs = lined(raws);
+    inputs[n - 1] = { ...inputs[n - 1], lines: linesFromOcr(words), source: 'ocr' };
+    const pages = structurePages(inputs, bodyFontSize(raws));
+    assert.equal(pages.length, n);
+    const sections = detectSections(pages, manifest.toc);
+    const chunks = chunkSections(pages, sections);
+    const windows = buildWindows(chunks);
+    assert.deepEqual([...new Set(windows.flatMap(w => w.pages))].sort((a,b) => a-b), Array.from({length:n},(_,i)=>i));
+    assert.equal(chunks.reduce((s,c)=>s+c.wordCount,0), pages.reduce((s,p)=>s+p.words.length,0), 'no body words truncated');
+    const lastWindow = windows.find(w => w.pages.includes(n - 1))!;
+    const prompt = windowPrompt(lastWindow, chunks, pages, sections, 'Large PDF fixture', 3);
+    assert.match(prompt, new RegExp(`=== PAGE ${n} ===`));
+    const quote = pages[n - 1].words.join(' ');
+    assert.ok(prompt.includes(quote), 'final OCR page reaches the actual idea-generation prompt');
+    const grounded = groundCandidates({ ideas: [{title:'Patient practice',coreIdea:'Preparation supports growth.',quotes:[{text:quote,page:n}]}] }, lastWindow, pages, sections);
+    assert.equal(grounded.candidates.length, 1);
+    assert.ok(grounded.candidates[0].refs.some(r=>r.pageIndex===n-1));
+    t.diagnostic(JSON.stringify({pages:n,extractSeconds:+(extractedMs/1000).toFixed(2),lastPageOcrSeconds:+(ocrMs/1000).toFixed(2),totalSeconds:+((performance.now()-started)/1000).toFixed(2),windows:windows.length,nodePeakRssMiB:+(process.resourceUsage().maxRSS/1024).toFixed(1)}));
   }
 
   // A one-page book still reaches chunks: it is analysed, not refused.
@@ -202,11 +253,11 @@ test("page bounds: a 1-page and a 300-page PDF are accepted, a 301-page PDF is r
   pages[0].words = pages[0].text.paragraphs.join(" ").split(/\s+/);
   assert.ok(chunkSections(pages, detectSections(pages, [])).length >= 1);
 
-  const over = plainPdfOnce(301);
+  const over = plainPdfOnce(501);
   await assert.rejects(
-    () => extractPdf(over, path.join(dir, "plain-301-out"), () => {}),
+    () => extractPdf(over, path.join(dir, "plain-501-out"), () => {}),
     (err: Error & { code?: string }) =>
-      err.code === "pdf_too_many_pages" && err.message === "This PDF has 301 pages; at most 300 can be analysed at once.",
+      err.code === "pdf_too_many_pages" && err.message === "This PDF has 501 pages; at most 500 can be analysed at once.",
   );
 });
 
@@ -221,7 +272,7 @@ function runExtractor(file: string, out: string, extra: string[]): { status: num
   return { status: r.status, messages };
 }
 
-test("page gate: 200, 201, 264 and 300 pages pass, 301 is refused — as extractPdf runs it, and on the Python default", async (t) => {
+test("page gate: old sizes, 330 and 500 pass, 501 is refused — explicit limit and Python default", async (t) => {
   if (!py) return t.skip("no Python with PyMuPDF");
   // `extractPdf` always passes --max-pages MAX_PDF_PAGES; the bare script falls back to its own default.
   const modes = [
@@ -230,19 +281,28 @@ test("page gate: 200, 201, 264 and 300 pages pass, 301 is refused — as extract
   ];
   for (const mode of modes) {
     // 264 is the page count that was refused at "at most 200" before the limit was raised.
-    for (const n of [200, 201, 264, 300]) {
+    for (const n of [200, 201, 264, 300, 330, 500]) {
       const { status, messages } = runExtractor(plainPdfOnce(n), path.join(dir, `gate-${n}-out`), mode.args);
       assert.equal(status, 0, `${n} pages (${mode.name}) exits cleanly`);
       assert.deepEqual(messages[0], { type: "start", pageCount: n }, `${n} pages (${mode.name}) is accepted and starts extracting`);
       assert.equal(messages.at(-1)?.type, "done", `${n} pages (${mode.name}) runs to the end`);
+      assert.equal(messages.filter(m => m.type === 'page').length, n);
       assert.ok(!messages.some((m) => m.type === "error"), `${n} pages (${mode.name}) raises no error`);
     }
-    const refused = runExtractor(plainPdfOnce(301), path.join(dir, "gate-301-out"), mode.args);
-    assert.equal(refused.status, 2, `301 pages (${mode.name}) is refused`);
+    const refused = runExtractor(plainPdfOnce(501), path.join(dir, "gate-501-out"), mode.args);
+    assert.equal(refused.status, 2, `501 pages (${mode.name}) is refused`);
     assert.deepEqual(refused.messages, [
-      { type: "error", code: "too_many_pages", message: "This PDF has 301 pages; at most 300 can be analysed at once." },
+      { type: "error", code: "too_many_pages", message: "This PDF has 501 pages; at most 500 can be analysed at once." },
     ]);
   }
+});
+
+test('page limit help and extraction budgets agree, preserving the old timeout through 300 pages', () => {
+  assert.ok(Object.values(strings.books).some(value => typeof value === 'string' && value.includes(`up to ${MAX_PDF_PAGES} pages`)));
+  assert.equal(extractionTimeoutMs(1), 1_200_000);
+  assert.equal(extractionTimeoutMs(300), 1_200_000);
+  assert.equal(extractionTimeoutMs(330), 1_320_000);
+  assert.equal(extractionTimeoutMs(500), 2_000_000);
 });
 
 test("an encrypted or broken PDF fails with a sentence, not a traceback", async (t) => {

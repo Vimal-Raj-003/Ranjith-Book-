@@ -1014,7 +1014,7 @@ export const strings = {
     intro: "A whole book in, the best video ideas out.",
     helpSummary: "How this works",
     help:
-      "Upload a book as a PDF, up to 300 pages. BookReel reads every page — running OCR on scanned ones — finds the chapters, and looks through the whole book for ideas that could each carry a 1–2 minute video. Every idea is checked against the book's own words and shows the pages it came from. Pick the ideas you want made into videos.",
+      "Upload a book as a PDF, up to 500 pages (300 MB). BookReel reads every page — running OCR on scanned ones — finds the chapters, and looks through the whole book for ideas that could each carry a 1–2 minute video. Every idea is checked against the book's own words and shows the pages it came from. Pick the ideas you want made into videos. Large scanned books take longer to analyse; keep the BookReel server running until analysis finishes.",
     uploadHeading: "Add a book PDF",
     dropHint: "Drag a PDF here, or",
     choose: "Choose PDF",
@@ -1125,7 +1125,7 @@ export const strings = {
     youtubeNote:
       "YouTube: each video is uploaded now and YouTube itself publishes it at its slot time. A video is only marked scheduled after YouTube's own page confirms the exact time.",
     instagramNote:
-      "Instagram uses its own Schedule content controls and confirms the exact time from Scheduled content. It requires an eligible account and a signed-in BookReel browser session. Instagram execution remains disabled until explicitly enabled; YouTube can proceed independently.",
+      "Instagram uploads ahead using its own Schedule content controls and publishes at its slot time. BookReel confirms the exact time from Scheduled content. It requires an eligible account and a signed-in BookReel browser session.",
     weekStart: "First day",
     days: "Number of days",
     daysOption: (n: number) => `${n} ${n === 1 ? "day" : "days"}`,

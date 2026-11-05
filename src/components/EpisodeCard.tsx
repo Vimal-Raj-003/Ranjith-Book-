@@ -8,6 +8,7 @@ import { Dialog, Disclosure, StatusBadge } from "./ui";
 import { strings } from "@/lib/strings";
 import { EPISODE_STEPS } from "@/lib/pipeline-steps";
 import type { EpisodeState } from "./types";
+import AttemptHistory from "./AttemptHistory";
 
 export const POLL_MS = 1500;
 const TERMINAL = new Set(["DONE", "FAILED", "CANCELLED"]);
@@ -94,6 +95,8 @@ export default function EpisodeCard({
   onSelect,
   onState,
   showPublish = false,
+  refreshKey = "",
+  initialEpisode,
 }: {
   episodeId: string;
   active: boolean;
@@ -108,8 +111,11 @@ export default function EpisodeCard({
    * what keeps the panel to exactly one place per view.
    */
   showPublish?: boolean;
+  /** Parent list notices an externally retried terminal episode. */
+  refreshKey?: string;
+  initialEpisode?: EpisodeState;
 }) {
-  const [episode, setEpisode] = useState<EpisodeState | null>(null);
+  const [episode, setEpisode] = useState<EpisodeState | null>(initialEpisode ?? null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
@@ -245,7 +251,7 @@ export default function EpisodeCard({
     // `retryNonce` is a dependency only to re-run this effect: the cleanup above
     // clears any pending tick of the old loop and the body starts exactly one new
     // one, so a regeneration never leaves two polls in flight.
-  }, [episodeId, onState, retryNonce]);
+  }, [episodeId, onState, retryNonce, refreshKey]);
 
   if (loadError && !episode) {
     return (
@@ -257,7 +263,7 @@ export default function EpisodeCard({
     );
   }
 
-  if (!episode) {
+  if (!episode || episode.id !== episodeId) {
     return (
       <div className="panel panel-body flex flex-col gap-3" aria-busy="true">
         <div className="skeleton" style={{ height: 14, width: "40%" }} />
@@ -342,6 +348,8 @@ export default function EpisodeCard({
             {episode.error || strings.run.failed}
           </p>
         )}
+
+        <AttemptHistory episodeId={episode.id} revision={`${episode.status}:${episode.startedAt}:${retryNonce}`} />
 
         <div className="flex flex-wrap items-center gap-2">
           <button

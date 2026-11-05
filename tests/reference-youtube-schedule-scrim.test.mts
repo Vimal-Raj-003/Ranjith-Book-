@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { locateChromium as findChromium } from "../src/lib/publish/browser/engine";
-import { settleNoOverlay, visibleScrims } from "../src/lib/publish/browser/youtube-schedule";
+import { settleNoOverlay, visibleScrims, setDate } from "../src/lib/publish/browser/youtube-schedule";
+import { studioTarget } from "../src/lib/publish/native-schedule";
 
 /**
  * The failure the dry run showed: on Studio's Schedule card, each control opens its
@@ -72,6 +73,18 @@ test("Polymer picker backdrop is dismissed without closing the upload dialog", {
     await settleNoOverlay(p);
     assert.equal(await escapes(p), 1, "the upload's background does not cause another Escape");
   } finally { await p.close(); }
+});
+
+test("the date control clears a leftover timezone backdrop after scrolling into view",{skip:!haveBrowser},async()=>{
+  const p=await page(`<style>[hidden]{display:none!important}ytcp-uploads-dialog{display:block;margin-top:1600px;padding:20px}tp-yt-iron-overlay-backdrop{position:fixed;inset:0;z-index:30}</style>
+    <ytcp-uploads-dialog><button id="date" onclick="document.querySelector('#calendar').hidden=false">6 Nov 2026</button><input value="00:00"></ytcp-uploads-dialog>
+    <div id="calendar" hidden><input value="6 Nov 2026" onkeydown="if(event.key==='Enter'){document.querySelector('#date').textContent=this.value;document.querySelector('#calendar').hidden=true}"></div>
+    <tp-yt-iron-overlay-backdrop opened></tp-yt-iron-overlay-backdrop><script>window.__escapes=0;document.addEventListener('keydown',e=>{if(e.key==='Escape'){window.__escapes++;document.querySelector('tp-yt-iron-overlay-backdrop')?.remove()}})</script>`);
+  try {
+    await setDate(p,studioTarget(new Date("2026-11-07T08:25:00Z"),"Asia/Kolkata",{date:"dmy-short",hour12:false}),()=>{});
+    assert.equal(await p.locator('#date').innerText(),"7 Nov 2026");
+    assert.equal(await escapes(p),1);
+  } finally {await p.close();}
 });
 
 test("an unresponsive picker stops after four attempts", { skip: !haveBrowser }, async () => {

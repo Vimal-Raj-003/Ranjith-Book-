@@ -121,6 +121,7 @@ export const YT = {
   videoLink: ".video-url-fadeable a, ytcp-video-info a, ytcp-video-share-dialog a[href*='youtu'], a#video-link",
   uploadVideoLink: "ytcp-uploads-dialog a[href*='youtube.com/shorts/'], ytcp-uploads-dialog a[href*='youtu.be/'], ytcp-uploads-dialog a[href*='youtube.com/watch?'], ytcp-uploads-dialog a[href*='studio.youtube.com/video/']",
   shareDialog: "ytcp-video-share-dialog",
+  scheduledDialog: 'role=dialog[name="Video scheduled"]',
   editTitle: "#title-textarea #textbox",
   editVisibility: "ytcp-video-metadata-visibility, #visibility-text, ytcp-video-metadata-editor-sidepanel .visibility",
 } as const;
@@ -770,7 +771,7 @@ async function youtubeFlow(
     //    carries the link; either that or the upload dialog closing means it settled.
     const settled = await waitUntil(
       session.clock,
-      async () => (await isShown(page, YT.shareDialog)) || !(await isShown(page, YT.uploadsDialog)) || null,
+      async () => (await isShown(page, YT.shareDialog)) || (await isShown(page, YT.scheduledDialog)) || !(await isShown(page, YT.uploadsDialog)) || null,
       { timeoutMs: 3 * 60_000, pollMs: 1_000 },
     );
     if (!settled) {

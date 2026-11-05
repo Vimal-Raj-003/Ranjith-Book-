@@ -281,6 +281,7 @@ const CLIENT_SAFE_LIBS = new Set([
   // the account, and how one becomes the other. Pure; `tests/instagram-connection.test.mts` holds it to
   // importing nothing but `./connect`, so it cannot become a route to Prisma, Playwright or the browser engine.
   "@/lib/publish/instagram-connection",
+  "@/lib/episodes/attempt-groups",
 ]);
 
 test("the poster helpers the client imports have no imports of their own", async () => {
@@ -296,6 +297,8 @@ test("the setting-write state machine has no imports of its own", async () => {
 });
 
 test("client components import only dependency-free lib modules", async () => {
+  const grouping = await fs.readFile(fileURLToPath(new URL("../src/lib/episodes/attempt-groups.ts", import.meta.url)), "utf8");
+  assert.doesNotMatch(grouping, /^\s*(import|export\s[^;]*\sfrom)\s/m, "attempt grouping must not import database or filesystem modules");
   const offenders: string[] = [];
 
   for (const name of await componentFiles()) {
@@ -562,7 +565,7 @@ test("EpisodeCard's Regenerate: posts to the retry route, shows Retrying…, upd
   // The poll STOPPED at FAILED (it is in TERMINAL); the nonce is what starts it again.
   assert.match(src, /const TERMINAL = new Set\(\[[^\]]*"FAILED"/, "precondition: FAILED is terminal, so the poll has stopped by the time the button is clicked");
   assert.match(handler, /setRetryNonce\(\(n\) => n \+ 1\)/, "a successful retry bumps the nonce");
-  assert.match(src, /\}, \[episodeId, onState, retryNonce\]\)/, "and the poll effect depends on it, so it re-runs and polls again");
+  assert.match(src, /\}, \[episodeId, onState, retryNonce, refreshKey\]\)/, "the poll restarts for local retries and externally changed attempt summaries");
   assert.equal(src.match(/setTimeout\(poll/g)?.length, 2, "still one poll loop (its two reschedule sites), not a second one for retries");
 
   // A fresh episode in the slot never inherits the previous one's retry state.

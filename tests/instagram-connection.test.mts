@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { chromium, type Browser } from "playwright-core";
 import { prisma } from "../src/lib/db";
 import { requireIsolation } from "./setup/isolation";
-import { FakePage, fakeBrowser } from "./helpers/fake-browser.mjs";
+import { FakePage, fakeBrowser, fakeChrome } from "./helpers/fake-browser.mjs";
 import { acquirePlatformLock } from "../src/lib/publish/browser/live";
 import { IG } from "../src/lib/publish/browser/instagram";
 import { locateChromium, profileDirFor } from "../src/lib/publish/browser/engine";
@@ -324,6 +324,55 @@ test("verify: never writes a flag, and reports them exactly as the environment h
   assert.deepEqual({ a: process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED, b: process.env.BOOKREEL_IG_NATIVE_SCHEDULE }, before, "process.env is untouched");
 });
 
+test("verify compares the signed-in username with the configured username, not the profile display name", async () => {
+  await reset();
+  const page = signedInPage("betweenpages6");
+  page.def("body", { text: "between_pages" });
+  const { deps } = depsFor(page, {
+    placeholder: async () => { throw new Error("account verification must not upload a clip"); },
+  }, { BOOKREEL_INSTAGRAM_HANDLE: "@betweenpages6" });
+  const view = await startInstagramCheck("account", deps);
+  assert.equal(page.actions[0], `goto:${IG.home}`);
+  assert.equal(view.handle, "@betweenpages6");
+  assert.equal(view.expected, "@betweenpages6");
+  assert.equal(view.state, "connected");
+  assert.equal(view.check.error, null);
+  assert.equal(view.calendar, "readable");
+  assert.equal(view.composer, "not_checked");
+  assert.deepEqual(view.flags, { publish: false, nativeSchedule: false });
+  assert.deepEqual(page.touched(), []);
+  assert.equal((await readVerification())?.identity, "match");
+});
+
+test("correcting the expected username rejudges an earlier account reading without rewriting its stored evidence", async () => {
+  await reset();
+  const stored = JSON.stringify(record({ handle: "betweenpages6", expected: "@between_pages", identity: "mismatch" }));
+  await prisma.setting.create({ data: { key: VERIFICATION_SETTING, value: stored } });
+  const { deps, fake } = depsFor(signedInPage("betweenpages6"), {}, { BOOKREEL_INSTAGRAM_HANDLE: "@betweenpages6" });
+  const view = await instagramConnectionView(deps);
+  assert.equal(view.state, "connected");
+  assert.equal(view.handle, "@betweenpages6");
+  assert.equal(view.expected, "@betweenpages6");
+  assert.equal(fake.launches.length, 0);
+  assert.equal((await prisma.setting.findUniqueOrThrow({ where: { key: VERIFICATION_SETTING } })).value, stored);
+});
+
+test("a different Instagram username is refused even when its display name is between_pages", async () => {
+  await reset();
+  const page = signedInPage("different_account");
+  page.def("body", { text: "between_pages" });
+  let furtherReads = 0;
+  const { deps } = depsFor(page, {
+    readAccountText: async () => { furtherReads++; return "Professional dashboard"; },
+    readCalendar: async () => { furtherReads++; return { userId: "wrong", items: [] }; },
+  }, { BOOKREEL_INSTAGRAM_HANDLE: "@betweenpages6" });
+  const view = await startInstagramCheck("account", deps);
+  assert.equal(view.state, "not_connected");
+  assert.equal((await readVerification())?.identity, "mismatch");
+  assert.equal(furtherReads, 0);
+  assert.deepEqual(page.touched(), []);
+});
+
 test("verify: Instagram signed out is Not Connected and says to Connect Instagram; the window is closed", async () => {
   await reset();
   const page = new FakePage();
@@ -403,6 +452,76 @@ test("the Profile-in-use failure (the sign-in window is still open) says exactly
   assert.match(view.check.error ?? "", /Close the Instagram sign-in window/);
   assert.equal(await readVerification(), null, "a failed attempt records nothing");
   assert.equal(view.state, "not_connected");
+});
+
+test("verify refuses an occupied sign-in profile before Chrome can open another blank tab", async () => {
+  for (const sighting of [{ state: "window", title: "about:blank" }, { state: "none", holders: [123] }] as const) {
+    await reset();
+    const page = signedInPage();
+    let inspected = "";
+    const { deps, fake } = depsFor(page, {
+      profileWindow: { waitForWindow: async (dir) => {
+        inspected = dir;
+        return sighting.state === "window" ? sighting : { state: "none", holders: [...sighting.holders] };
+      } },
+    });
+    const view = await startInstagramCheck("account", deps);
+    assert.equal(inspected, profileDirFor("instagram", deps.profileRoot));
+    assert.equal(fake.launches.length, 0, "no second Chrome launch or blank tab");
+    assert.deepEqual(page.actions, [], "the existing browser is untouched");
+    assert.equal(view.check.running, false);
+    assert.match(view.check.error ?? "", /already open in Chrome/);
+    assert.match(view.check.error ?? "", /Close the Chrome window opened by Connect Instagram/);
+    assert.equal(await readVerification(), null, "no account record written");
+    assert.match(card(view), /data-instagram-error="true"/, "the refusal stays on the card");
+    assert.deepEqual(view.flags, { publish: false, nativeSchedule: false });
+  }
+});
+
+test("verify navigates to Instagram after the profile is free, and can retry after a refused launch", async () => {
+  await reset();
+  const page = signedInPage();
+  let occupied = true;
+  const { deps, fake } = depsFor(page, {
+    profileWindow: { waitForWindow: async () => occupied ? { state: "window", title: "Instagram" } : { state: "none", holders: [] } },
+  });
+  assert.match((await startInstagramCheck("account", deps)).check.error ?? "", /already open/);
+  occupied = false;
+  const view = await startInstagramCheck("account", deps);
+  assert.equal(fake.launches.length, 1);
+  assert.equal(page.actions[0], `goto:${IG.home}`);
+  assert.equal(view.check.error, null);
+  assert.equal(view.state, "connected");
+  assert.deepEqual(page.touched(), [], "account verification uploads and clicks nothing");
+});
+
+test("verify preserves the launch fallback when profile ownership cannot be read", async () => {
+  await reset();
+  const page = signedInPage();
+  const { deps, fake } = depsFor(page, { profileWindow: { waitForWindow: async () => ({ state: "unknown" }) } });
+  const view = await startInstagramCheck("account", deps);
+  assert.equal(fake.launches.length, 1);
+  assert.equal(page.actions[0], `goto:${IG.home}`);
+  assert.equal(view.check.error, null);
+});
+
+test("verify attaches to configured Chrome without inspecting or launching its profile", async () => {
+  await reset();
+  const page = signedInPage();
+  const { deps } = depsFor(page);
+  const attached = fakeChrome(page, { profileRoot: deps.profileRoot!, env: { BOOKREEL_PUBLISH_BROWSER_CHANNEL: "chrome", BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "0" } });
+  let profileChecks = 0;
+  const view = await startInstagramCheck("account", {
+    ...deps, ...attached.deps,
+    profileWindow: { waitForWindow: async () => { profileChecks++; return { state: "unknown" }; } },
+  });
+  assert.equal(profileChecks, 0);
+  assert.equal(view.check.error, null);
+  assert.equal(attached.connects.length, 1);
+  assert.equal(attached.launches.length, 0);
+  assert.equal(attached.context.closeCalls, 0);
+  assert.deepEqual(attached.operatorTab.actions, []);
+  assert.equal(page.actions[0], `goto:${IG.home}`);
 });
 
 test("a browser that is not installed is refused before anything starts", async () => {

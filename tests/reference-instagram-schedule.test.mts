@@ -24,6 +24,40 @@ import {
  * These run in a real Chromium so the toggle, typing and button are the real thing.
  */
 const quiet = () => {};
+
+test("24-hour controls never use Minutes as AM/PM and reach the final Schedule action", async () => {
+  const p = await browser.newPage();
+  try {
+    await p.setContent(`<div role="dialog"><div id="clock">
+      <input role="spinbutton" aria-label="Hours" aria-valuenow="0"><input role="spinbutton" aria-label="Minutes" aria-valuenow="0"><span id="value">00 : 00</span>
+      </div><button style="display:none">Schedule</button><button id="submit">Schedule</button></div>
+      <script>
+        window.submissions=0;document.querySelector('#submit').onclick=()=>window.submissions++;
+        document.querySelectorAll('[role="spinbutton"]').forEach(el=>{
+          let digits='';el.onfocus=()=>digits='';el.onkeydown=e=>{
+            if (/^[0-9]$/.test(e.key)) {digits=(digits+e.key).slice(-2);el.setAttribute('aria-valuenow',String(Number(digits)));}
+            if(e.key==='ArrowUp')el.setAttribute('aria-valuenow',String(Number(el.getAttribute('aria-valuenow'))+1));
+            document.querySelector('#value').textContent=[...document.querySelectorAll('[role="spinbutton"]')].map(x=>x.getAttribute('aria-valuenow').padStart(2,'0')).join(' : ');
+          };
+        });
+      </script>`);
+    for (const time of ["05:11","17:11"]) {
+      await setReelTime(p, reelScheduleTarget(zonedInstant("2030-11-05",time,"Asia/Kolkata"),"Asia/Kolkata"),quiet);
+      assert.equal(await p.locator('#value').innerText(),time.replace(':',' : '));
+    }
+    await pressSchedule(p,quiet);
+    assert.equal(await p.evaluate(()=>(window as unknown as {submissions:number}).submissions),1);
+  } finally { await p.close(); }
+});
+
+test("native time inputs retain the requested 24-hour time", async () => {
+  const p = await browser.newPage();
+  try {
+    await p.setContent('<div role="dialog"><input type="time" aria-label="Time" value="06:01"></div>');
+    await setReelTime(p,reelScheduleTarget(zonedInstant("2030-11-05","06:00","Asia/Kolkata"),"Asia/Kolkata"),quiet);
+    assert.equal(await p.locator('input').inputValue(),"06:00");
+  } finally { await p.close(); }
+});
 let browser: Browser;
 const haveBrowser = Boolean(await findChromium());
 

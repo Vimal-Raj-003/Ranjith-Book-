@@ -41,6 +41,7 @@ export interface RangeCheck {
 export function checkRanges(
   beats: Beat[],
   pageLengths: Map<number, number>,
+  quotedBeats: ReadonlySet<number> = new Set(),
 ): RangeCheck {
   const out = beats.map((b) => ({ ...b }));
   const repairs: string[] = [];
@@ -73,6 +74,10 @@ export function checkRanges(
       continue;
     }
     if (b.startWord >= prev.endWord) continue;
+    if (quotedBeats.has(i)) {
+      problems.push(`beats[${i}] quotes source words ${b.startWord}–${b.endWord}, overlapping the preceding beat on PAGE ${b.sourcePage}. Reorder or rewrite the narration; do not clip the quoted words to force forward order.`);
+      continue;
+    }
     if (isCta) {
       const n = pageLengths.get(b.sourcePage)!;
       const from = [b.startWord, b.endWord];

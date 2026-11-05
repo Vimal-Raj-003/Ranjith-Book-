@@ -5,7 +5,7 @@ import type { PublishJob, ScheduleSlot, WeeklySchedule } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { publishingReadiness } from "@/lib/publish/state";
 import { AppError } from "@/lib/errors";
-import { WORK_ROOT } from "@/lib/paths";
+import { RENDER_DIR, WORK_ROOT } from "@/lib/paths";
 import { publishingEnabled } from "@/lib/publish/execution";
 import { expectedHandle } from "@/lib/publish/identity";
 import { parseThumbnails } from "@/lib/thumbnails";
@@ -54,14 +54,21 @@ export function platformState(platform: Platform, job: PublishJob | undefined, s
 }
 
 export async function generatedVideos(userId: string, opts: {ids?: string[]; page?: number; pageSize?: number; q?: string} = {}): Promise<VideoPage & {engines: Record<Platform,{api:boolean;account:string|null}>}> {
-  const episodes = await prisma.episode.findMany({where:{userId, ...(opts.ids ? {id:{in:opts.ids.slice(0,100)}} : {})},include:{book:true,publishJobs:true},orderBy:{createdAt:"desc"}});
+  const episodes = await prisma.episode.findMany({where:{userId,status:"DONE",videoPath:{not:null}, ...(opts.ids ? {id:{in:opts.ids.slice(0,100)}} : {})},include:{book:true,publishJobs:true},orderBy:{createdAt:"desc"}});
+  // This is the publish picker, not episode history. Filter before pagination
+  // and selection counts, using the same assets/readiness rules as publishing.
+  const checked = await Promise.all(episodes.map(async e => {
+    const ready = await publishingReadiness(e);
+    const render = ready.ready ? await fs.stat(path.join(RENDER_DIR, `${e.id}.mp4`)).catch(()=>null) : null;
+    return {episode:e,ready,hasRender:!!render?.isFile() && render.size>0};
+  }));
+  const eligible = checked.filter(e=>e.ready.ready && e.hasRender);
   const schedules = await prisma.weeklySchedule.findMany({where:{userId,status:{not:"cancelled"}}});
-  const allSlots = await prisma.scheduleSlot.findMany({where:{scheduleId:{in:schedules.map(s=>s.id)},episodeId:{in:episodes.map(e=>e.id)},controlState:{not:"cancelled"}},orderBy:{assignedAt:"asc"}});
-  const items: GeneratedVideo[] = await Promise.all(episodes.map(async e => {
+  const allSlots = await prisma.scheduleSlot.findMany({where:{scheduleId:{in:schedules.map(s=>s.id)},episodeId:{in:eligible.map(e=>e.episode.id)},controlState:{not:"cancelled"}},orderBy:{assignedAt:"asc"}});
+  const items: GeneratedVideo[] = await Promise.all(eligible.map(async ({episode:e,ready}) => {
     const slot = allSlots.find(s=>s.episodeId===e.id && s.platform === "youtube") ?? allSlots.find(s=>s.episodeId===e.id);
     const plan = schedules.find(s=>s.id===slot?.scheduleId);
     const states = Object.fromEntries(platforms.map(p=>[p,platformState(p,e.publishJobs.find(j=>j.platform===p),allSlots.find(s=>s.episodeId===e.id && s.platform===p),plan)])) as Record<Platform,PlatformState>;
-    const ready = await publishingReadiness(e);
     const file = {ok:e.status==="DONE" && (ready.videoBytes??0)>0,bytes:ready.videoBytes,problem:e.status!=="DONE" ? "Video generation has not completed." : !ready.videoBytes ? "The generated video file is missing or empty." : null};
     const selectable = ready.ready && platforms.some(p=>states[p].canPublish);
     const thumbs = parseThumbnails(e);

@@ -136,7 +136,7 @@ interface FormState {
 
 const DEFAULT_DAYS = 7;
 const DEFAULT_TIMES = ["09:00"];
-const DEFAULT_PLATFORMS: ReadonlySet<SchedulePlatform> = new Set(["youtube"]);
+const DEFAULT_PLATFORMS: ReadonlySet<SchedulePlatform> = new Set(["youtube", "instagram"]);
 
 /**
  * What the form shows for a schedule the server holds (or none): a draft refills it, an active
@@ -430,7 +430,7 @@ export function SchedulePanel({
     </div>
   );
 
-  // The per-platform truth: YouTube is genuinely scheduled; Instagram is posted by this app at the slot time.
+  // Each platform confirms and holds its own native publication time.
   const platformNotes = (set: ReadonlySet<SchedulePlatform>) => (
     <>
       {set.has("youtube") && <Hint>{c.youtubeNote}</Hint>}

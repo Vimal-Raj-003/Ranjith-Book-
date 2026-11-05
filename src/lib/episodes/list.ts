@@ -2,12 +2,14 @@ import { prisma } from "@/lib/db";
 import { visibleTo } from "@/lib/episodes/visibility";
 import { parseThumbnails } from "@/lib/thumbnails/store";
 import { posterFields, publicThumbs, type PublicThumb } from "@/lib/episode-view";
+import type { AttemptIdentity } from "./attempt-groups";
 
-export interface EpisodeListItem {
+export interface EpisodeListItem extends AttemptIdentity {
   id: string;
   title: string | null;
   status: string;
   step: string;
+  error: string | null;
   theme: string;
   partNumber: number;
   seriesTotal: number;
@@ -46,9 +48,16 @@ export async function listEpisodes(userId: string): Promise<EpisodeListItem[]> {
 
   return rows.map((e) => ({
     id: e.id,
+    bookId: e.bookId,
+    contentIdeaId: e.contentIdeaId,
+    ideaKey: e.ideaKey,
+    kind: e.kind,
+    startedAt: e.startedAt,
+    updatedAt: e.updatedAt,
     title: e.title,
     status: e.status,
     step: e.step,
+    error: e.error,
     theme: e.theme,
     partNumber: e.partNumber,
     seriesTotal: e.seriesTotal,

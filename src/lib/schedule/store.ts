@@ -499,8 +499,9 @@ export async function activateSchedule(userId: string, scheduleId: string, optio
   // Both native platform schedules upload ahead through the same persisted worker.
   if (platforms.includes("instagram")) startInstagramTicker();
 
-  // Each platform lane owns its failures; the disabled Instagram lane returns immediately.
-  const work = Promise.all([runSchedule(schedule.id, { ...options, platform: "youtube" }), runSchedule(schedule.id, { ...options, platform: "instagram" })]);
+  // One dispatcher settles Instagram then YouTube for each video. Results and
+  // safety stops remain platform-specific; confirmed uploads are never repeated.
+  const work = runSchedule(schedule.id, options);
   // `runSchedule` never rejects; the catch is belt and braces for a detached promise.
   if (options.waitForCompletion) await work;
   else void work.catch(() => {});

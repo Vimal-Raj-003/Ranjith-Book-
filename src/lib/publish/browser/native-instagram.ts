@@ -8,12 +8,15 @@ import { dismissPrompts } from "./instagram-prompts";
 import { instagramDraftProblem, instagramScheduleTimeProblem, judgeInstagramCalendar, readInstagramCalendar, verifyInstagramCalendar } from "./instagram-calendar";
 import { enableScheduleContent, reelScheduleTarget, setReelDate, setReelTime, readReelSchedule, judgeReelSchedule, pressSchedule } from "./instagram-schedule";
 
+export const instagramMediaControls = { crop: chooseOriginalCrop, cover: applyReelCover };
+
 /** Called ONLY after BookReel's strict active-account check. No Graph API writes. */
 export async function scheduleInstagram(
   session: BrowserSession, prepared: PreparedPublish, caption: string,
   options: BrowserPublishOptions, hooks: BrowserHooks,
   selectors: { newPost: string; postItem: string; fileInput: string; next: string; caption: string },
   onCommit: () => void,
+  media = instagramMediaControls,
 ): Promise<PublishOutcome> {
   const page = session.page as unknown as Page;
   const log = (message: string) => { void Promise.resolve(hooks.onLog?.(message)).catch(() => {}); };
@@ -34,15 +37,20 @@ export async function scheduleInstagram(
   finally { await reader.close().catch(() => {}); }
   const expected = { caption, repoUrl: "", publishAt: at, remoteContainerId: options.resumeDraftId };
   const preflight = judgeInstagramCalendar(calendar, expected);
-  const result = (item: { id: string; mediaId: string; publishAt: string }): PublishOutcome => ({
+  const result = (item: { id: string; mediaId: string; publishAt: string }, coverApplied = false): PublishOutcome => ({
     status: "PUBLISHED", externalId: item.id, externalUrl: "https://www.instagram.com/scheduled_content/",
     confirmedAt: new Date(), scheduledFor: new Date(item.publishAt), visibility: "scheduled",
+    thumbnail: { applied: coverApplied, reason: coverApplied ? null : "This existing schedule's cover was not reverified." },
   });
   if (preflight.kind === "confirmed") {
     await hooks.onCheckpoint?.(preflight.item.id);
     return result(preflight.item);
   }
-  if (preflight.kind === "blocked") throw new NeedsHuman("unconfirmed", preflight.reason);
+  if (preflight.kind === "blocked") {
+    if (preflight.safeToContinue) return {status:"FAILED",error:preflight.reason};
+    throw new NeedsHuman("unconfirmed", preflight.reason);
+  }
+  if (!prepared.poster) throw new NeedsHuman("ui", "The selected Instagram thumbnail is unavailable. Select a thumbnail before retrying; nothing was uploaded.");
 
   log("Instagram 3. Opening Create and uploading the approved render");
   await clickOn(session, selectors.newPost, "New post", 30_000);
@@ -55,9 +63,9 @@ export async function scheduleInstagram(
   await hooks.onCheckpoint?.("instagram-upload-unconfirmed");
   await page.locator(selectors.fileInput).first().setInputFiles(prepared.video.path, { timeout: 60_000 });
   await hooks.onStage?.("UPLOADING");
-  await chooseOriginalCrop(page, log);
+  await media.crop(page, log);
   await clickOn(session, selectors.next, "Next to Cover", 120_000);
-  if (prepared.poster) await applyReelCover(page, prepared.poster.path, log);
+  if (!(await media.cover(page, prepared.poster.path, log))) throw new NeedsHuman("ui", "The selected Instagram cover was not applied. Nothing was submitted.");
   await clickOn(session, selectors.next, "Next to Caption", 60_000);
   log("Instagram 4. Filling and verifying the complete caption and AI disclosure");
   await fillNativeInstagramCaption(page, selectors.caption, caption);
@@ -85,5 +93,5 @@ export async function scheduleInstagram(
   await pressSchedule(page, log);
   const confirmed = await verifyInstagramCalendar(page, expected, { userId: calendar.userId });
   await hooks.onCheckpoint?.(confirmed.id);
-  return result(confirmed);
+  return result(confirmed, true);
 }

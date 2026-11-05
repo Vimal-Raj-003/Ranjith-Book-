@@ -88,6 +88,7 @@ import { PLATFORM_LABELS, type PlatformId } from "../limits";
 import type { PublishHooks, PublishOutcome, Publisher } from "../contract";
 import type { EnvLike } from "../youtube/secrets";
 import { acquirePlatformLock, closeLeftOpenWindow, forgetWindow, leaveWindowOpen } from "./live";
+import { windowsProbe, type WindowProbe } from "./window-probe";
 
 // ----------------------------------------------------------------- the page shapes
 
@@ -334,6 +335,8 @@ export const realClock: Clock = {
 
 /** Everything a test needs to replace. Production passes nothing. */
 export interface BrowserDeps {
+  /** Read-only ownership check; never closes a browser belonging to another process. */
+  profileWindow?: Pick<WindowProbe, "waitForWindow"> | null;
   youtubeReview?: typeof import("./youtube-review").reviewStudioVideo;
   /** Test seam; production watchdog is 45 minutes, including platform processing. */
   jobTimeoutMs?: number;
@@ -609,6 +612,18 @@ export async function openSession(platform: PlatformId, deps: BrowserDeps = {}):
   const profileDir = profileDirFor(platform, deps.profileRoot);
 
   await closeLeftOpenWindow(platform);
+  // Chrome forwards a second launch (including its about:blank startup URL)
+  // to the existing profile owner and exits. Playwright then has no page to
+  // navigate. Check ownership BEFORE launching, after releasing our own window.
+  const probe = deps.profileWindow !== undefined
+    ? deps.profileWindow
+    : process.platform === "win32" && !deps.launch ? windowsProbe : null;
+  if (options.channel && probe) {
+    const found = await probe.waitForWindow(profileDir, 0).catch(() => ({ state: "unknown" as const }));
+    if (found.state === "window" || (found.state === "none" && found.holders.length > 0)) {
+      throw new Error(`BookReel ${platform} profile is in use by another browser process. Close that platform's BookReel browser window, then retry; no navigation or upload was attempted.`);
+    }
+  }
   await fs.promises.mkdir(profileDir, { recursive: true });
 
   const context = await (deps.launch ?? launchContext)(profileDir, options);

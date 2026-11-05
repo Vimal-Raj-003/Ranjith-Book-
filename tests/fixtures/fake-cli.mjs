@@ -46,6 +46,15 @@ if (scenario === "cli-failure") {
 
 const isGrounding = /adversarial grounding checker/.test(system);
 
+if (/You write paraphrased narration/.test(system)) {
+  const request = JSON.parse(input);
+  if (!request.beats.some((b) => b.passagesToParaphrase.length)) throw new Error("Missing exact passages to repair");
+  process.stdout.write(envelope({ voiceovers: request.beats.map((b, i) =>
+    scenario === "quotation-budget" ? b.voiceover :
+    i === 0 ? "The passage contrasts fleeting enthusiasm with a commitment that endures." : b.voiceover) }));
+  process.exit(0);
+}
+
 function cleanScript(tag) {
   return {
     title: `Test title SCENARIO:${tag}`,
@@ -77,6 +86,16 @@ function cleanScript(tag) {
 }
 
 if (isGrounding) {
+  if (scenario === "grounding-range-cta" || scenario === "grounding-factual-cta") {
+    const script = JSON.parse(input.split("GENERATED SCRIPT:\n")[1]);
+    const rangeCorrect = script.beats[0].startWord === 183 && script.beats[0].endWord === 198;
+    const allowedRequest = /CLOSING REQUEST EXCEPTION/.test(system) && scenario !== "grounding-factual-cta";
+    const pass = rangeCorrect && allowedRequest;
+    process.stdout.write(envelope({ verdict: pass ? "pass" : "revise", groundedness: pass ? 100 : 50,
+      authorNamed: false, indicesGrounded: rangeCorrect,
+      issues: pass ? [] : [{ field: "beats[1].voiceover", severity: "blocker", problem: "Unsupported factual memory claim" }] }));
+    process.exit(0);
+  }
   if (scenario === "always-revise-flags-indices") {
     process.stdout.write(
       envelope({
@@ -116,6 +135,15 @@ if (isGrounding) {
 }
 
 // The writer call.
+if (scenario === "grounding-range-cta" || scenario === "grounding-factual-cta") {
+  const pkg = cleanScript(scenario);
+  pkg.beats[0] = { ...pkg.beats[0], sourcePage: 52, startWord: 190, endWord: 198,
+    voiceover: "Whatever once occupies an active, intense mind to the exclusion of everything else is never forgotten." };
+  pkg.beats[1] = { ...pkg.beats[1], sourcePage: 52, startWord: 198, endWord: 198,
+    voiceover: scenario === "grounding-range-cta" ? "Follow BookReel." : "Follow BookReel because this method doubles your memory." };
+  process.stdout.write(envelope(pkg));
+  process.exit(0);
+}
 if (scenario === "author-mismatch") {
   const pkg = cleanScript(scenario);
   pkg.beats[0].voiceover = "A passage by James Clear on staying disciplined when nobody is watching.";

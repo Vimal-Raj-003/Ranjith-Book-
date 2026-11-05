@@ -55,7 +55,8 @@ import { judgeIdentity } from "../connect";
 import { expectedHandle } from "../identity";
 import { publishingEnabled } from "../execution";
 import { igNativeScheduleEnabled } from "./engine";
-import { scheduleInstagram } from "./native-instagram";
+import { scheduleInstagram, instagramMediaControls } from "./native-instagram";
+import type { Page } from "playwright-core";
 import type { EnvLike } from "../youtube/secrets";
 import {
   NeedsHuman,
@@ -165,6 +166,8 @@ export interface BrowserInstagramContext {
   /** What THIS publish asks for. Instagram needs `confirmPublic: true`; nothing else applies. */
   options?: BrowserPublishOptions;
   deps?: BrowserDeps;
+  /** Isolated orchestration tests replace only the media controls. */
+  mediaControls?: typeof instagramMediaControls;
 }
 
 export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): BrowserPublisher {
@@ -179,9 +182,8 @@ export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): Br
     id: platform,
     label: PLATFORM_LABELS[platform],
     canUpload: true,
-    // The cover picker is driven, but Instagram gives no read-back for it, so
-    // this app does not claim to have set one.
-    canSetThumbnail: false,
+    // The selected file and Cover photo preview must both be verified.
+    canSetThumbnail: true,
     // Instagram's web uploader does not schedule for most accounts, and this flow
     // does not fake it.
       canSchedule: publishingEnabled("instagram", env) && igNativeScheduleEnabled(env),
@@ -237,7 +239,7 @@ export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): Br
       const options = ctx.options ?? {};
       const problems = browserOptionProblems(platform, options, Date.now(), env);
       if (problems.length > 0) return { status: "FAILED", error: problems.map((p) => p.message).join(" ") };
-      return runInSession(platform, deps, (session) => instagramFlow(session, prepared, hooks, env, options));
+      return runInSession(platform, deps, (session) => instagramFlow(session, prepared, hooks, env, options, ctx.mediaControls ?? instagramMediaControls));
     },
   };
 }
@@ -331,6 +333,7 @@ async function instagramFlow(
   hooks: BrowserHooks,
   env: EnvLike,
   options: BrowserPublishOptions,
+  media: typeof instagramMediaControls,
 ): Promise<PublishOutcome> {
   const { page } = session;
   const wall = { appShell: IG.appShell, dialog: IG.dialog };
@@ -374,7 +377,8 @@ async function instagramFlow(
       );
     }
 
-    if (options.scheduledAt) return await scheduleInstagram(session, prepared, caption, options, hooks, IG, () => { committed = true; });
+    if (options.scheduledAt) return await scheduleInstagram(session, prepared, caption, options, hooks, IG, () => { committed = true; }, media);
+    if (!prepared.poster) throw new NeedsHuman("ui", "The selected Instagram thumbnail is unavailable. Select a thumbnail before retrying; nothing was uploaded.");
     if (options.resumeDraftId) throw new NeedsHuman("unconfirmed", "An earlier Instagram upload may already exist. Inspect the profile and drafts before starting another upload.");
 
     // 3. What is on the profile NOW, so the new Reel can be told apart afterwards.
@@ -403,20 +407,11 @@ async function instagramFlow(
     await assertNoWall("instagram", session, wall);
 
     // 5. Crop -> Edit (the cover) -> caption.
+    const log = (message: string) => { void hooks.onLog?.(message); };
+    await media.crop(page as unknown as Page, log);
     await clickOn(session, IG.next, "the first Next button", 120_000);
     await session.clock.sleep(1_500);
-    if (prepared.poster && (await waitShown(session, IG.coverSelect, 20_000))) {
-      // Through the file chooser, the way the control is meant to be used.
-      try {
-        const [chooser] = await Promise.all([
-          page.waitForEvent("filechooser", { timeout: 15_000 }),
-          page.locator(IG.coverSelect).first().click({ timeout: 15_000 }),
-        ]);
-        await chooser.setFiles(prepared.poster.path);
-      } catch {
-        // The cover is a nicety: Instagram takes a frame of the video without one.
-      }
-    }
+    if (!(await media.cover(page as unknown as Page, prepared.poster.path, log))) throw new NeedsHuman("ui", "The selected Instagram cover was not applied. Nothing was submitted.");
     await clickOn(session, IG.next, "the second Next button", 60_000);
     await session.clock.sleep(1_500);
 
@@ -488,8 +483,8 @@ async function instagramFlow(
       reviewUrl: found.url,
       visibility: "public",
       thumbnail: {
-        applied: false,
-        reason: "Instagram gives no read-back for the cover, so it is not counted as applied. Check it on the Reel.",
+        applied: true,
+        reason: null,
       },
     };
   } catch (err) {

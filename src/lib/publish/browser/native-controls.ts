@@ -5,7 +5,26 @@ import { applySchedule, readScheduledFromChannel } from "./youtube-schedule";
 import { waitForUpload } from "./youtube-finish";
 import { applyVideoSettings, closePreviewPlayer, setYouTubeTags } from "./youtube-settings";
 import type { EnvLike } from "../youtube/secrets";
-import { judgeScheduledView, parseOffset, studioTargetAtOffset } from "../native-schedule";
+import { judgeScheduledView, parseOffset, studioTargetAtOffset, gmtLabel } from "../native-schedule";
+
+// The receipt uses the zone verified by this page's scheduling picker. Never
+// infer it from the server's timezone or from the requested time alone.
+const verifiedZones = new WeakMap<PageLike, number>();
+
+export async function confirmScheduleReceipt(page: Page, id: string, title: string, at: Date, offset?: number): Promise<{ok:boolean;problem?:string} | null> {
+  const dialog = page.getByRole("dialog", {name:"Video scheduled",exact:true});
+  if (!(await dialog.isVisible().catch(()=>false))) return null;
+  if (offset === undefined) return null;
+  const receipt = await dialog.evaluate((root, expectedTitle) => {
+    return {text:(root as HTMLElement).innerText,
+      titleMatches:[...root.querySelectorAll("*")].some(el=>(el.textContent??"").normalize("NFKC").replace(/\s+/g," ").trim()===expectedTitle.normalize("NFKC").replace(/\s+/g," ").trim()),
+      links:[...root.querySelectorAll("a[href]")].map(a=>a.getAttribute("href")??"")};
+  }, title);
+  const matchingId = receipt.links.some(link=>/(?:youtu\.be\/|[?&]v=|\/shorts\/)([\w-]{11})(?![\w-])/.exec(link)?.[1]===id);
+  const verdict = judgeScheduledView({title, text:`${receipt.text} ${gmtLabel(offset)}`}, {title,target:studioTargetAtOffset(at,offset)});
+  const ok = matchingId && receipt.titleMatches && verdict.scheduled && verdict.timeConfirmed;
+  return {ok,problem:ok?undefined:"Studio's scheduling receipt did not match the approved video ID, exact title, date and time."};
+}
 
 /** Injection seam for orchestration tests; production uses the RepoReel controls. */
 export interface YouTubeScheduleControls {
@@ -28,10 +47,14 @@ export const youtubeScheduleControls: YouTubeScheduleControls = {
     if (missing.length) throw new Error(`Studio Details settings could not be verified: ${missing.join("; ")}. Review the saved draft; no final publishing button was pressed.`);
   },
   async apply(page, at, log) {
+    verifiedZones.delete(page);
     const result = await applySchedule(page as unknown as Page, at, log);
     if (!result.ok || !result.zoneVerified) throw new Error(result.problems.join(" ") || "Studio's scheduling time zone could not be verified.");
+    if (result.target) verifiedZones.set(page,result.target.offsetMinutes);
   },
   async confirm(page, id, title, at) {
+    const receipt = await confirmScheduleReceipt(page as unknown as Page,id,title,at,verifiedZones.get(page));
+    if (receipt) return receipt;
     const view = await readScheduledFromChannel(page as unknown as Page, id);
     const offset = parseOffset(view?.text ?? "");
     if (!view || offset === null) return { ok: false, problem: "Studio did not confirm the saved schedule and time zone." };

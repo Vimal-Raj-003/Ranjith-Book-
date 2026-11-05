@@ -64,6 +64,7 @@ import {
   isProfileInUse,
   isShown,
   openSession,
+  profileDirFor,
   readBody,
   waitPresent,
   waitShown,
@@ -77,6 +78,7 @@ import { chooseOriginalCrop } from "./instagram-crop";
 import { instagramDraftProblem, readInstagramCalendar, type InstagramCalendar } from "./instagram-calendar";
 import { dismissPrompts } from "./instagram-prompts";
 import { scheduleSwitchIndex } from "./instagram-schedule";
+import { windowsProbe, type WindowProbe } from "./window-probe";
 
 /** The `Setting` row the last look is kept in. Not in `SETTING_KEYS`, so `PUT /api/settings` cannot write it. */
 export const VERIFICATION_SETTING = "instagramBrowserVerification";
@@ -148,6 +150,8 @@ export interface ProbeHooks {
 }
 
 export interface CheckDeps extends BrowserDeps {
+  /** Read-only profile ownership check before launching Chrome. Null disables it in fixtures. */
+  profileWindow?: Pick<WindowProbe, "waitForWindow"> | null;
   /** The account's scheduled-content calendar. Default: Instagram's own `/scheduled_content/` response. */
   readCalendar?: (session: BrowserSession) => Promise<InstagramCalendar>;
   /** The words on Instagram's settings page. Default: open `/accounts/edit/` and read the page. */
@@ -459,6 +463,25 @@ async function runCheck(mode: CheckMode, deps: CheckDeps): Promise<void> {
   let timedOut = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Plain Chrome owns the sign-in profile until the person closes it. A
+    // second launch can forward Playwright's about:blank startup tab into that
+    // window and exit, so openSession never returns and goto is never reached.
+    // Refuse before launching; never close the person's window or edit its profile.
+    const probe = deps.profileWindow !== undefined
+      ? deps.profileWindow
+      : process.platform === "win32" && !deps.launch ? windowsProbe : null;
+    if (probe && browserChannel(env) && !cdpEndpoint(env)) {
+      log("Checking whether BookReel's Instagram profile is already open");
+      const found = await probe.waitForWindow(profileDirFor("instagram", deps.profileRoot), 0)
+        .catch(() => ({ state: "unknown" as const }));
+      if (found.state === "window" || (found.state === "none" && found.holders.length > 0)) {
+        throw new CheckFailed(
+          "BookReel's Instagram profile is already open in Chrome. Close the Chrome window opened by Connect Instagram, " +
+          "then press Verify account again. Verification needs to reopen that same profile to navigate to Instagram. " +
+          "No browser was opened or closed, and nothing was changed.",
+        );
+      }
+    }
     log("Opening BookReel's Instagram window");
     try {
       session = await openSession("instagram", deps);

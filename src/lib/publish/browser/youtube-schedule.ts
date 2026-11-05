@@ -467,9 +467,13 @@ async function clickDayInGrid(page: Page, target: StudioTarget): Promise<boolean
   return true;
 }
 
-async function setDate(page: Page, target: StudioTarget, log: PublishLog): Promise<void> {
+export async function setDate(page: Page, target: StudioTarget, log: PublishLog): Promise<void> {
   log(`Schedule: setting the date to ${target.dateText}`);
   if (!(await mark(page, "date-trigger"))) throw new Error("the date control is not on the screen");
+  // Reading the zone can scroll this control offscreen. Bring it into view
+  // before hit-testing the remaining overlay; offscreen hit-tests return null.
+  await page.locator(marked("date-trigger")).first().scrollIntoViewIfNeeded({timeout:8000});
+  await settleNoOverlay(page);
   await clickMarked(page, "date-trigger");
 
   // The calendar opens with a text box holding the date. Typing into it is the exact way in.

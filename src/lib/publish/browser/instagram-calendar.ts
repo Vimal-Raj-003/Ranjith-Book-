@@ -60,7 +60,13 @@ export interface InstagramScheduleIdentity {
 export type CalendarVerdict =
   | { kind: "confirmed"; item: ScheduledReel }
   | { kind: "clear" }
-  | { kind: "blocked"; reason: string };
+  | { kind: "blocked"; reason: string; safeToContinue?: true };
+
+/** A calendar spacing refusal occurs before selecting a file; other videos can proceed. */
+export function isPreUploadSpacingConflict(job: {platform:string;lastError:string|null;externalId:string|null;remoteDraftId:string|null;sessionUrlEnc:string|null} | null): boolean {
+  return !!job && job.platform === "instagram" && !job.externalId && !job.remoteDraftId && !job.sessionUrlEnc &&
+    /^Another Instagram post is within \d+ minutes of this time\. Nothing was uploaded or rescheduled\.$/.test(job.lastError??"");
+}
 
 /** Adopt only exact copy + exact instant; related or uncertain remote uploads block a retry. */
 export function judgeInstagramCalendar(calendar: InstagramCalendar, expected: InstagramScheduleIdentity): CalendarVerdict {
@@ -76,7 +82,7 @@ export function judgeInstagramCalendar(calendar: InstagramCalendar, expected: In
   if (expected.remoteContainerId) return { kind: "blocked", reason: "An earlier upload may have left a draft or an unconfirmed schedule. Check Instagram's drafts and Scheduled content before retrying; no second upload was started." };
   const gap = (expected.minGapMinutes ?? 30) * 60_000;
   if (calendar.items.some(item => Math.abs(new Date(item.publishAt).getTime() - expected.publishAt.getTime()) < gap)) {
-    return { kind: "blocked", reason: `Another Instagram post is within ${expected.minGapMinutes ?? 30} minutes of this time. Nothing was uploaded or rescheduled.` };
+    return { kind: "blocked", safeToContinue:true, reason: `Another Instagram post is within ${expected.minGapMinutes ?? 30} minutes of this time. Nothing was uploaded or rescheduled.` };
   }
   return { kind: "clear" };
 }
@@ -117,7 +123,10 @@ export async function verifyInstagramCalendar(
     do {
       const calendar = await readInstagramCalendar(reader);
       if (opts.userId && calendar.userId !== opts.userId) throw new Error("The Instagram account changed during scheduling. Check the open browser; no success was recorded.");
-      const verdict = judgeInstagramCalendar(calendar, expected);
+      // Spacing is a pre-upload guard. After submission, a newly created row
+      // can appear before its caption; it must not conflict with its own slot.
+      // Continue polling for the exact caption/time receipt without writing again.
+      const verdict = judgeInstagramCalendar(calendar, {...expected,minGapMinutes:0});
       if (verdict.kind === "confirmed") return verdict.item;
       if (verdict.kind === "blocked") throw new Error(verdict.reason);
       if (Date.now() >= deadline) break;

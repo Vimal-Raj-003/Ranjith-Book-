@@ -23,6 +23,8 @@ import { prepareEpisodeRetry } from "../src/lib/episodes/retry";
 import { reserveIdea } from "../src/lib/content/idea";
 import { StepTimer } from "../src/lib/step-timer";
 import { requireIsolatedDatabase } from "./setup/isolation";
+import path from "node:path";
+import { WORK_ROOT } from "../src/lib/paths";
 
 const LONG_AGO = () => new Date(Date.now() - 60 * 60_000);
 
@@ -153,6 +155,11 @@ test("a FAILED episode is reset to QUEUED on the same row: transient state clear
       "exactly the transient run state is reset",
     );
     assert.equal(after.steps.length, 0, "the failed attempt's StepRuns are gone, so the rail starts clean while it waits");
+    const evidenceDir = path.join(WORK_ROOT, "generation-evidence", episode.id);
+    const archived = JSON.parse(await fs.readFile(path.join(evidenceDir, (await fs.readdir(evidenceDir))[0]), "utf8"));
+    assert.equal(archived.episode.error, before.row.error);
+    assert.equal(archived.episode.finishedAt, before.row.finishedAt!.toISOString());
+    assert.deepEqual(archived.steps, JSON.parse(JSON.stringify(before.steps)), "all prior step details remain archived");
     assert.equal(after.reserved, false, "the idea reservation is released, or the re-run would fail instantly with idea_taken");
 
     // The same row — not a second one.
@@ -194,6 +201,19 @@ test("a regeneration keeps everything that makes the episode that episode: idea,
   } finally {
     await cleanup(fx);
   }
+});
+
+test("retry cannot clear failure evidence when its archive cannot be written", async () => {
+  const fx = await fixtureBook();
+  try {
+    const { episode, ideaKey } = await ideaEpisode(fx, { status: "FAILED", hold: true });
+    const before = await snapshot(episode.id, fx.book.id, ideaKey);
+    const parent = path.join(WORK_ROOT, "generation-evidence");
+    await fs.mkdir(parent, { recursive: true });
+    await fs.writeFile(path.join(parent, episode.id), "fixture blocks archive directory");
+    await assert.rejects(prepareEpisodeRetry(episode.id));
+    assert.deepEqual(await snapshot(episode.id, fx.book.id, ideaKey), before);
+  } finally { await cleanup(fx); }
 });
 
 test("the reservation is what lets the re-run through: reserveIdea is refused before the reset and accepted after it", async () => {
@@ -390,9 +410,9 @@ test("the superseded check runs before anything is released or reset, and the at
   const lib = await fs.readFile(fileURLToPath(new URL("../src/lib/episodes/retry.ts", import.meta.url)), "utf8");
   const at = (needle: string) => lib.indexOf(needle);
   assert.ok(at('code: "superseded"') > 0);
-  assert.ok(at("prisma.episode.findFirst") < at("await releaseIdea("), "the sibling check runs before the release");
-  assert.ok(at("await releaseIdea(") < at("prisma.stepRun.deleteMany"));
-  assert.ok(at("prisma.stepRun.deleteMany") < at("prisma.episode.updateMany"), "and the atomic reset is last");
+  assert.ok(at("tx.episode.findFirst") < at("await archiveGenerationEvidence("));
+  assert.ok(at("await archiveGenerationEvidence(") < at("tx.stepRun.deleteMany"));
+  assert.ok(at("tx.stepRun.deleteMany") < at("tx.episode.updateMany"), "and the atomic reset is last");
 });
 
 // --- 4. Duplicate clicks ------------------------------------------------------

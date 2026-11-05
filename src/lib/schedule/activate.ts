@@ -1,6 +1,6 @@
 /**
  * Persisted native scheduling queue shared by YouTube and Instagram.
- * Each platform runs independently in video order. Publishers own upload jobs,
+ * Videos run in order, Instagram then YouTube, with independent platform results. Publishers own upload jobs,
  * channel verification, durable checkpoints and platform confirmation; this
  * module claims slots, records their outcomes and stops uncertain lanes.
  */
@@ -18,6 +18,7 @@ import type { Fetcher } from "@/lib/publish/youtube/oauth";
 import { DEFAULT_TIMEZONE, formatInZone } from "./time";
 import { isSettledSlot, type SlotStatus } from "./view";
 import { holdMissedQueueItem } from "./reconcile";
+import { isPreUploadSpacingConflict } from "@/lib/publish/browser/instagram-calendar";
 
 export interface RunScheduleOptions {
   /** Limit an explicit action to selected cells of an already active plan. */
@@ -50,7 +51,7 @@ const running: Set<string> = (g.bookreelScheduleRuns ??= new Set());
 
 /** Is the runner working through this schedule in THIS process right now? */
 export function isScheduleRunning(scheduleId: string): boolean {
-  return running.has(`${scheduleId}:youtube`) || running.has(`${scheduleId}:instagram`);
+  return running.has(`${scheduleId}:both`) || running.has(`${scheduleId}:youtube`) || running.has(`${scheduleId}:instagram`);
 }
 
 interface JobFacts {
@@ -222,19 +223,21 @@ async function runSlot(
 
 async function runSlots(scheduleId: string, options: RunScheduleOptions): Promise<void> {
   const schedule = await prisma.weeklySchedule.findUnique({ where: { id: scheduleId } });
-  const platform = options.platform ?? "youtube";
-  if (!publishingEnabled(platform, options.env ?? process.env)) return;
+  const enabled = (["instagram","youtube"] as const).filter(p=>(!options.platform || p===options.platform) && publishingEnabled(p, options.env ?? process.env));
+  if (!enabled.length) return;
   // Board schedules require browser content review before an audience is selected.
-  if (!schedule || schedule.status !== "active" || (platform === "youtube" && !schedule.boardGrid && typeof schedule.madeForKids !== "boolean") || !schedule.userId) return;
+  if (!schedule || schedule.status !== "active" || !schedule.userId) return;
   const plan: Plan = { userId: schedule.userId, madeForKids: schedule.madeForKids, manualAudience: schedule.boardGrid, timezone: schedule.timezone, youtubePrivacy: schedule.youtubePrivacy };
 
   // A platform lane uses the same queue, claim and confirmation rules.
   const slots = await prisma.scheduleSlot.findMany({
-    where: { scheduleId, platform, episodeId: {not:""}, controlState: "active", ...(options.onlyPositions ? {position:{in:options.onlyPositions}} : {}) },
-    orderBy: { position: "asc" },
+    where: { scheduleId, platform:{in:enabled}, episodeId: {not:""}, controlState: "active", ...(options.onlyPositions ? {position:{in:options.onlyPositions}} : {}) },
+    orderBy: [{ position: "asc" },{platform:"asc"}],
   });
-  let stopped = false;
+  const stopped = new Set<PlatformId>();
   for (const slot of slots) {
+    const platform = slot.platform as PlatformId;
+    if (platform === "youtube" && !schedule.boardGrid && typeof schedule.madeForKids !== "boolean") continue;
     if (isSettledSlot(slot.status)) continue;
     if (slot.status === "scheduling") continue;
     const native = platform === "instagram" || schedule.youtubePrivacy === "public";
@@ -252,16 +255,24 @@ async function runSlots(scheduleId: string, options: RunScheduleOptions): Promis
     }
     if (options.automatic && slot.status === "failed") {
       const job = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: slot.episodeId, platform } } });
+      if (job?.status === "SCHEDULED" || job?.status === "PUBLISHED") {
+        const outcome = alreadyThere(job,slot.assignedAt,plan.timezone)!;
+        await setSlot(slot.id,{status:outcome.status,note:outcome.note,publishJobId:job.id});
+        continue;
+      }
+      // Do not retry this conflicted slot or change its time. The platform
+      // explicitly refused it before upload, so later videos are safe to try.
+      if (isPreUploadSpacingConflict(job)) continue;
       const retryReady = job?.mode === "api" && (job.status === "QUEUED" || (job.retryAt && job.retryAt <= new Date()));
-      if (!retryReady) { stopped = true; continue; }
+      if (!retryReady) { stopped.add(platform); continue; }
     }
     const state = await prisma.weeklySchedule.findUnique({ where: { id: scheduleId }, select: { status: true } });
     if (state?.status !== "active") break;
-    if (stopped) {
+    if (stopped.has(platform)) {
       await setSlot(slot.id, { status: "pending", note: "Not started: the run stopped at an earlier video that needs you." }).catch(() => {});
       continue;
     }
-    stopped = await runSlot(slot, plan, options);
+    if (await runSlot(slot, plan, {...options,platform})) stopped.add(platform);
   }
 }
 
@@ -270,8 +281,8 @@ async function runSlots(scheduleId: string, options: RunScheduleOptions): Promis
  * Does nothing if this process is already running it. NEVER REJECTS.
  */
 export async function runSchedule(scheduleId: string, options: RunScheduleOptions = {}): Promise<void> {
-  const key = `${scheduleId}:${options.platform ?? "youtube"}`;
-  if (running.has(key)) return;
+  const key = `${scheduleId}:${options.platform ?? "both"}`;
+  if (running.has(key) || running.has(`${scheduleId}:both`) || (!options.platform && isScheduleRunning(scheduleId))) return;
   running.add(key);
   try {
     await runSlots(scheduleId, options);

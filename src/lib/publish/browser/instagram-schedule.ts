@@ -291,7 +291,7 @@ async function spinByLabel(container: ReturnType<Page["locator"]>, re: RegExp): 
 /** Focus a spinbutton and type its digits (it accumulates two digits for the minute). */
 async function typeSpin(page: Page, loc: ReturnType<Page["locator"]>, digits: string): Promise<void> {
   await loc.scrollIntoViewIfNeeded({ timeout: 5_000 }).catch(() => {});
-  await loc.click({ timeout: 8_000 }).catch(() => {});
+  await loc.click({ timeout: 8_000 });
   await pause(150, 300);
   for (const ch of digits) {
     await page.keyboard.type(ch);
@@ -308,6 +308,14 @@ export async function setReelTime(page: Page, target: ReelTarget, log: PublishLo
   log(`Schedule: setting the time to ${target.timeText12}`);
   if (!(await markTimeInput(page))) throw new Error("the time box is not on the screen");
   const container = page.locator(marked("time")).first();
+  if (await container.evaluate(el => el.tagName === "INPUT")) {
+    const type = await container.getAttribute("type");
+    const prior = await container.inputValue();
+    await container.fill(type === "time" || !/[ap]\s*m/i.test(prior) ? target.timeText : target.timeText12);
+    await container.press("Tab");
+    if (parseClock(await timeValue(page)) !== target.minutes) throw new Error("Instagram did not retain the requested time. Nothing was scheduled.");
+    return;
+  }
   const m = target.timeText12.match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
   if (!m) throw new Error(`cannot read the target time "${target.timeText12}"`);
   const [, hh, mm, ap] = m;
@@ -323,24 +331,31 @@ export async function setReelTime(page: Page, target: ReelTarget, log: PublishLo
 
   const hours = (await spinByLabel(container, /hour/i)) ?? spins.nth(0);
   const minutes = (await spinByLabel(container, /min/i)) ?? spins.nth(1);
-  const period = (await spinByLabel(container, /am\s*\/?\s*pm|period|meridiem/i)) ?? spins.nth(Math.max(0, count - 1));
+  // A 24-hour control has only Hours and Minutes. Never treat Minutes as AM/PM:
+  // ArrowUp on that fallback silently changed 05:11 to 05:12 before submission.
+  const period = await spinByLabel(container, /am\s*\/?\s*pm|period|meridiem/i);
+  if (count < 2 || (count > 2 && !period)) throw new Error("Instagram's time segments could not be identified. Nothing was scheduled.");
 
-  await typeSpin(page, hours, String(Number(hh)));
+  await typeSpin(page, hours, period ? String(Number(hh)) : target.timeText.slice(0, 2));
   await typeSpin(page, minutes, mm);
 
   // AM/PM: set only if it is not already the target, by its letter, then by stepping if needed.
-  await period.click({ timeout: 8_000 }).catch(() => {});
-  await pause(120, 250);
-  const cur = (await period.getAttribute("aria-valuetext").catch(() => null)) || (await period.getAttribute("aria-valuenow").catch(() => null)) || "";
-  if (!new RegExp(ap, "i").test(String(cur))) {
-    await page.keyboard.type(ap[0]);
-    await pause(150, 300);
-    const now = (await period.getAttribute("aria-valuetext").catch(() => null)) || "";
-    if (!new RegExp(ap, "i").test(String(now))) {
-      await page.keyboard.press("ArrowUp").catch(() => {});
+  if (period) {
+    await period.click({ timeout: 8_000 });
+    await pause(120, 250);
+    const cur = (await period.getAttribute("aria-valuetext").catch(() => null)) || (await period.getAttribute("aria-valuenow").catch(() => null)) || "";
+    if (!new RegExp(ap, "i").test(String(cur))) {
+      await page.keyboard.type(ap[0]);
       await pause(150, 300);
+      const now = (await period.getAttribute("aria-valuetext").catch(() => null)) || "";
+      if (!new RegExp(ap, "i").test(String(now))) {
+        await page.keyboard.press("ArrowUp");
+        await pause(150, 300);
+      }
     }
   }
+  await page.keyboard.press("Tab");
+  if (parseClock(await timeValue(page)) !== target.minutes) throw new Error("Instagram did not retain the requested time. Nothing was scheduled.");
   await igShot(page, "02-time-set");
 }
 
@@ -434,7 +449,7 @@ async function findButton(page: Page, label: string): Promise<{ found: boolean; 
         for (const stale of document.querySelectorAll(`[${mark}]`)) stale.removeAttribute(mark);
         const buttons = [...document.querySelectorAll('div[role="dialog"] [role="button"], div[role="dialog"] button')];
         const re = new RegExp(`^\\s*${want}\\s*$`, "i");
-        const hit = buttons.find((b) => re.test((b as HTMLElement).innerText || b.textContent || ""));
+        const hit = buttons.find((b) => b.getClientRects().length > 0 && getComputedStyle(b).visibility !== "hidden" && re.test((b as HTMLElement).innerText || b.textContent || ""));
         if (!hit) return { found: false, enabled: false };
         hit.setAttribute(mark, "1");
         const disabled = hit.getAttribute("aria-disabled") === "true" || (hit as HTMLButtonElement).disabled === true;

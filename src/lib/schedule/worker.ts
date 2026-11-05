@@ -1,7 +1,6 @@
 /** One startup worker for BookReel's existing slots. Execution is opt-in. */
 import { prisma } from "@/lib/db";
 import { recoverInterruptedBrowserJobs } from "@/lib/publish/browser/recover";
-import { publishingEnabled } from "@/lib/publish/execution";
 import { recoverYouTubeUploads } from "@/lib/publish/youtube/run";
 import { runSchedule, slotOutcome, type RunScheduleOptions } from "./activate";
 import { confirmKnownSchedules } from "./confirm";
@@ -31,10 +30,7 @@ export async function processScheduleQueue(options: RunScheduleOptions = {}): Pr
         await prisma.scheduleSlot.updateMany({ where: { id: slot.id, status: "scheduling", updatedAt: slot.updatedAt }, data: { status: outcome.status, note: outcome.note, publishJobId: job?.id } });
       }
     }
-    await Promise.all((["youtube", "instagram"] as const).map(async platform => {
-      if (!publishingEnabled(platform, options.env ?? process.env)) return;
-      for (const plan of plans) await runSchedule(plan.id, { ...options, platform, automatic: true });
-    }));
+    for (const plan of plans) await runSchedule(plan.id, { ...options, automatic: true });
   } finally { state.bookreelQueueBusy = false; }
 }
 

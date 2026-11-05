@@ -9,6 +9,7 @@ import { browserYouTubePublisher } from "../src/lib/publish/browser/youtube";
 import type { PreparedPublish } from "../src/lib/publish/contract";
 import { detailsFixture, fixtureTags } from "./helpers/youtube-details-fixture.mjs";
 import { NeedsHuman } from "../src/lib/publish/browser/engine";
+import { confirmScheduleReceipt } from "../src/lib/publish/browser/native-controls";
 
 // Real browser and production controls, but every URL is fulfilled locally.
 // The synthetic file never leaves this isolated context or reaches YouTube.
@@ -32,7 +33,7 @@ function uploadFixture(zone = "(GMT+0530) Local Time", failure = "", immediate =
   </style><button id="create-icon" onclick="document.querySelector('#text-item-0').hidden=false">Create</button>
   <a href="https://youtube.com/shorts/WRONGID1234">Unrelated dashboard video</a>
   <button id="text-item-0" hidden onclick="document.querySelector('ytcp-uploads-dialog').hidden=false">Upload videos</button>
-  <ytcp-uploads-dialog hidden><input type="file" onchange="console.log('fixture:file-selected');document.querySelector('#details').hidden=false;document.querySelector('#video-link-new').hidden=false">
+  <ytcp-uploads-dialog hidden><div id="dialog">Upload dialog remains mounted</div><input type="file" onchange="console.log('fixture:file-selected');document.querySelector('#details').hidden=false;document.querySelector('#video-link-new').hidden=false">
     <div id="details" hidden>
       <div id="title-textarea"><div id="textbox" contenteditable="true"></div></div>
       <div id="description-textarea"><div id="textbox" contenteditable="true"></div></div>
@@ -61,9 +62,22 @@ function uploadFixture(zone = "(GMT+0530) Local Time", failure = "", immediate =
   </script>`;
 }
 
-for (const scenario of ["scheduled", "wrong-confirmation", "unknown-zone", "resume-draft", "resume-child", "review-audience", "ai", "language", "location", "tags", "audience", "uncertain", "child-directed", "private", "private-language"] as const) {
+test("a scheduling receipt requires the exact video, title, date and previously verified timezone",{skip:!chrome},async()=>{
+  const page=await browser.newPage();
+  try {
+    await page.setContent(`<div role="dialog" aria-label="Video scheduled"><h2>Video scheduled</h2><p>Your video will be set to public on 28 October 2030 at 05:39</p><p>${title}</p><a href="https://youtube.com/shorts/${video}?feature=share">Video link</a></div>`);
+    assert.equal((await confirmScheduleReceipt(page,video,title,at,330))?.ok,true);
+    assert.equal((await confirmScheduleReceipt(page,"WRONGID1234",title,at,330))?.ok,false);
+    assert.equal((await confirmScheduleReceipt(page,video,"Different title",at,330))?.ok,false);
+    assert.equal((await confirmScheduleReceipt(page,video,title,new Date(at.getTime()+86400000),330))?.ok,false);
+    assert.equal((await confirmScheduleReceipt(page,video,title,at,0))?.ok,false);
+    assert.equal(await confirmScheduleReceipt(page,video,title,at),null);
+  } finally {await page.close();}
+});
+
+for (const scenario of ["scheduled", "receipt-open", "wrong-receipt", "wrong-confirmation", "unknown-zone", "resume-draft", "resume-child", "review-audience", "ai", "language", "location", "tags", "audience", "uncertain", "child-directed", "private", "private-language"] as const) {
   test(`production Studio flow: ${scenario}`, { skip: !chrome, timeout: 60000 }, async () => {
-    const wrongConfirmation = scenario === "wrong-confirmation", unknownZone = scenario === "unknown-zone", resume = scenario.startsWith("resume-");
+    const wrongConfirmation = scenario === "wrong-confirmation" || scenario === "wrong-receipt", unknownZone = scenario === "unknown-zone", resume = scenario.startsWith("resume-");
     const failure = scenario === "private-language" ? "language" : scenario;
     const immediate = scenario.startsWith("private");
     const settingsFailure = ["ai", "language", "location", "tags", "audience"].includes(failure);
@@ -84,7 +98,10 @@ for (const scenario of ["scheduled", "wrong-confirmation", "unknown-zone", "resu
           ? `<div id="title-textarea"><div id="textbox">${title}</div></div><ytcp-video-metadata-visibility>${immediate ? "Private" : `Scheduled 28 Oct 2030, ${wrongConfirmation ? "06:39" : "05:39"} (GMT+05:30)`}</ytcp-video-metadata-visibility>`
           : uploadFixture() + `<ytcp-video-metadata-visibility>Private</ytcp-video-metadata-visibility><script>document.querySelector('ytcp-uploads-dialog').hidden=false;document.querySelector('#details').hidden=false;document.querySelector('#title-textarea #textbox').textContent=${JSON.stringify(title)};document.querySelector('#description-textarea #textbox').textContent=${JSON.stringify(description)};${scenario === "resume-child" ? "document.querySelector('[name=VIDEO_MADE_FOR_KIDS_MFK]').setAttribute('aria-checked','true');" : ""}</script>`
         : uploadFixture(unknownZone ? "Unknown zone" : "(GMT+0530) Local Time", failure, immediate);
-      await route.fulfill({ contentType: "text/html", body: html });
+      const receipt = scenario === "receipt-open" || scenario === "wrong-receipt";
+      const body = receipt && !route.request().url().includes(`/video/${video}/edit`) ? html.replace("document.querySelector('ytcp-uploads-dialog').hidden=true", "document.getElementById('receipt').hidden=false") +
+        `<div id="receipt" role="dialog" aria-label="Video scheduled" hidden><h2>Video scheduled</h2><p>Your video will be set to public on 28 October 2030 at ${scenario === "wrong-receipt" ? "06:39" : "05:39"}</p><p>${title}</p><a href="https://youtube.com/shorts/${video}?feature=share">Video link</a></div>` : html;
+      await route.fulfill({ contentType: "text/html", body });
     });
     const page = await context.newPage();
     page.on("console", message => { if (message.text().startsWith("fixture:")) events.push(message.text()); });

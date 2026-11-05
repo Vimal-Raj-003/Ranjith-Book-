@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ANALYSIS_STEPS } from "@/lib/pipeline-steps";
 import { strings } from "@/lib/strings";
-import type { AnalysisView, EpisodeState } from "./types";
+import type { AnalysisView, EpisodeState, IdeaView } from "./types";
 import PipelineRail from "./PipelineRail";
 import AnalysisElapsed from "./AnalysisElapsed";
 import IdeaCard from "./IdeaCard";
@@ -12,6 +12,23 @@ import { Disclosure, EmptyState, Panel } from "./ui";
 import EpisodeCard, { POLL_MS } from "./EpisodeCard";
 import { useToast } from "./Toast";
 import Link from "next/link";
+import { latestIdeaAttempt } from "@/lib/episodes/attempt-groups";
+
+/** One persistent idea slot, regardless of the number of historical episode rows. */
+export function IdeaEpisodeVideo({ idea, states, activeId, onSelect, onState }: {
+  idea: IdeaView; states: Record<string, EpisodeState>; activeId: string | null;
+  onSelect: (id: string) => void; onState: (state: EpisodeState) => void;
+}) {
+  const latest = latestIdeaAttempt(idea.episodes ?? (idea.episode ? [idea.episode] : []));
+  if (!latest) return <p className="rounded-lg border px-3 py-2 text-[12px]" style={{ borderColor: "var(--line)", color: "var(--mute-2)" }}>No generated video yet</p>;
+  return <div data-idea-video={latest.id} data-video-group={idea.id} className="books-videos grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
+    {/* Sibling identity includes the role: both components represent this same episode. */}
+    <EpisodeCard key={`card:${latest.id}`} episodeId={latest.id} initialEpisode={states[latest.id]}
+      refreshKey={`${latest.status}:${latest.startedAt}`} active={latest.id === activeId}
+      onSelect={onSelect} onState={onState} showPublish />
+    <VideoPreview key={`preview:${latest.id}`} episode={states[latest.id] ?? null} />
+  </div>;
+}
 
 /**
  * One book's analysis: its progress while it runs, then its ideas.
@@ -71,6 +88,7 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let misses = 0;
+    let notified = false;
 
     async function poll() {
       try {
@@ -82,7 +100,12 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
         misses = 0;
         setView(body);
         if (body.status === "DONE" || body.status === "FAILED") {
-          onChanged();
+          if (!notified) onChanged();
+          notified = true;
+          // Discover replacement attempts created in another tab as well as local retries.
+          if (body.status === "DONE" && body.ideas.some((idea) => idea.episode || idea.episodes?.length)) {
+            timer = setTimeout(poll, 5000);
+          }
           return;
         }
       } catch {
@@ -177,8 +200,12 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   const live = view.status !== "DONE";
   const selectedCount = view.ideas.filter((i) => i.selected).length;
   // Videos are listed in the order of the ideas they were made from.
-  const videoIds = view.ideas.flatMap((idea) => (idea.episodes ?? (idea.episode ? [idea.episode] : [])).map((episode) => episode.id));
-  const activeVideo = selectedVideo && videoIds.includes(selectedVideo) ? selectedVideo : (videoIds[0] ?? null);
+  const ideaVideos = view.ideas.map((idea) => ({ idea, latest: latestIdeaAttempt(
+    idea.episodes ?? (idea.episode ? [idea.episode] : []),
+  ) }));
+  const videoIds = ideaVideos.flatMap(({ latest }) => latest ? [latest.id] : []);
+  const selectedGroup = ideaVideos.find(({ idea }) => (idea.episodes ?? (idea.episode ? [idea.episode] : [])).some((e) => e.id === selectedVideo));
+  const activeVideo = selectedGroup?.latest?.id ?? videoIds[0] ?? null;
 
   return (
     <div className="flex flex-col gap-3">
@@ -345,27 +372,12 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
           </p>
 
           <div className="flex flex-col gap-5">
-            {view.ideas.map((idea) => {
-              const videos = idea.episodes ?? (idea.episode ? [idea.episode] : []);
+            {ideaVideos.map(({ idea, latest }) => {
               return (
                 <section key={idea.id} aria-labelledby={`idea-${idea.id}`} data-idea-group={idea.id} className="@container flex min-w-0 flex-col gap-2">
-                  <IdeaCard idea={idea} busy={pending.has(idea.id)} onToggle={(sel) => toggle(idea.id, sel)} />
-                  {videos.length ? videos.map(({ id }) => (
-                    <div key={id} data-idea-video={id} className="books-videos grid items-start gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
-                      <EpisodeCard
-                        episodeId={id}
-                        active={id === activeVideo}
-                        onSelect={setSelectedVideo}
-                        onState={handleEpisodeState}
-                        showPublish
-                      />
-                      <VideoPreview key={id} episode={episodeStates[id] ?? null} />
-                    </div>
-                  )) : (
-                    <p className="rounded-lg border px-3 py-2 text-[12px]" style={{ borderColor: "var(--line)", color: "var(--mute-2)" }}>
-                      No generated video yet
-                    </p>
-                  )}
+                  <IdeaCard idea={{ ...idea, episode: latest }} busy={pending.has(idea.id)} onToggle={(sel) => toggle(idea.id, sel)} />
+                  <IdeaEpisodeVideo idea={idea} states={episodeStates} activeId={activeVideo}
+                    onSelect={setSelectedVideo} onState={handleEpisodeState} />
                 </section>
               );
             })}

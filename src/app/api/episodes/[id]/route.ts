@@ -56,6 +56,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     return NextResponse.json({
       id: episode.id,
+      bookId: episode.bookId,
+      contentIdeaId: episode.contentIdeaId,
+      ideaKey: episode.ideaKey,
+      createdAt: episode.createdAt,
+      updatedAt: episode.updatedAt,
       bookTitle: episode.book.title,
       title: episode.title,
       status: episode.status,

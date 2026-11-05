@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ToastHost } from "./Toast";
 import UploadDropzone from "./UploadDropzone";
 import UploadRun from "./UploadRun";
@@ -15,7 +15,8 @@ import { strings, type GeminiModelId, type GenerationEngineId } from "@/lib/stri
 import EngineSelectorModal, { type EngineSnapshot } from "./EngineSelectorModal";
 import FreeBooks from "./FreeBooks";
 import BooksView from "./BooksView";
-import type { EpisodeState, View } from "./types";
+import type { EpisodeState, EpisodeSummary, View } from "./types";
+import { groupVideoAttempts, videoIdentity } from "@/lib/episodes/attempt-groups";
 
 /**
  * The desktop application shell: a sidebar, a flexible workbench and an
@@ -75,6 +76,7 @@ export default function Studio({
   const [runs, setRuns] = useState<string[]>([]);
   const [episodeIds, setEpisodeIds] = useState<string[]>([]);
   const [states, setStates] = useState<Record<string, EpisodeState>>({});
+  const [attemptSummaries, setAttemptSummaries] = useState<EpisodeSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [engineSnapshot, setEngineSnapshot] = useState<EngineSnapshot | null>(null);
   const [engineLoading, setEngineLoading] = useState(false);
@@ -177,8 +179,32 @@ export default function Studio({
     [watchEpisodes],
   );
 
-  const activeId = selectedId ?? episodeIds[0] ?? null;
-  const active = useMemo(() => (activeId ? (states[activeId] ?? null) : null), [activeId, states]);
+  useEffect(() => {
+    if (view !== "studio" || episodeIds.length === 0) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const res = await fetch("/api/episodes", { cache: "no-store" });
+        if (res.ok) {
+          const body = await res.json();
+          if (!cancelled) setAttemptSummaries(body.episodes ?? []);
+        }
+      } finally {
+        if (!cancelled) timer = setTimeout(() => { void refresh().catch(() => {}); }, 5000);
+      }
+    };
+    void refresh().catch(() => {});
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [view, episodeIds.length]);
+
+  const watched = episodeIds.map((id) => states[id] ?? attemptSummaries.find((e) => e.id === id) ?? { id });
+  const watchedGroups = new Set(watched.map(videoIdentity));
+  // New rows for watched ideas replace their card; unrelated library videos stay off this stage.
+  const videoGroups = groupVideoAttempts([...watched, ...attemptSummaries.filter((e) => watchedGroups.has(videoIdentity(e)))]);
+  const selectedGroup = videoGroups.find((group) => group.attempts.some((attempt) => attempt.id === selectedId));
+  const activeId = selectedGroup?.latest.id ?? videoGroups[0]?.latest.id ?? null;
+  const active = activeId ? (states[activeId] ?? null) : null;
 
   // Preview-first, but only once there is a preview worth leading with: on a
   // phone with nothing made yet, the upload form is the whole point of the
@@ -262,14 +288,18 @@ export default function Studio({
                         {runs.map((uploadId) => (
                           <UploadRun key={uploadId} uploadId={uploadId} onEpisodes={watchEpisodes} />
                         ))}
-                        {episodeIds.map((id) => (
+                        {videoGroups.map(({ key, latest }) => (
+                          <div key={key} data-video-group={key}>
                           <EpisodeCard
-                            key={id}
-                            episodeId={id}
-                            active={id === activeId}
+                            key={latest.id}
+                            episodeId={latest.id}
+                            initialEpisode={states[latest.id]}
+                            refreshKey={`${"status" in latest ? latest.status : ""}:${"startedAt" in latest ? latest.startedAt : ""}`}
+                            active={latest.id === activeId}
                             onSelect={setSelectedId}
                             onState={handleState}
                           />
+                          </div>
                         ))}
                       </section>
                     )}

@@ -6,6 +6,7 @@ import { prisma, getSetting } from "./db";
 import { WORK_ROOT, RENDER_DIR } from "./paths";
 import { IngestFailed } from "./errors";
 import { StepTimer } from "./step-timer";
+import { GenerationAttempt } from "./episodes/generation-attempt";
 import { mapLimit } from "./concurrency";
 import { callContext } from "./content/cli-metrics";
 import { ideaEpisodeSource, ideaVideoDuration, IDEA_VIDEO_HARD, type IdeaSource } from "./episodes/idea-episode";
@@ -688,7 +689,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
   // instead of after it passes. Used only if the approved script is exactly
   // the draft it was made from; otherwise discarded and the approved script
   // is voiced as usual — nothing unapproved is ever used in a video.
-  const workDir = path.join(WORK_ROOT, "audio", episodeId);
+  const attempt = new GenerationAttempt<Prepared>(episodeId);
+  const workDir = attempt.workDir;
 
   // What the scene planner needs besides the script and its timing. Neither
   // depends on the script, so both are built once, here, rather than after it
@@ -745,8 +747,6 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     scenes: Promise<ScenePlan | null>;
   };
   let speculative: { texts: string[]; sceneKey: string; job: Promise<Prepared> } | null = null;
-  const draftJobs: { dir: string; job: Promise<Prepared> }[] = [];
-  let draftNo = 0;
   const prepareAudio = (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"], dir: string): Promise<Prepared> =>
     (async () => {
       const voice = await synthesizeVoiceover(beatTexts(candidate), dir);
@@ -757,11 +757,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       return { voice, timing, scenes };
     })();
   const onCheckStart = (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"]) => {
-    const dir = path.join(workDir, `draft-${++draftNo}`);
-    const job = prepareAudio(candidate, dir);
-    job.catch(() => {}); // a failed speculation just means voicing afterwards
+    const { job } = attempt.start(candidate, (dir) => prepareAudio(candidate, dir));
     speculative = { texts: beatTexts(candidate), sceneKey: sceneInputKey(candidate), job };
-    draftJobs.push({ dir, job });
   };
 
   if (opts.approvedScript) {
@@ -792,6 +789,13 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         ...(ideaSource ? { brief: ideaSource.brief, length: "long" as const } : {}),
         ...(durationPlan ? { lengthPlan: { writer: writerSpecFor(durationPlan), gate: gateSpecFor(durationPlan) } } : {}),
         onCheckStart,
+        onFailure: async (error, draft) => {
+          try {
+            await attempt.reject(error, draft);
+          } catch (cleanupError) {
+            await appendNotes(episodeId, [`Draft evidence/cleanup failed; outputs retained at ${workDir}: ${message(cleanupError)}`]).catch(() => {});
+          }
+        },
         // The 90 s ceiling is met by cutting the script, not by failing the episode: the
         // draft's voice is already being recorded alongside its grounding check, so
         // its real length is known the moment the check approves it.
@@ -939,13 +943,11 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       if (prepared) await appendNotes(episodeId, ["The voice was recorded and timed while the grounding check ran, from the exact script it approved."]);
     }
     const voice = prepared?.voice ?? (await synthesizeVoiceover(approvedTexts, workDir));
-    // Audio made for drafts that were not approved is deleted once it has
-    // finished being written. Best-effort, and never awaited by the render.
+    // Settle audio AND nested scene planning before removing rejected drafts.
     const usedDir = prepared ? path.dirname(prepared.voice.audioPath) : null;
-    for (const d of draftJobs) {
-      if (d.dir === usedDir) continue;
-      void d.job.catch(() => null).then(() => fs.rm(d.dir, { recursive: true, force: true })).catch(() => {});
-    }
+    await attempt.discardExcept(usedDir).catch(async (err) => {
+      await appendNotes(episodeId, [`Rejected draft cleanup failed: ${message(err)}`]);
+    });
 
     // An idea episode must come out 60–120 s. The script's word count is
     // gated before any audio exists; this checks what the voice actually
@@ -1303,6 +1305,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     });
     endCancellable(episodeId);
   } catch (err) {
+    await attempt.settle();
     await releaseIdea(episode.bookId, episode.ideaKey ?? episode.id);
     await fail(err);
     throw err;

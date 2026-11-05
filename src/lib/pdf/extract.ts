@@ -16,11 +16,13 @@ import type { RawPdfManifest, RawPdfPage } from "../analysis/types";
 
 const exec = promisify(execFile);
 
-export const MAX_PDF_PAGES = 300;
+export const MAX_PDF_PAGES = 500;
 /** Long edge of each rendered page, px — the same size as a photographed page's derivative. */
 export const PAGE_LONG_EDGE = 1600;
-/** A 300-page scanned book at print resolution; extraction is killed past this. */
-const EXTRACT_TIMEOUT_MS = 20 * 60_000;
+/** Preserve the old allowance through 300 pages; larger books get the same time per page. */
+export function extractionTimeoutMs(pageCount: number): number {
+  return Math.ceil(20 * 60_000 * Math.max(1, Math.min(MAX_PDF_PAGES, pageCount) / 300));
+}
 
 export class PdfError extends AppError {
   constructor(code: string, message: string) {
@@ -94,10 +96,13 @@ export async function extractPdf(
     let buf = "";
     let stderr = "";
 
-    const timer = setTimeout(() => {
-      failure = new PdfError("timeout", `Reading the PDF took longer than ${EXTRACT_TIMEOUT_MS / 60_000} minutes and was stopped.`);
+    let timeoutMs = extractionTimeoutMs(0);
+    const started = Date.now();
+    const stop = () => {
+      failure = new PdfError("timeout", `Reading the PDF exceeded its ${Math.ceil(timeoutMs / 60_000)}-minute extraction allowance and was stopped. No partial analysis was accepted.`);
       child.kill("SIGKILL");
-    }, EXTRACT_TIMEOUT_MS);
+    };
+    let timer = setTimeout(stop, timeoutMs);
 
     child.stdout.on("data", (d) => {
       buf += d.toString();
@@ -106,14 +111,22 @@ export async function extractPdf(
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         if (!line) continue;
-        let msg: { type: string; pageCount?: number; code?: string; message?: string };
+        let msg: { type: string; pageCount?: number; index?: number; code?: string; message?: string };
         try {
           msg = JSON.parse(line);
         } catch {
           continue;
         }
-        if (msg.type === "start") pageCount = msg.pageCount ?? 0;
-        else if (msg.type === "page") onProgress({ pageCount, done: ++done });
+        if (msg.type === "start") {
+          pageCount = msg.pageCount ?? 0;
+          timeoutMs = extractionTimeoutMs(pageCount);
+          clearTimeout(timer);
+          timer = setTimeout(stop, Math.max(1, timeoutMs - (Date.now() - started)));
+        }
+        else if (msg.type === "page") {
+          if (msg.index !== done) failure = new PdfError("incomplete", "The PDF reader skipped or repeated a page. No partial analysis was accepted.");
+          onProgress({ pageCount, done: ++done });
+        }
         else if (msg.type === "error") failure = new PdfError(msg.code ?? "failed", msg.message ?? "The PDF could not be read.");
         else if (msg.type === "done") finished = true;
       }
@@ -126,7 +139,8 @@ export async function extractPdf(
     child.on("close", (code) => {
       clearTimeout(timer);
       if (failure) reject(failure);
-      else if (code === 0 && finished) resolve();
+      else if (code === 0 && finished && pageCount > 0 && pageCount <= MAX_PDF_PAGES && done === pageCount) resolve();
+      else if (code === 0 && finished) reject(new PdfError("incomplete", `The PDF reader returned ${done} of ${pageCount} pages. No partial analysis was accepted.`));
       else reject(new PdfError("failed", `The PDF reader stopped unexpectedly (exit ${code}). ${stderr.trim().split("\n").slice(-1)[0] ?? ""}`.trim()));
     });
   });

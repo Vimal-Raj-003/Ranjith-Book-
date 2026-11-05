@@ -6,6 +6,8 @@ import { pickPoster } from "@/lib/thumbnails/choose";
 import { thumbUrl } from "@/lib/thumbnails/url";
 import { Badge, StatusBadge } from "./ui";
 import type { EpisodeSummary } from "./types";
+import { groupVideoAttempts } from "@/lib/episodes/attempt-groups";
+import AttemptHistory from "./AttemptHistory";
 
 function initials(text: string): string {
   const words = text.trim().split(/\s+/).filter(Boolean);
@@ -65,7 +67,8 @@ export default function LibraryGrid({
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
       setError(null);
       try {
         const res = await fetch("/api/episodes", { cache: "no-store" });
@@ -77,12 +80,16 @@ export default function LibraryGrid({
         setEpisodes([]);
         setError((err as Error).message || strings.studio.loadError);
       }
-    })();
+      if (!cancelled) timer = setTimeout(load, 5000);
+    };
+    void load();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [nonce]);
 
+  const groups = groupVideoAttempts(episodes ?? []);
   return (
     <section className="flex flex-col gap-3" aria-labelledby="library-heading">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -93,7 +100,7 @@ export default function LibraryGrid({
           {strings.library.intro}
         </span>
         <span aria-live="polite" className="badge ms-auto">
-          {episodes === null ? strings.studio.loading : strings.library.countLabel(episodes.length)}
+          {episodes === null ? strings.studio.loading : strings.library.countLabel(groups.length)}
         </span>
       </div>
 
@@ -131,14 +138,14 @@ export default function LibraryGrid({
         </p>
       ) : (
         <ul role="list" className="library-grid">
-          {episodes.map((ep) => {
+          {groups.map(({ key, latest: ep, attempts }) => {
             const title = ep.title || strings.studio.untitled;
             return (
-              <li key={ep.id}>
+              <li key={key} data-video-group={key}>
                 <button
                   type="button"
                   className="library-card w-full"
-                  aria-current={activeId === ep.id ? "true" : undefined}
+                  aria-current={attempts.some((attempt) => attempt.id === activeId) ? "true" : undefined}
                   aria-label={strings.library.open(title)}
                   onClick={() => onOpen(ep.id)}
                 >
@@ -152,10 +159,13 @@ export default function LibraryGrid({
                     </span>
                     <span className="card-meta flex flex-wrap items-center gap-1.5 pt-1">
                       <StatusBadge status={ep.status} label={strings.run.statusLabel(ep.status)} />
+                      <span>{ep.step}</span>
                       {ep.durationSec != null && <Badge>{strings.library.durationLabel(ep.durationSec)}</Badge>}
                     </span>
+                    {ep.error && <span className="text-[12px]" style={{ color: "var(--rose)" }}>{ep.error}</span>}
                   </span>
                 </button>
+                <AttemptHistory episodeId={ep.id} revision={`${ep.status}:${ep.startedAt}`} />
               </li>
             );
           })}

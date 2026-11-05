@@ -388,10 +388,13 @@ function instagramSite(o: IgScript = {}) {
   return { page, s };
 }
 
-async function publishInstagram(script: IgScript, options: BrowserPublishOptions, root: string) {
+async function publishInstagram(script: IgScript, options: BrowserPublishOptions, root: string, mediaFailure?: "crop" | "cover") {
   const site = instagramSite(script);
   const fake = fakeBrowser(site.page, { profileRoot: root });
-  const outcome = await browserInstagramPublisher({ options, deps: fake.deps }).publish(prepared("instagram"));
+  const outcome = await browserInstagramPublisher({ options, deps: fake.deps, mediaControls: {
+    crop: async () => { if (mediaFailure === "crop") throw new Error("Original could not be selected"); site.page.actions.push("crop:Original"); },
+    cover: async (_page, file) => { if (mediaFailure === "cover") throw new Error("Selected cover not applied"); site.page.actions.push(`chooser:${file}`); return true; },
+  } }).publish(prepared("instagram"));
   return { outcome, ...site, ...fake };
 }
 
@@ -1092,6 +1095,8 @@ test("Instagram: PUBLISHED needs BOTH Instagram's own 'shared' sentence AND the 
     const caption = instagramCaption(META);
     assert.ok(r.page.actions.includes(`fill:${IG.caption}=${caption}`), "the caption is instagramCaption(metadata)");
     assert.ok(r.page.actions.some((a) => a.startsWith("chooser:")), "the cover went through the file chooser");
+    assert.ok(r.page.actions.indexOf("crop:Original") < r.page.actions.indexOf(`click:${IG.next}`));
+    assert.equal(r.outcome.thumbnail?.applied,true);
     // The profile was looked at BEFORE sharing, so the new reel could be told apart.
     const a = r.page.actions;
     assert.ok(a.findIndex((x) => x.includes("/reels/")) < a.indexOf(`click:${IG.share}`));
@@ -1099,6 +1104,20 @@ test("Instagram: PUBLISHED needs BOTH Instagram's own 'shared' sentence AND the 
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("Instagram crop or cover failure stops before caption and Share, preserving the draft for review", async () => {
+  const root = await tempRoot();
+  try {
+    for (const failure of ["crop","cover"] as const) {
+      const r = await publishInstagram({}, {confirmPublic:true}, root, failure);
+      assert.equal(r.outcome.status,"AWAITING_HUMAN");
+      assert.equal(r.s.pressed,0);
+      assert.equal(r.s.stage,failure === "crop" ? "crop" : "edit");
+      assert.equal(r.context.closed,false);
+      await closeLeftOpenWindow("instagram");
+    }
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
 });
 
 test("Instagram: a LOG-IN or a SECURITY CHECK stops the job with the page untouched", async () => {
@@ -3140,6 +3159,26 @@ test("profile busy: isProfileInUse recognises a profile held by another Chrome, 
   assert.match(message, /^Close the YouTube sign-in window, then publish\./);
   assert.match(profileBusyMessage("youtube", "msedge"), /Microsoft Edge could not open the BookReel profile/);
   assert.match(message, /Nothing was opened and nothing was posted\.$/);
+});
+
+test("profile preflight: another owner stops before launch, then retries normally once released", async () => {
+  const root = await tempRoot();
+  try {
+    const fake = fakeBrowser(new FakePage(), { profileRoot: root, env: CHANNEL_CHROME });
+    let held = true;
+    const deps = { ...fake.deps, profileWindow: { waitForWindow: async (profile: string) => {
+      assert.equal(profile, profileDirFor('youtube', root));
+      return held ? { state: 'none' as const, holders: [123] } : { state: 'none' as const, holders: [] };
+    } } };
+    const blocked = await runInSession('youtube', deps, async () => { throw new Error('must not run'); });
+    assert.equal(blocked.status, 'FAILED');
+    assert.equal(fake.launches.length, 0, 'no launch can forward about:blank to the existing browser');
+    assert.equal(isPlatformBusy('youtube'), false);
+    held = false;
+    const session = await openSession('youtube', deps);
+    assert.equal(fake.launches.length, 1);
+    await session.finish({ leaveOpen: false });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test("profile busy: a launch that finds the profile in use says to close the sign-in window -- FAILED, one attempt, no lock file touched, no fall back", async () => {

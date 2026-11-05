@@ -133,7 +133,7 @@ export async function boardAction(userId:string,id:string,action:string,body:Bod
     if(s.status!=="paused"||s.workflowVersion<2)refuse("Only an explicitly activated, paused schedule can resume. Historical plans require review and explicit activation.",409);
     await prisma.weeklySchedule.update({where:{id},data:{status:"active"}});
     // Use the same queue pass: missed timestamps are held, never replayed in a burst.
-    void Promise.all(platforms.map(platform=>runSchedule(id,{...options,platform,automatic:true})));
+    void runSchedule(id,{...options,automatic:true});
     return {};
   }
   if(action==="delete"){
@@ -166,7 +166,7 @@ export async function boardSlotAction(userId:string,id:string,slotId:string,acti
     return action==="cancel"?cancelUnstarted(tx,id,row!.position):null;
   });
   if(cancelled)return cancelled;
-  if(action==="resume")void Promise.all(platforms.map(platform=>runSchedule(id,{...options,platform,automatic:true,onlyPositions:[row!.position]})));
+  if(action==="resume")void runSchedule(id,{...options,automatic:true,onlyPositions:[row!.position]});
   const group=await prisma.scheduleSlot.findMany({where:{scheduleId:id,position:row!.position}});
   return {stillScheduled:await prisma.publishJob.count({where:{id:{in:group.flatMap(r=>r.publishJobId?[r.publishJobId]:[])},status:"SCHEDULED"}})};
 }

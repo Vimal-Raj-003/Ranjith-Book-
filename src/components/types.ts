@@ -1,4 +1,5 @@
 import type { StepTiming } from "./PipelineRail";
+import type { AttemptIdentity } from "@/lib/episodes/attempt-groups";
 
 /**
  * The shapes the client binds to. Types only — nothing here is emitted, so it
@@ -22,7 +23,7 @@ export interface ThumbnailRef {
 }
 
 /** `GET /api/episodes/[id]` — polled while a run is live. */
-export interface EpisodeState {
+export interface EpisodeState extends AttemptIdentity {
   id: string;
   bookTitle: string;
   title: string | null;
@@ -60,11 +61,12 @@ export interface EpisodeState {
 }
 
 /** `GET /api/episodes` — the library list. */
-export interface EpisodeSummary {
+export interface EpisodeSummary extends AttemptIdentity {
   id: string;
   title: string | null;
   status: string;
   step: string;
+  error?: string | null;
   theme: string;
   partNumber: number;
   seriesTotal: number;
@@ -108,9 +110,9 @@ export interface IdeaView {
   selected: boolean;
   /** The idea's latest video, if one has been generated. Polled for detail via
    *  `GET /api/episodes/[id]`. */
-  episode: { id: string; status: string } | null;
+  episode: (AttemptIdentity & { status: string }) | null;
   /** All videos linked by Episode.contentIdeaId; latest first. */
-  episodes?: { id: string; status: string }[];
+  episodes?: (AttemptIdentity & { status: string })[];
 }
 
 export interface AnalysisView {

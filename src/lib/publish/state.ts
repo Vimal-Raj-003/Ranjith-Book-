@@ -637,6 +637,13 @@ export async function loadPublishRequest(
   }
   // The cover for the platform being published to, so the upload sets the
   // thumbnail the operator chose for it (YouTube, by default).
+  if (platform === "instagram") {
+    const choice = row.thumbChoiceInstagram || row.thumbChoice;
+    const cover = a.covers.instagram;
+    if ((choice && cover?.spec.key !== choice) || !cover?.bytes) {
+      throw new AppError("not_ready", "The selected Instagram thumbnail is unavailable. Select an existing thumbnail in BookReel before retrying; no automatic cover was substituted.", 409);
+    }
+  }
   const request = requestFor(row, a, meta, a.covers[platform]);
   if (!request) throw new AppError("not_ready", "There is no rendered video to upload.", 409);
   return { row, request };

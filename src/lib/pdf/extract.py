@@ -38,7 +38,7 @@ def main():
     if len(args) < 2:
         fail("usage", "usage: extract.py <pdf> <out_dir> [--max-pages N] [--long-edge PX]")
     pdf_path, out_dir = args[0], args[1]
-    max_pages = 300
+    max_pages = 500
     long_edge = 1600
     rest = args[2:]
     for i in range(0, len(rest) - 1, 2):
@@ -163,6 +163,9 @@ def main():
         emit({"type": "page", "index": index})
         pix = None
         page = None
+        # Scanned books can contain hundreds of distinct large images. Do not
+        # retain decoded images from earlier pages in MuPDF's resource cache.
+        fitz.TOOLS.store_shrink(100)
 
     toc = []
     try:

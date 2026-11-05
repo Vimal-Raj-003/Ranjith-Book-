@@ -5,6 +5,7 @@ import { locateChromium as findChromium } from "../src/lib/publish/browser/engin
 import { parseInstagramCalendar, judgeInstagramCalendar, readInstagramCalendar, verifyInstagramCalendar,
   instagramScheduleTimeProblem, instagramDraftProblem, sameInstagramCaption } from "../src/lib/publish/browser/instagram-calendar";
 import { zonedInstant } from "../src/lib/schedule/reference-time";
+import { pressSchedule, setReelTime, reelScheduleTarget } from "../src/lib/publish/browser/instagram-schedule";
 
 const caption = "A tool worth trying.\n\nhttps://github.com/acme/tool\n#opensource";
 const at = zonedInstant("2026-10-29", "05:11", "Asia/Kolkata");
@@ -90,11 +91,53 @@ test("verifies the calendar through its read response without touching the compo
   } finally { await context.close(); }
 });
 
+test("filled fields are not success: Schedule submits once and the matching UTC calendar receipt confirms", async () => {
+  const context = await browser.newContext({timezoneId:"Asia/Kolkata"});
+  let submissions=0;
+  await context.route("**/*",async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname==="/fixture-submit"){
+      assert.equal(route.request().method(),"POST");
+      assert.equal(route.request().postDataJSON().at,at.toISOString());
+      submissions++;
+      return route.fulfill({json:{ok:true}});
+    }
+    if(url.pathname==="/graphql/query/")return route.fulfill({json:response(submissions?[row()]:[])});
+    if(url.pathname==="/scheduled_content/")return route.fulfill({contentType:"text/html",body:'<script>fetch("/graphql/query/")</script>'});
+    if(url.pathname==="/fixture-composer")return route.fulfill({contentType:"text/html",body:`<div role="dialog"><input type="time" aria-label="Time" value="06:00"><button onclick="fetch('/fixture-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({at:new Date('2026-10-29T'+document.querySelector('input').value+':00').toISOString()})})">Schedule</button></div>`});
+    return route.abort();
+  });
+  try {
+    const composer=await context.newPage();
+    await composer.goto("https://www.instagram.com/fixture-composer");
+    await setReelTime(composer,reelScheduleTarget(at,"Asia/Kolkata"),()=>{});
+    await assert.rejects(verifyInstagramCalendar(composer,identity,{timeoutMs:0,userId:"789"}),/did not confirm/);
+    assert.equal(submissions,0);
+    await pressSchedule(composer,()=>{});
+    const receipt=await verifyInstagramCalendar(composer,identity,{timeoutMs:1000,userId:"789",pollMs:10});
+    assert.equal(receipt.publishAt,at.toISOString());
+    assert.equal(submissions,1);
+  } finally {await context.close();}
+});
+
+test("post-submit verification waits for the caption instead of treating the new row as a spacing conflict",async()=>{
+  const context=await fixture(response());let reads=0;
+  await context.route("**/graphql/query/",async route=>{
+    assert.equal(route.request().method(),"GET");
+    reads++;
+    return route.fulfill({json:response([row(reads===1?{caption_text:""}:{})])});
+  });
+  try {
+    const item=await verifyInstagramCalendar(await context.newPage(),identity,{timeoutMs:3000,pollMs:10,userId:"789"});
+    assert.equal(item.id,"123");assert.equal(reads,2);
+  } finally {await context.close();}
+});
+
 test("a wrong calendar time or changed account cannot produce a success", async () => {
-  for (const body of [response([row({ scheduled_publish_time: at.getTime()/1000 + 60 })]), response([row()], "other-account")]) {
+  for (const body of [response([row({ scheduled_publish_time: at.getTime()/1000 + 60 })]), response([row()], "other-account"), response([row({caption_text:"Another video's caption"})])]) {
     const context = await fixture(body);
     try {
-      await assert.rejects(verifyInstagramCalendar(await context.newPage(), identity, { timeoutMs: 0, userId: "789" }), /differs|changed/);
+      await assert.rejects(verifyInstagramCalendar(await context.newPage(), identity, { timeoutMs: 0, userId: "789" }), /differs|changed|did not confirm/);
     } finally { await context.close(); }
   }
 });

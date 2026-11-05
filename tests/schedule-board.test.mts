@@ -18,8 +18,11 @@ import {STUDIO_REVIEW_TIMEOUT_MS} from "../src/lib/publish/browser/youtube-revie
 import {processScheduleQueue} from "../src/lib/schedule/worker";
 import {runSchedule} from "../src/lib/schedule/activate";
 import {addDays,todayIn,DEFAULT_TIMEZONE} from "../src/lib/schedule/reference-time";
-import {toggle,parseStored,schedulePlanFor,planFor} from "../src/lib/schedule/video-selection";
+import {toggle,parseStored,schedulePlanFor,planFor,selectAll,prune,countLabel} from "../src/lib/schedule/video-selection";
+import {listEpisodes} from "../src/lib/episodes/list";
+import {readAttemptHistory} from "../src/lib/episodes/attempt-history";
 import {requireIsolation} from "./setup/isolation";
+import {loadPublishRequest} from "../src/lib/publish/state";
 import {createSession} from "../src/lib/publish/youtube/upload";
 import {storeGrant} from "../src/lib/publish/youtube/accounts";
 import {YOUTUBE_SCOPES} from "../src/lib/publish/youtube/config";
@@ -55,6 +58,83 @@ function publisher(answer?:"failed"|"human"){
   return {calls,options:{makePublisher:makePublisher as never,waitForCompletion:true,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"0"}}};
 }
 const draw=(f:Awaited<ReturnType<typeof fixture>>,extra:Record<string,unknown>={})=>createBoardPlan(f.userId,{startDate:day(),days:2,seed:73,creationIds:f.ids,madeForKids:false,...extra});
+
+test("an eleven-video batch settles Instagram then YouTube per video and never repeats confirmed uploads",async()=>{
+  const previous=process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED="1";
+  try {
+    const f=await fixture(11),p=publisher(),d=await draw(f,{days:4,youtubePrivacy:"public"});
+    const options={...p.options,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}};
+    await boardAction(f.userId,d.id,"activate",{},options);
+    assert.deepEqual(p.calls.map(c=>`${c.id}:${c.platform}`),f.ids.flatMap(id=>[`${id}:instagram`,`${id}:youtube`]));
+    assert.equal((await prisma.publishJob.findMany({where:{episodeId:{in:f.ids},status:"SCHEDULED"}})).length,22);
+    await Promise.all([runSchedule(d.id,{...options,automatic:true}),runSchedule(d.id,{...options,automatic:true})]);
+    assert.equal(p.calls.length,22);
+    const slots=await prisma.scheduleSlot.findMany({where:{scheduleId:d.id,episodeId:{not:""}}});
+    for(const call of p.calls){const slot=slots.find(s=>s.episodeId===call.id&&s.platform===call.platform)!;assert.equal(call.options.scheduledAt?.getTime(),slot.assignedAt.getTime());}
+  } finally {if(previous===undefined)delete process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;else process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED=previous;}
+});
+
+for(const safe of [true,false])test(`batch recovery preserves the successful platform and ${safe?"continues after a pre-upload conflict":"stops an uncertain platform"}`,async()=>{
+  const f=await fixture(3),d=await draw(f,{youtubePrivacy:"public"}),p=publisher();
+  await prisma.weeklySchedule.update({where:{id:d.id},data:{status:"active",workflowVersion:2}});
+  const before=await prisma.scheduleSlot.findMany({where:{scheduleId:d.id},orderBy:{id:"asc"}});
+  const ytSlot=before.find(s=>s.episodeId===f.ids[0]&&s.platform==="youtube")!;
+  const yt=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:"youtube",mode:"browser",status:"SCHEDULED",externalId:"fixture-known",scheduledFor:ytSlot.assignedAt}});
+  const ig=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:"instagram",mode:"browser",status:"AWAITING_HUMAN",remoteDraftId:safe?null:"uncertain-upload",lastError:safe?"Another Instagram post is within 30 minutes of this time. Nothing was uploaded or rescheduled.":"The upload may already exist."}});
+  await prisma.scheduleSlot.updateMany({where:{scheduleId:d.id,episodeId:f.ids[0]},data:{status:"failed"}});
+  await runSchedule(d.id,{...p.options,automatic:true,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}});
+  assert.deepEqual(p.calls.map(c=>`${c.id}:${c.platform}`),f.ids.slice(1).flatMap(id=>safe?[`${id}:instagram`,`${id}:youtube`]:[`${id}:youtube`]));
+  assert.deepEqual(await prisma.publishJob.findUnique({where:{id:yt.id}}),yt);
+  assert.deepEqual(await prisma.publishJob.findUnique({where:{id:ig.id}}),ig);
+  assert.deepEqual((await prisma.scheduleSlot.findMany({where:{scheduleId:d.id},orderBy:{id:"asc"}})).map(s=>[s.id,s.assignedAt]),before.map(s=>[s.id,s.assignedAt]));
+  assert.equal((await prisma.scheduleSlot.findUnique({where:{id:ytSlot.id}}))?.status,"scheduled");
+});
+
+test("Instagram preserves the explicit thumbnail and refuses missing choices instead of substituting",async()=>{
+  const f=await fixture(1),id=f.ids[0];
+  await prisma.episode.update({where:{id},data:{thumbChoiceInstagram:"9x16-quote",thumbChoice:"9x16-bold"}});
+  const selected=(await loadPublishRequest(f.userId,id,"instagram")).request.poster!;
+  assert.match(selected.path,/9x16-quote/);
+  await fs.unlink(selected.path);
+  await assert.rejects(loadPublishRequest(f.userId,id,"instagram"),/selected Instagram thumbnail is unavailable/);
+  await prisma.episode.update({where:{id},data:{thumbChoiceInstagram:"no-longer-exists"}});
+  await assert.rejects(loadPublishRequest(f.userId,id,"instagram"),/no automatic cover was substituted/);
+  assert.ok((await loadPublishRequest(f.userId,id,"youtube")).request.poster,"YouTube's thumbnail resolution is unchanged");
+});
+
+test("one video schedules independent YouTube and Instagram jobs with their own times and posters",async()=>{
+  const previous=process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;
+  process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED="1";
+  try {
+    const f=await fixture(1),p=publisher();
+    const d=await draw(f,{instagramOffsetMinutes:25,youtubePrivacy:"public"});
+    const options={...p.options,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}};
+    await boardAction(f.userId,d.id,"activate",{},options);
+    const jobs=await prisma.publishJob.findMany({where:{episodeId:f.ids[0]},orderBy:{platform:"asc"}});
+    assert.deepEqual(jobs.map(j=>j.platform),["instagram","youtube"]);
+    assert.equal(new Set(jobs.map(j=>j.id)).size,2);
+    assert.ok(jobs.every(j=>j.status==="SCHEDULED"&&j.mode==="browser"));
+    const slots=await prisma.scheduleSlot.findMany({where:{scheduleId:d.id,episodeId:f.ids[0]}});
+    const yt=slots.find(s=>s.platform==="youtube")!,ig=slots.find(s=>s.platform==="instagram")!;
+    assert.equal(ig.assignedAt.getTime()-yt.assignedAt.getTime(),25*60000);
+    for(const slot of slots){
+      const call=p.calls.find(c=>c.platform===slot.platform)!;
+      assert.equal(call.options.scheduledAt?.getTime(),slot.assignedAt.getTime());
+      assert.equal(call.options.timezone,DEFAULT_TIMEZONE);
+      assert.equal(call.options.confirmPublic,true);
+      assert.equal(slot.publishJobId,jobs.find(j=>j.platform===slot.platform)!.id);
+      assert.match(JSON.parse(slot.payloadJson!).poster.path,slot.platform==="instagram"?/9x16/:/16x9/);
+    }
+    const view=await boardView(f.userId,d.id);
+    assert.equal(view.instagramEnabled,true);
+    assert.equal(view.counts.scheduledOnPlatform,2);
+    await Promise.all([runSchedule(d.id,{...options,platform:"youtube",automatic:true}),runSchedule(d.id,{...options,platform:"instagram",automatic:true})]);
+    assert.equal(p.calls.length,2,"confirmed platform schedules are never uploaded twice");
+  } finally {
+    if(previous===undefined)delete process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;
+    else process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED=previous;
+  }
+});
 
 test("activation freezes voiceover and visual script evidence for browser audience review",async()=>{
   const f=await fixture(1),p=publisher();
@@ -236,11 +316,60 @@ test("private API uploads honour an explicit audience answer and never invent on
 
 test("eligible-video discovery follows generation completion and checks the actual rendered asset",async()=>{
   const f=await fixture(1);await prisma.episode.update({where:{id:f.ids[0]},data:{status:"RENDERING"}});
-  assert.equal((await generatedVideos(f.userId)).items[0].selectable,false);assert.deepEqual((await generatedVideos(f.userId)).selectableIds,[]);
+  assert.deepEqual((await generatedVideos(f.userId)).items,[]);assert.deepEqual((await generatedVideos(f.userId)).selectableIds,[]);
   await prisma.episode.update({where:{id:f.ids[0]},data:{status:"DONE"}});
   let videos=await generatedVideos(f.userId);assert.equal(videos.items[0].selectable,true);
   await prisma.episode.update({where:{id:f.ids[0]},data:{videoPath:null}});
-  videos=await generatedVideos(f.userId);assert.equal(videos.items[0].selectable,false);assert.equal(videos.items[0].file.ok,false);
+  videos=await generatedVideos(f.userId);assert.deepEqual(videos.items,[]);assert.equal(videos.total,0);assert.deepEqual(videos.selectableIds,[]);
+});
+
+test("generated-video picker filters incomplete runs and assets before pagination and Select All without changing history",async()=>{
+  const f=await fixture(16);
+  for(const [i,status] of ["FAILED","CANCELLED","QUEUED","RUNNING","RENDERING"].entries()){
+    await prisma.episode.update({where:{id:f.ids[i+2]},data:{status}});
+  }
+  await prisma.episode.update({where:{id:f.ids[7]},data:{videoPath:null}});
+  await fs.unlink(path.join(RENDER_DIR,`${f.ids[8]}.mp4`));
+  await fs.writeFile(path.join(RENDER_DIR,`${f.ids[9]}.mp4`),"");
+  const directory=path.join(RENDER_DIR,`${f.ids[10]}.mp4`);
+  await fs.unlink(directory);await fs.mkdir(directory);
+  await prisma.episode.update({where:{id:f.ids[11]},data:{error:"Unresolved render failure"}});
+  await prisma.episode.update({where:{id:f.ids[12]},data:{description:null}});
+  await prisma.episode.update({where:{id:f.ids[13]},data:{durationSec:null}});
+  await prisma.episode.update({where:{id:f.ids[14]},data:{thumbnails:null}});
+  await prisma.episode.update({where:{id:f.ids[15]},data:{hashtags:"[]"}});
+  const before=await prisma.episode.findMany({where:{userId:f.userId},orderBy:{id:"asc"}});
+  const historyBefore=await readAttemptHistory(f.ids[2],f.userId);
+  const page=await generatedVideos(f.userId,{pageSize:1});
+  const next=await generatedVideos(f.userId,{pageSize:1,page:2});
+  assert.equal(page.total,2);assert.equal(page.pages,2);assert.equal(page.items.length,1);
+  assert.deepEqual(new Set([...page.items,...next.items].map(v=>v.id)),new Set(f.ids.slice(0,2)));
+  assert.ok([...page.items,...next.items].every(v=>v.status==="DONE"&&v.file.ok&&v.videoUrl&&v.selectable));
+  assert.deepEqual(selectAll(page.selectableIds),new Set(f.ids.slice(0,2)));
+  const selected=prune(new Set(f.ids),page.selectableIds);
+  assert.deepEqual(selected,selectAll(page.selectableIds));assert.equal(countLabel(selected.size),"2 videos");
+  const explicit=await generatedVideos(f.userId,{ids:f.ids});
+  assert.deepEqual(new Set(explicit.items.map(v=>v.id)),selected);
+  const failedSearch=await generatedVideos(f.userId,{q:"Fixture video 3"});
+  assert.equal(failedSearch.total,0);assert.deepEqual(failedSearch.items,[]);
+  // Publish filtering does not narrow the existing library/details/history queries.
+  assert.equal((await listEpisodes(f.userId)).find(e=>e.id===f.ids[2])?.status,"FAILED");
+  assert.ok(historyBefore);assert.deepEqual(await readAttemptHistory(f.ids[2],f.userId),historyBefore);
+  assert.deepEqual(await prisma.episode.findMany({where:{userId:f.userId},orderBy:{id:"asc"}}),before);
+});
+
+test("generated-video picker keeps completed platform progress visible and excludes protected jobs from Select All",async()=>{
+  const f=await fixture(3);
+  for(const [i,status] of ["PUBLISHED","QUEUED"].entries()){
+    await prisma.publishJob.create({data:{episodeId:f.ids[i],platform:"youtube",mode:"browser",status}});
+  }
+  const jobsBefore=await prisma.publishJob.findMany({where:{episodeId:{in:f.ids}},orderBy:{id:"asc"}});
+  const videos=await generatedVideos(f.userId);
+  assert.equal(videos.items.length,3);
+  assert.equal(videos.items.find(v=>v.id===f.ids[0])?.platforms.youtube.status,"published");
+  assert.equal(videos.items.find(v=>v.id===f.ids[1])?.platforms.youtube.status,"queued");
+  assert.deepEqual(videos.selectableIds,[f.ids[2]]);
+  assert.deepEqual(await prisma.publishJob.findMany({where:{episodeId:{in:f.ids}},orderBy:{id:"asc"}}),jobsBefore);
 });
 
 test("bulk Schedule recovers eligible failed posts in an explicitly active plan",async()=>{

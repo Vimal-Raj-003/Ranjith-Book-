@@ -21,7 +21,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       where: { id },
       include: {
         book: true,
-        ideas: { include: { episodes: { select: { id: true, status: true, createdAt: true } } } },
+        ideas: { include: { episodes: { select: { id: true, status: true, createdAt: true, startedAt: true, updatedAt: true } } } },
         pages: { select: { id: true, pageIndex: true, pageLabel: true } },
       },
     });

@@ -6,6 +6,8 @@ import type { Archetype, Beat, ContentPackage, GenerateInput, IdeaBrief, LengthS
 import { LENGTHS, spokenWordCount, voScriptFromPackage } from "./schema";
 import { expectedSeconds, maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
 import { checkRanges } from "./ranges";
+import { repairQuotedRanges } from "./quoted-ranges";
+import { repairQuotation } from "./quotation-repair";
 import { generateWithCli, runCliJson } from "./cli-provider";
 import type { CliProvider } from "./cli";
 import {
@@ -92,6 +94,8 @@ export interface GenerateContentOpts {
    * returns — a draft passed here may still be rejected.
    */
   onCheckStart?: (candidate: ContentPackage) => void;
+  /** Settle speculative work and preserve evidence BEFORE releasing the idea. */
+  onFailure?: (error: unknown, draft: ContentPackage | undefined) => Promise<void>;
   /**
    * Called with a draft the grounding check has approved, to find out whether the
    * RECORDED voice makes the finished video break the length ceiling. A problem comes
@@ -285,7 +289,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     data: unknown;
   }
 
-  const rewriteNote = ` even after ${MAX_REVISIONS} rewrite${MAX_REVISIONS === 1 ? "" : "s"}, so no voiceover was recorded.`;
+  const rewriteNote = ` even after ${MAX_REVISIONS} rewrite${MAX_REVISIONS === 1 ? "" : "s"}; no final video was produced.`;
 
   /**
    * Concrete, actionable feedback — vague feedback wastes a rewrite. Names
@@ -466,6 +470,10 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         };
       }
     }
+    // Arithmetic repairs must never truncate a quoted sentence to satisfy order.
+    const anchored = repairQuotedRanges(ranges.beats, pages);
+    const checked = checkRanges(anchored.beats, pageLengths, anchored.matched);
+    ranges = { ...checked, repairs: [...ranges.repairs, ...anchored.repairs, ...checked.repairs] };
     if (ranges.problems.length) {
       return {
         kind: "ranges",
@@ -545,7 +553,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     return null;
   };
 
-  let pkg: ContentPackage;
+  let pkg: ContentPackage | undefined;
   let report: GroundingReport | null = null;
   let revised = false;
 
@@ -560,7 +568,8 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
 
     // Cheap local guard before spending a second model call: a hook too close
     // to a previous one is regenerated with that hook explicitly forbidden.
-    const tooClose = avoidHooks.find((h) => similarity(h, pkg.hook) > 0.6);
+    const firstHook = pkg.hook;
+    const tooClose = avoidHooks.find((h) => similarity(h, firstHook) > 0.6);
     if (tooClose) {
       pkg = await write([pkg.hook]);
     }
@@ -601,7 +610,9 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
                   ? "Rewriting after the word-range check"
                   : "Rewriting after the author check",
           );
-          pkg = await write([], withDraftContext(issue.brief, pkg));
+          pkg = issue.kind === "quotation"
+            ? await repairQuotation(pkg, pages, provider, model)
+            : await write([], withDraftContext(issue.brief, pkg));
           revised = true;
           continue;
         }
@@ -629,7 +640,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
           .map((i) => `${i.field}: ${i.problem}`)
           .join(" | ");
         throw new ContentRejectedError(
-          `The grounding check rejected the script after ${MAX_REVISIONS} rewrites, so no voiceover was recorded. ${detail}`,
+          `The grounding check rejected the script after ${MAX_REVISIONS} rewrites; no final video was produced. ${detail}`,
           report,
         );
       }
@@ -650,7 +661,11 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       update: {},
     });
   } catch (err) {
-    await releaseIdea(bookId, ideaKey);
+    try {
+      await opts.onFailure?.(err, pkg);
+    } finally {
+      await releaseIdea(bookId, ideaKey);
+    }
     throw err;
   }
 

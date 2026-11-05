@@ -87,7 +87,14 @@ measures where each word sits, and the pipeline writes a script, records
 the narration and renders a 9:16 video in which the real page scrolls
 behind the voice and a marker sweeps the words being spoken.
 
-**A book PDF.** Upload a book of up to 300 pages, under **Book PDFs**.
+**A book PDF.** Upload a book of up to 500 pages (300 MB), under **Book PDFs**.
+Extraction renders one page at a time and releases decoded-image caches between pages.
+The extraction timeout remains 20 minutes through 300 pages and scales to 33 minutes
+20 seconds at 500 pages. OCR runs sequentially with a 60-second per-page wait limit;
+fully scanned books can take substantially longer overall. Analysis runs in the
+background with progress and heartbeats, so keep the local server running. Every
+body-text passage is included in the idea-generation windows; the final shortlist
+remains selective. Individual OCR/model failures are reported in analysis notes.
 PyMuPDF extracts the text and word positions, scanned pages go through
 OCR, chapters are detected, and the whole book is searched for ideas that
 could each carry a 1–2 minute video. Every idea is checked against the
