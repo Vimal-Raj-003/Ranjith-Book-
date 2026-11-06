@@ -75,9 +75,9 @@ test("a scheduling receipt requires the exact video, title, date and previously 
   } finally {await page.close();}
 });
 
-for (const scenario of ["scheduled", "receipt-open", "wrong-receipt", "wrong-confirmation", "unknown-zone", "resume-draft", "resume-child", "review-audience", "ai", "language", "location", "tags", "audience", "uncertain", "child-directed", "private", "private-language"] as const) {
+for (const scenario of ["scheduled", "receipt-open", "receipt-saved-mismatch", "wrong-receipt", "wrong-confirmation", "unknown-zone", "resume-draft", "resume-child", "review-audience", "ai", "language", "location", "tags", "audience", "uncertain", "child-directed", "private", "private-language"] as const) {
   test(`production Studio flow: ${scenario}`, { skip: !chrome, timeout: 60000 }, async () => {
-    const wrongConfirmation = scenario === "wrong-confirmation" || scenario === "wrong-receipt", unknownZone = scenario === "unknown-zone", resume = scenario.startsWith("resume-");
+    const wrongConfirmation = scenario === "wrong-confirmation" || scenario === "wrong-receipt" || scenario === "receipt-saved-mismatch", unknownZone = scenario === "unknown-zone", resume = scenario.startsWith("resume-");
     const failure = scenario === "private-language" ? "language" : scenario;
     const immediate = scenario.startsWith("private");
     const settingsFailure = ["ai", "language", "location", "tags", "audience"].includes(failure);
@@ -98,7 +98,7 @@ for (const scenario of ["scheduled", "receipt-open", "wrong-receipt", "wrong-con
           ? `<div id="title-textarea"><div id="textbox">${title}</div></div><ytcp-video-metadata-visibility>${immediate ? "Private" : `Scheduled 28 Oct 2030, ${wrongConfirmation ? "06:39" : "05:39"} (GMT+05:30)`}</ytcp-video-metadata-visibility>`
           : uploadFixture() + `<ytcp-video-metadata-visibility>Private</ytcp-video-metadata-visibility><script>document.querySelector('ytcp-uploads-dialog').hidden=false;document.querySelector('#details').hidden=false;document.querySelector('#title-textarea #textbox').textContent=${JSON.stringify(title)};document.querySelector('#description-textarea #textbox').textContent=${JSON.stringify(description)};${scenario === "resume-child" ? "document.querySelector('[name=VIDEO_MADE_FOR_KIDS_MFK]').setAttribute('aria-checked','true');" : ""}</script>`
         : uploadFixture(unknownZone ? "Unknown zone" : "(GMT+0530) Local Time", failure, immediate);
-      const receipt = scenario === "receipt-open" || scenario === "wrong-receipt";
+      const receipt = scenario === "receipt-open" || scenario === "wrong-receipt" || scenario === "receipt-saved-mismatch";
       const body = receipt && !route.request().url().includes(`/video/${video}/edit`) ? html.replace("document.querySelector('ytcp-uploads-dialog').hidden=true", "document.getElementById('receipt').hidden=false") +
         `<div id="receipt" role="dialog" aria-label="Video scheduled" hidden><h2>Video scheduled</h2><p>Your video will be set to public on 28 October 2030 at ${scenario === "wrong-receipt" ? "06:39" : "05:39"}</p><p>${title}</p><a href="https://youtube.com/shorts/${video}?feature=share">Video link</a></div>` : html;
       await route.fulfill({ contentType: "text/html", body });

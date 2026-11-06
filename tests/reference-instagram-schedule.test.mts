@@ -25,6 +25,23 @@ import {
  */
 const quiet = () => {};
 
+test("date selection ignores notification counts outside the displayed month", async () => {
+  const p=await browser.newPage();
+  try {
+    await p.setContent(`<button id="notification">9</button><div role="dialog"><button id="date">Fri, 6 Nov 2026</button>
+      <div id="calendar" hidden><span>November 2026</span><div>Sun Mon Tue Wed Thu Fri Sat</div>
+      ${Array.from({length:30},(_,i)=>`<button class="day">${i+1}</button>`).join('')}</div></div>
+      <script>window.notifications=0;document.querySelector('#notification').onclick=()=>window.notifications++;
+      document.querySelector('#date').onclick=()=>document.querySelector('#calendar').hidden=false;
+      document.querySelectorAll('.day').forEach(el=>el.onclick=()=>{document.querySelector('#date').textContent='Mon, '+el.textContent+' Nov 2026';document.querySelector('#calendar').hidden=true;});</script>`);
+    await setReelDate(p,reelScheduleTarget(zonedInstant('2026-11-09','23:02','Asia/Kolkata'),'Asia/Kolkata'),quiet);
+    assert.equal(await p.locator('#date').innerText(),'Mon, 9 Nov 2026');
+    assert.equal(await p.evaluate(()=>(window as unknown as {notifications:number}).notifications),0);
+    await assert.rejects(setReelDate(p,reelScheduleTarget(zonedInstant('2026-12-09','23:02','Asia/Kolkata'),'Asia/Kolkata'),quiet),/displayed calendar/);
+    assert.equal(await p.locator('#date').innerText(),'Mon, 9 Nov 2026');
+  } finally {await p.close();}
+});
+
 test("24-hour controls never use Minutes as AM/PM and reach the final Schedule action", async () => {
   const p = await browser.newPage();
   try {

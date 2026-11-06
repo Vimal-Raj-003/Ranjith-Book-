@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { locateChromium as findChromium } from "../src/lib/publish/browser/engine";
-import { settleNoOverlay, visibleScrims, setDate } from "../src/lib/publish/browser/youtube-schedule";
+import { settleNoOverlay, visibleScrims, setDate, readScheduledFromChannel } from "../src/lib/publish/browser/youtube-schedule";
 import { studioTarget } from "../src/lib/publish/native-schedule";
 
 /**
@@ -25,6 +25,21 @@ test.before(async () => {
 });
 test.after(async () => {
   await browser?.close();
+});
+
+test("saved Visibility Scheduled opens a read-only date and timezone panel",{skip:!haveBrowser},async()=>{
+  const p=await browser.newPage();
+  try {
+    await p.route('**/*',route=>route.fulfill({contentType:'text/html',body:`<style>[hidden]{display:none!important}ytcp-video-metadata-visibility{display:block;width:180px}</style>
+      <div id="title-textarea"><div id="textbox">Approved video</div></div>
+      <ytcp-video-metadata-visibility>Visibility Scheduled<button style="width:30px;height:30px" aria-label="Edit video visibility status" onclick="setTimeout(()=>document.querySelector('#fields').hidden=false,950)"></button></ytcp-video-metadata-visibility>
+      <div id="fields" hidden><button>9 Nov 2026</button><input value="23:02"><button onclick="document.querySelector('#zone').hidden=false;document.querySelector('#fields').hidden=true">Time zone</button></div>
+      <div role="dialog" id="zone" hidden><div aria-selected="true">(GMT+0530) Local Time</div></div>
+      <button id="save" onclick="window.saved=true">Save</button><script>window.saved=false;</script>`}));
+    const view=await readScheduledFromChannel(p,'abcdefghijk');
+    assert.equal(view?.title,'Approved video');assert.match(view?.text??'',/Scheduled 9 Nov 2026 23:02.*GMT\+0530/);
+    assert.equal(await p.evaluate(()=>(window as unknown as {saved:boolean}).saved),false);
+  }finally{await p.close();}
 });
 
 /** A time box with a transparent scrim over it; Escape removes the scrim (closing the "overlay"). */

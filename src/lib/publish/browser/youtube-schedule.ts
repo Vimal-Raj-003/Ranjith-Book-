@@ -715,13 +715,20 @@ export async function readScheduledFromChannel(page: Page, videoId: string): Pro
     // existing summary to READ its saved date/time; never select a radio or save.
     if (/\bscheduled\b/i.test(view.text) && (!parseStudioDate(view.text) || parseStudioTime(view.text) === null || parseOffset(view.text) === null)) {
       const visibility = page.locator("ytcp-video-metadata-visibility, #visibility-text").first();
-      if (await visibility.isVisible().catch(() => false) && /^\s*scheduled\b/i.test(await visibility.innerText())) {
-        await visibility.click({ timeout: 5000 });
-        await page.waitForTimeout(700);
+      if (await visibility.isVisible().catch(() => false) && /^\s*(?:visibility\s*)?scheduled\b/i.test(await visibility.innerText())) {
+        const details = visibility.getByRole("button", {name:"Edit video visibility status",exact:true});
+        if (await details.isVisible().catch(() => false)) await details.click({ timeout: 5000 });
+        else await visibility.click({ timeout: 5000 });
+        let saved = await readSchedulePicker(page);
+        for (let attempt=0; attempt<20 && (!saved.dateText || !saved.timeText); attempt++) {
+          await page.waitForTimeout(300);
+          saved = await readSchedulePicker(page);
+        }
+        // Closing Studio's timezone popup can also close the outer visibility
+        // panel. Capture the saved date/time first, while that panel is visible.
         const zone = await readStudioZone(page, () => {});
-        const saved = await readSchedulePicker(page, zone.label);
-        if (saved.dateText && saved.timeText && saved.zoneText) return {
-          title: view.title, text: `Scheduled ${saved.dateText} ${saved.timeText} ${saved.zoneText}`,
+        if (saved.dateText && saved.timeText && zone.label) return {
+          title: view.title, text: `Scheduled ${saved.dateText} ${saved.timeText} ${zone.label}`,
         };
       }
     }

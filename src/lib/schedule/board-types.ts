@@ -18,6 +18,9 @@ export interface Candidate {
 }
 
 export interface JobView {
+  /** Persisted platform receipt, validated by the read layer; a draft ID is insufficient. */
+  confirmation?: "scheduled" | "posted" | null;
+  sourceStatus?: string;
   id: string;
   platform: string;
   status: string;
@@ -107,7 +110,7 @@ export interface ScheduleView {
   releasable: number;
   /** What the browser engine needs that this code cannot check: whether a profile has ever been used. */
   profiles: { youtube: boolean; instagram: boolean };
-  counts: { slots: number; withVideo: number; jobs: number; posted: number; scheduledOnPlatform: number; failed: number; waiting: number };
+  counts: { slots: number; withVideo: number; jobs: number; posted: number; scheduledOnPlatform: number; failed: number; waiting: number; completion?: ReturnType<typeof import("./board-completion").batchCompletion> };
 }
 export interface JobSummary {
   id: string;

@@ -12,6 +12,7 @@ import { parseThumbnails } from "@/lib/thumbnails";
 import { connectionFor } from "@/lib/publish/youtube/accounts";
 import { checkAgainst, checkSlots, DEFAULT_WINDOWS, type SlotTime, type TimeWindow } from "./plan";
 import { localParts } from "./reference-time";
+import { batchCompletion } from "./board-completion";
 import type { Candidate, GeneratedVideo, JobSummary, JobView, Platform, PlatformState, ScheduleView, SlotView, VideoPage } from "./board-types";
 
 export const platforms: Platform[] = ["youtube", "instagram"];
@@ -34,7 +35,11 @@ export function jobView(job: PublishJob, slot?: ScheduleSlot, plan?: WeeklySched
   const native = !!options.scheduledAt || (!!slot && (job.platform === "instagram" || plan?.youtubePrivacy === "public"));
   const paused=job.status==="QUEUED"&&(plan?.status==="paused"||slot?.controlState==="paused");
   const preUpload = !(job.externalId || job.remoteDraftId || job.sessionUrlEnc);
-  return {id: job.id, platform: job.platform, status: paused?"DRAFT":jobStatus(job), error: paused?"Paused locally. Resume the activated schedule and slot to continue.":job.lastError || job.progress, remoteUrl: job.externalUrl,
+  const target = slot?.assignedAt ?? (options.scheduledAt ? new Date(options.scheduledAt) : null);
+  const confirmation = job.externalId && job.status === "SCHEDULED" && job.scheduledFor && Number.isFinite(job.scheduledFor.getTime()) &&
+    (!target || Math.abs(job.scheduledFor.getTime() - target.getTime()) < 60_000) ? "scheduled" :
+    job.externalId && job.status === "PUBLISHED" && job.publishedAt && Number.isFinite(job.publishedAt.getTime()) ? "posted" : null;
+  return {id: job.id, confirmation, sourceStatus: job.status, platform: job.platform, status: paused?"DRAFT":jobStatus(job), error: paused?"Paused locally. Resume the activated schedule and slot to continue.":job.lastError || job.progress, remoteUrl: job.externalUrl,
     startAt: job.retryAt?.toISOString() ?? (native ? job.createdAt : slot?.assignedAt)?.toISOString() ?? null,
     publishAt: options.scheduledAt ?? slot?.assignedAt.toISOString() ?? null, startedAt: job.preparedAt?.toISOString() ?? null,
     lastAttemptAt: job.preparedAt?.toISOString() ?? null, updatedAt: job.updatedAt.toISOString(), postedAt: job.publishedAt?.toISOString() ?? null,
@@ -90,7 +95,25 @@ export async function generatedVideos(userId: string, opts: {ids?: string[]; pag
 export async function listBoardPlans(userId:string) {
   const plans = await prisma.weeklySchedule.findMany({where:{userId},orderBy:{createdAt:"desc"}});
   const slots = await prisma.scheduleSlot.findMany({where:{scheduleId:{in:plans.map(s=>s.id)}}});
-  return plans.map(s=>{const cells=slots.filter(t=>t.scheduleId===s.id);return {id:s.id,name:planName(s),status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,slots:new Set(cells.map(t=>t.position)).size,withVideo:new Set(cells.filter(t=>t.episodeId).map(t=>t.position)).size};});
+  const jobs = await prisma.publishJob.findMany({where:{id:{in:slots.flatMap(s=>s.publishJobId?[s.publishJobId]:[])},episode:{userId}}});
+  const receipts = await prisma.publishAttempt.findMany({where:{jobId:{in:jobs.map(j=>j.id)},status:{in:["SCHEDULED","PUBLISHED"]},finishedAt:{not:null}},orderBy:{finishedAt:"asc"}});
+  return plans.map(s=>{
+    const cells=slots.filter(t=>t.scheduleId===s.id);
+    const positions=[...new Set(cells.filter(t=>t.episodeId).map(t=>t.position))];
+    const confirmedDates:Date[]=[];
+    const completed=positions.length>0 && positions.every(position=>{
+      const group=cells.filter(t=>t.position===position && t.episodeId);
+      return new Set(group.map(t=>t.episodeId)).size===1 && platforms.every(platform=>{
+        const slot=group.find(t=>t.platform===platform);
+        const job=jobs.find(j=>j.id===slot?.publishJobId && j.episodeId===slot?.episodeId && j.platform===platform);
+        if(!slot || !job || !jobView(job,slot,s).confirmation)return false;
+        const receipt=receipts.find(r=>r.jobId===job.id && (r.status==="PUBLISHED" || r.scheduledFor?.getTime()===job.scheduledFor?.getTime()));
+        confirmedDates.push(receipt?.finishedAt ?? job.publishedAt ?? job.updatedAt);
+        return true;
+      });
+    });
+    return {id:s.id,name:planName(s),status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,timezone:s.timezone,slots:new Set(cells.map(t=>t.position)).size,withVideo:positions.length,completed,completedAt:completed?new Date(Math.max(...confirmedDates.map(d=>d.getTime()))).toISOString():null};
+  });
 }
 
 export async function boardView(userId:string,id:string):Promise<ScheduleView> {
@@ -133,5 +156,5 @@ export async function boardView(userId:string,id:string):Promise<ScheduleView> {
   }
   const allJobs=slots.flatMap(t=>Object.values(t.jobs)).filter((j):j is JobView=>!!j);
   const present=async(p:string)=> (await fs.readdir(path.join(WORK_ROOT,"browser-profiles",p)).catch(()=>[])).length>0;
-  return {id:s.id,name:planName(s),timezone:s.timezone,status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,windows:planWindows(s),endInclusive:s.endInclusive,seed:s.seed,leadMinutes:20,instagramOffsetMinutes:s.instagramOffsetMinutes,youtubePrivacy:s.youtubePrivacy,youtubeChannel:expectedHandle("youtube",process.env),youtubeNative:s.youtubePrivacy==="public",minGapMinutes:30,missGraceMinutes:45,activatedAt:s.activatedAt?.toISOString()??null,slots,issues,candidates,unavailable,releasable:slots.flatMap(t=>t.conflicts).filter(c=>c.releasable).length,profiles:{youtube:await present("youtube"),instagram:await present("instagram")},counts:{slots:slots.length,withVideo:slots.filter(t=>t.creation).length,jobs:allJobs.length,posted:allJobs.filter(j=>j.status==="POSTED").length,scheduledOnPlatform:allJobs.filter(j=>j.status==="PLATFORM_SCHEDULED").length,failed:allJobs.filter(j=>j.status==="FAILED").length,waiting:allJobs.filter(j=>j.status==="AWAITING_HUMAN").length},madeForKids:s.madeForKids,instagramEnabled:publishingEnabled("instagram"),workerEnabled:process.env.BOOKREEL_SCHEDULE_WORKER_ENABLED==="1",workflowVersion:s.workflowVersion};
+  return {id:s.id,name:planName(s),timezone:s.timezone,status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,windows:planWindows(s),endInclusive:s.endInclusive,seed:s.seed,leadMinutes:20,instagramOffsetMinutes:s.instagramOffsetMinutes,youtubePrivacy:s.youtubePrivacy,youtubeChannel:expectedHandle("youtube",process.env),youtubeNative:s.youtubePrivacy==="public",minGapMinutes:30,missGraceMinutes:45,activatedAt:s.activatedAt?.toISOString()??null,slots,issues,candidates,unavailable,releasable:slots.flatMap(t=>t.conflicts).filter(c=>c.releasable).length,profiles:{youtube:await present("youtube"),instagram:await present("instagram")},counts:{completion:batchCompletion(slots),slots:slots.length,withVideo:slots.filter(t=>t.creation).length,jobs:allJobs.length,posted:allJobs.filter(j=>j.status==="POSTED").length,scheduledOnPlatform:allJobs.filter(j=>j.status==="PLATFORM_SCHEDULED").length,failed:allJobs.filter(j=>j.status==="FAILED").length,waiting:allJobs.filter(j=>j.status==="AWAITING_HUMAN").length},madeForKids:s.madeForKids,instagramEnabled:publishingEnabled("instagram"),workerEnabled:process.env.BOOKREEL_SCHEDULE_WORKER_ENABLED==="1",workflowVersion:s.workflowVersion};
 }

@@ -54,7 +54,10 @@ export const youtubeScheduleControls: YouTubeScheduleControls = {
   },
   async confirm(page, id, title, at) {
     const receipt = await confirmScheduleReceipt(page as unknown as Page,id,title,at,verifiedZones.get(page));
-    if (receipt) return receipt;
+    if (receipt && !receipt.ok) return receipt;
+    // The submission dialog can show the requested time while Studio has saved
+    // a different date. Always re-open this same video and verify persisted state
+    // before declaring success; never retry the upload on a mismatch.
     const view = await readScheduledFromChannel(page as unknown as Page, id);
     const offset = parseOffset(view?.text ?? "");
     if (!view || offset === null) return { ok: false, problem: "Studio did not confirm the saved schedule and time zone." };

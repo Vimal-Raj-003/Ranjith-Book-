@@ -41,5 +41,6 @@ export function startScheduleWorker(): void {
   const tick = () => void processScheduleQueue().catch(error => console.error("[schedule worker]", error instanceof Error ? error.message : String(error)));
   state.bookreelScheduleTimer = setInterval(tick, 30_000);
   state.bookreelScheduleTimer.unref?.();
+  console.info("[schedule worker] Started; polling existing jobs every 30 seconds.");
   tick();
 }

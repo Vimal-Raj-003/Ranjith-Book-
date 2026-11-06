@@ -10,7 +10,7 @@ import {thumbsDir,THUMB_KEYS} from "../src/lib/thumbnails/types";
 import {browserPublisherFor} from "../src/lib/publish/registry";
 import type {BrowserPublisher,BrowserPublishOptions} from "../src/lib/publish/browser/engine";
 import {createBoardPlan,updateBoardSettings,redrawBoard,editBoardSlot,boardAction,boardSlotAction} from "../src/lib/schedule/board-store";
-import {boardView,generatedVideos,listBoardPlans} from "../src/lib/schedule/board-read";
+import {boardView,generatedVideos,listBoardPlans,jobView} from "../src/lib/schedule/board-read";
 import {bulkPublish,jobAction,retryBoardPlan} from "../src/lib/schedule/board-publish";
 import {scheduleRetryCandidate} from "../src/lib/schedule/board-retry";
 import {isSqliteLockError} from "../src/lib/publish/browser/run";
@@ -58,6 +58,35 @@ function publisher(answer?:"failed"|"human"){
   return {calls,options:{makePublisher:makePublisher as never,waitForCompletion:true,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"0"}}};
 }
 const draw=(f:Awaited<ReturnType<typeof fixture>>,extra:Record<string,unknown>={})=>createBoardPlan(f.userId,{startDate:day(),days:2,seed:73,creationIds:f.ids,madeForKids:false,...extra});
+
+test("dashboard completion uses persisted receipts and each platform's assigned time without changing records",async()=>{
+  const f=await fixture(1),d=await draw(f,{youtubePrivacy:"public",instagramOffsetMinutes:16});
+  const rows=await prisma.scheduleSlot.findMany({where:{scheduleId:d.id,episodeId:f.ids[0]}});
+  for(const row of rows){
+    const j=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:row.platform,status:"SCHEDULED",externalId:`confirmed-${row.platform}`,scheduledFor:row.assignedAt}});
+    await prisma.scheduleSlot.update({where:{id:row.id},data:{publishJobId:j.id}});
+    assert.equal(jobView(j,row).confirmation,"scheduled");
+    assert.equal(jobView({...j,externalId:null,remoteDraftId:"draft-only"},row).confirmation,null);
+    assert.equal(jobView({...j,scheduledFor:null},row).confirmation,null);
+    assert.equal(jobView({...j,scheduledFor:new Date(row.assignedAt.getTime()+86400000)},row).confirmation,null);
+    for(const status of ["QUEUED","PREPARING","UPLOADING","FAILED","AWAITING_HUMAN","CANCELLED"])assert.equal(jobView({...j,status},row).confirmation,null,status);
+    assert.equal(jobView({...j,status:"PUBLISHED",publishedAt:new Date()},row).confirmation,"posted");
+    assert.equal(jobView({...j,status:"PUBLISHED",publishedAt:null},row).confirmation,null);
+  }
+  const before=await prisma.publishJob.findMany({where:{episodeId:f.ids[0]},orderBy:{id:"asc"}});
+  const v=await boardView(f.userId,d.id);
+  assert.deepEqual(v.counts.completion,{totalVideos:1,completedVideos:1,partiallyCompletedVideos:0,pendingOrFailedVideos:0,confirmedScheduledPosts:2,confirmedPostedPosts:0});
+  const completed=(await listBoardPlans(f.userId)).find(s=>s.id===d.id)!;
+  assert.equal(completed.completed,true);assert.equal(completed.withVideo,1);assert.equal(completed.days,2);
+  assert.equal(completed.completedAt,new Date(Math.max(...before.map(j=>j.updatedAt.getTime()))).toISOString());
+  assert.equal((await listBoardPlans('another-user')).length,0);
+  assert.deepEqual(await prisma.publishJob.findMany({where:{episodeId:f.ids[0]},orderBy:{id:"asc"}}),before);
+  const first=before[0];const finishedAt=new Date('2030-10-27T08:00:00Z');
+  await prisma.publishAttempt.create({data:{jobId:first.id,attempt:1,episodeId:first.episodeId,platform:first.platform,status:"SCHEDULED",scheduledFor:first.scheduledFor,startedAt:new Date('2030-10-27T07:55:00Z'),finishedAt}});
+  assert.equal((await listBoardPlans(f.userId))[0].completedAt,finishedAt.toISOString());
+  await prisma.publishJob.update({where:{id:first.id},data:{status:"AWAITING_HUMAN"}});
+  const partial=(await listBoardPlans(f.userId))[0];assert.equal(partial.completed,false);assert.equal(partial.completedAt,null);
+});
 
 test("an eleven-video batch settles Instagram then YouTube per video and never repeats confirmed uploads",async()=>{
   const previous=process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED="1";

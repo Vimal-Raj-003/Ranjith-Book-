@@ -8,6 +8,7 @@ import { ScheduleDatePicker, ScheduleTimePicker } from "./SchedulePickers";
 import { DEFAULT_WINDOWS } from "@/lib/schedule/plan";
 import { DEFAULT_TIMEZONE, addDays, todayIn, zoneLabel } from "@/lib/schedule/reference-time";
 import { jobTiming } from "@/lib/schedule/job-timing";
+import { batchCompletion, confirmedOutcome, videoCompletion } from "@/lib/schedule/board-completion";
 import { errorPreview } from "@/lib/schedule/board-retry";
 import { scheduleRetryCandidate } from "@/lib/schedule/board-retry";
 import { CONFLICT_WORDS, STORAGE_KEY, parseStored } from "@/lib/schedule/video-selection";
@@ -24,6 +25,9 @@ import type { Candidate, JobView, ScheduleView, SlotView } from "@/lib/schedule/
  */
 
 interface ListedSchedule {
+  completed?: boolean;
+  completedAt?: string | null;
+  timezone?: string;
   id: string;
   name: string;
   status: string;
@@ -40,6 +44,10 @@ interface Issue {
 }
 
 const mono = "font-mono";
+const HIDDEN_COMPLETED_KEY = "bookreel.completed-schedules-hidden";
+function hiddenCompletedSchedules(): string[] {
+  try { const value:unknown=JSON.parse(localStorage.getItem(HIDDEN_COMPLETED_KEY)??"[]");return Array.isArray(value)?value.filter((id):id is string=>typeof id==="string"):[]; } catch { return []; }
+}
 const FIELD = { background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" } as const;
 const fieldClass = `rounded-lg border px-2.5 py-1.5 ${mono} text-[12px] outline-none`;
 
@@ -60,7 +68,7 @@ const TONE: Record<string, string> = {
 
 async function api(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   try {
-    const res = await fetch(path, init);
+    const res = await fetch(path, { cache: "no-store", ...init });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     return { ok: res.ok, status: res.status, data };
   } catch {
@@ -116,6 +124,9 @@ function dayAndClock(iso: string, timezone: string): string {
 /** What one platform's job says about itself, in words. */
 function jobWords(job: JobView | null, slot: SlotView, platform: string, timezone: string): { label: string; tone: string; detail: string } {
   if (!job) return { label: slot.status === "SKIPPED" ? "Skipped" : "Not armed", tone: "var(--mute-2)", detail: "" };
+  if (["PLATFORM_SCHEDULED", "POSTED"].includes(job.status) && !confirmedOutcome(job)) {
+    return { label: "Confirmation needed", tone: "var(--amber)", detail: "The saved platform receipt is missing or does not match the assigned publication time." };
+  }
 
   if (job.status === "DRAFT") {
     const missed = /^(Missed|Not scheduled)/.test(job.error ?? "");
@@ -205,7 +216,8 @@ function JobCell({
   const retryInFlight = useRef(false);
   const w = !enabled && (!job || job.status === "SCHEDULED") ? {label:"Disabled",tone:"var(--mute-2)",detail:"Instagram execution is disabled; YouTube proceeds independently."} : jobWords(job, slot, platform, timezone);
   const timing = job ? jobTiming(job, platform, timezone) : "";
-  const note = job?.error && job.status !== "PUBLISHING" ? job.error : "";
+  const videoCompleted = !!slot.creation && videoCompletion(slot.jobs).kind === "completed";
+  const note = !videoCompleted && job?.error && job.status !== "PUBLISHING" ? job.error : "";
   const hideCalendarId = platform === "Instagram" && /Instagram calendar item\b/i.test(note);
   const alreadyDone = !!job && (job.status === "PLATFORM_SCHEDULED" || job.status === "POSTED" || !!job.platformPublishAt);
   const canRetry = enabled && retryAllowed && slot.status === "ACTIVE" && !!job && scheduleRetryCandidate(job);
@@ -232,7 +244,7 @@ function JobCell({
           {errorPreview(note, 70)}
         </div>
       )}
-      {(note || job) && (
+      {!videoCompleted && (note || job) && (
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {note && (
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className={`${mono} text-[10.5px] underline underline-offset-4`} style={{ color: "var(--mute-2)" }}>
@@ -330,13 +342,15 @@ function SlotRow({
   const live = slot.status === "ACTIVE" || slot.status === "PAUSED";
   const startable = slotStartable(slot, draft, view.status === "ACTIVE");
   const label = view.windows[slot.position - 1];
+  const completion = videoCompletion(slot.jobs);
+  const completed = !!slot.creation && completion.kind === "completed";
 
   return (
     <li
       data-slot={slot.id}
       data-slot-status={slot.status}
       className="rounded-lg border p-3"
-      style={{ borderColor: errors.length ? "color-mix(in srgb, var(--rose) 45%, transparent)" : "var(--line)", opacity: slot.status === "CANCELLED" || slot.status === "SKIPPED" ? 0.6 : 1 }}
+      style={{ borderColor: !completed && errors.length ? "color-mix(in srgb, var(--rose) 45%, transparent)" : "var(--line)", opacity: slot.status === "CANCELLED" || slot.status === "SKIPPED" ? 0.6 : 1 }}
     >
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2.5">
         {/* when */}
@@ -410,6 +424,13 @@ function SlotRow({
             <div className={`${mono} text-[12.5px]`} style={{ color: "var(--mute-2)" }}>No video</div>
           )}
           {slot.creation && (
+            <div className="mt-2 space-y-1" role="status" aria-live="polite" data-video-completion={completion.kind}>
+              <Chip label={completion.label} tone={completion.kind === "completed" ? "var(--cyan)" : completion.kind === "attention" ? "var(--rose)" : "var(--amber)"} />
+              {completion.kind === "completed" && <p className={`${mono} text-[10.5px]`} style={{color:"var(--mute-2)"}}>Both platforms confirmed.{Object.values(slot.jobs).some(j => confirmedOutcome(j) === "scheduled") ? " Scheduled posts are awaiting publication." : " Both posts have been published."}</p>}
+              {completion.attention.map(a => <p key={a.platform} className={`${mono} text-[11px] break-words`} style={{color:"var(--rose)"}}>{a.label}{a.error ? `: ${a.error}` : ""}</p>)}
+            </div>
+          )}
+          {slot.creation && (
             <div className={`mt-0.5 ${mono} text-[10.5px]`} style={{ color: "var(--mute-2)" }}>
               {slot.creation.repo} · {slot.creation.format === "vertical" ? "9:16" : "16:9"}
               {!slot.creation.hasPlatformCopy && " · generic copy"}
@@ -427,7 +448,7 @@ function SlotRow({
         )}
 
         {/* what can be done to this one post */}
-        {!draft && live && (
+        {!completed && !draft && live && (
           <div className="flex flex-wrap items-center gap-2">
             {!editing && (
               <button
@@ -456,14 +477,14 @@ function SlotRow({
             </button>
           </div>
         )}
-        {!draft && slot.status === "CANCELLED" && slot.creation && (
+        {!completed && !draft && slot.status === "CANCELLED" && slot.creation && (
           <button type="button" disabled={busy} onClick={() => setEditing(true)} className={`rounded-md border px-2 py-1 ${mono} text-[11px] disabled:opacity-40`} style={{ borderColor: "var(--line)", color: "var(--ink)" }}>
             Bring back at a new time
           </button>
         )}
       </div>
 
-      {(errors.length > 0 || warnings.length > 0) && (
+      {!completed && (errors.length > 0 || warnings.length > 0) && (
         <ul className="mt-2 space-y-0.5">
           {errors.map((i, n) => (
             <li key={`e${n}`} className={`${mono} text-[11px]`} style={{ color: "var(--rose)" }}>{i.message}</li>
@@ -474,7 +495,7 @@ function SlotRow({
         </ul>
       )}
 
-      {startable && (
+      {!completed && startable && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -613,6 +634,14 @@ function Board() {
   const selectedRef = useRef<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState<ScheduleView | null>(null);
+  const [hiddenCompleted, setHiddenCompleted] = useState<string[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [historyMode, setHistoryMode] = useState(false);
+  const completion = useMemo(() => view ? batchCompletion(view.slots) : null, [view]);
+  const batchCompleted = !!completion && completion.totalVideos > 0 && completion.completedVideos === completion.totalVideos;
+  const activeSchedules = (list??[]).filter(s=>!s.completed || !hiddenCompleted.includes(s.id));
+  const completedSchedules = (list??[]).filter(s=>s.completed).sort((a,b)=>(b.completedAt??"").localeCompare(a.completedAt??""));
   const [busy, setBusy] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [refused, setRefused] = useState<Issue[]>([]);
@@ -626,7 +655,7 @@ function Board() {
     ? view.slots.filter(s => s.status === "ACTIVE").flatMap(s => Object.values(s.jobs)).filter(j => j && scheduleRetryCandidate(j)).length
     : 0;
 
-  useEffect(() => { selectedRef.current = selected; if(selected)try{sessionStorage.setItem("bookreel.schedule-selected",selected);}catch{} }, [selected]);
+  useEffect(() => { selectedRef.current = selected; if(selected && !historyMode)try{sessionStorage.setItem("bookreel.schedule-selected",selected);}catch{} }, [selected,historyMode]);
 
   const loadList = useCallback(async () => {
     const r = await api("/api/schedule-board");
@@ -649,9 +678,11 @@ function Board() {
       const schedules = r.ok ? ((r.data.schedules as ListedSchedule[]) ?? []) : [];
       setList(schedules);
       if(!r.ok)setLoadError(String(r.data.error ?? "Schedules could not be loaded."));
+      const hidden=hiddenCompletedSchedules();setHiddenCompleted(hidden);
+      const active=schedules.filter(s=>!s.completed || !hidden.includes(s.id));
       let remembered: string | null = null; try{remembered=sessionStorage.getItem("bookreel.schedule-selected");}catch{}
       // The newest one that is not cancelled, or simply the newest.
-      setSelected((cur) => cur ?? schedules.find(s=>s.id===remembered)?.id ?? (schedules.find((s) => s.status !== "CANCELLED") ?? schedules[0])?.id ?? null);
+      setSelected((cur) => cur ?? active.find(s=>s.id===remembered)?.id ?? (active.find((s) => s.status !== "CANCELLED") ?? active[0])?.id ?? null);
       if (!schedules.length) setShowNew(true);
     })();
     return () => {
@@ -678,14 +709,24 @@ function Board() {
 
   // Only a schedule that is armed is worth asking about again: it is the one that changes by itself.
   const watching = view?.status === "ACTIVE" || view?.status === "PAUSED";
+  const refreshMs = completion && completion.completedVideos < completion.totalVideos ? 1000 : 5000;
   useEffect(() => {
     if (!watching || !selected) return;
-    const timer = setInterval(() => void loadView(selected), 5000);
-    return () => clearInterval(timer);
-  }, [watching, selected, loadView]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await loadView(selected);
+      if (!stopped) timer = setTimeout(() => void poll(), refreshMs);
+    };
+    timer = setTimeout(() => void poll(), refreshMs);
+    const focus = () => void loadView(selected);
+    window.addEventListener("focus", focus);
+    return () => { stopped = true; clearTimeout(timer); window.removeEventListener("focus", focus); };
+  }, [watching, selected, loadView, refreshMs]);
 
   /** One action at a time: a second click while one is under way does nothing. */
   async function run(action: () => Promise<{ ok: boolean; status: number; data: Record<string, unknown> }>, done?: string | ((data: Record<string, unknown>) => string), after?: () => Promise<void>) {
+    if (historyMode) return false;
     if (inFlight.current) return false;
     inFlight.current = true;
     setBusy(true);
@@ -710,6 +751,22 @@ function Board() {
     await loadList();
     if (selected) await loadView(selected);
   };
+
+  function clearSelection() {
+    selectedRef.current=null;setSelected(null);setView(null);setRefused([]);setDrawNotes([]);
+  }
+  async function openLibrary() {
+    clearSelection();setLibraryOpen(true);setLibraryLoading(true);setHistoryMode(false);setShowNew(false);
+    try { await loadList(); } finally { setLibraryLoading(false); }
+  }
+  function done() {
+    if(!view || !batchCompleted || historyMode)return;
+    const hidden=[...new Set([...hiddenCompleted,view.id])];
+    setHiddenCompleted(hidden);
+    try { localStorage.setItem(HIDDEN_COMPLETED_KEY,JSON.stringify(hidden));sessionStorage.removeItem("bookreel.schedule-selected"); } catch { /* Still hide for the current page when browser storage is unavailable. */ }
+    setList(items=>items?.map(s=>s.id===view.id?{...s,completed:true}:s)??null);
+    clearSelection();setLibraryOpen(false);
+  }
 
   async function retryPlatformJob(jobId: string) {
     if (!view || inFlight.current) return;
@@ -841,8 +898,10 @@ function Board() {
         <div className="flex flex-wrap items-center gap-3">
           <span className="eyebrow">Schedule</span>
           <select
-            value={selected ?? ""}
+            value={historyMode ? "" : selected ?? ""}
             onChange={(e) => {
+              selectedRef.current=e.target.value||null;
+              setLibraryOpen(false);setHistoryMode(false);
               setSelected(e.target.value || null);
               setView(null);
               setRefused([]);
@@ -852,14 +911,15 @@ function Board() {
             className={`${fieldClass} min-w-[240px]`}
             style={FIELD}
           >
-            {(list ?? []).length === 0 && <option value="">No schedules yet</option>}
-            {(list ?? []).map((s) => (
+            <option value="">{activeSchedules.length ? "Choose a schedule" : "No active schedules"}</option>
+            {activeSchedules.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name} · {s.status.toLowerCase()} · {s.withVideo}/{s.slots} videos
+                {s.name} · {s.completed ? "completed" : s.status.toLowerCase()} · {s.withVideo}/{s.slots} videos
               </option>
             ))}
           </select>
-          <button type="button" onClick={() => setShowNew((s) => !s)} className={`rounded-lg border px-3 py-1.5 ${mono} text-[12px]`} style={{ borderColor: "var(--line)", color: "var(--ink)" }}>
+          <button type="button" onClick={()=>void openLibrary()} className={`rounded-lg border px-3 py-1.5 ${mono} text-[12px]`} style={{borderColor:"var(--cyan)",color:"var(--cyan)"}}>Library</button>
+          <button type="button" onClick={() => { if(libraryOpen){clearSelection();setLibraryOpen(false);setHistoryMode(false);}setShowNew((s) => !s); }} className={`rounded-lg border px-3 py-1.5 ${mono} text-[12px]`} style={{ borderColor: "var(--line)", color: "var(--ink)" }}>
             {showNew ? "Close" : "New schedule"}
           </button>
         </div>
@@ -879,24 +939,49 @@ function Board() {
         )}
       </section>
 
+      {libraryOpen && (
+        <section className="slab mb-5 space-y-3 p-4 sm:p-5" aria-label="Completed schedule library">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-display text-[20px] font-semibold">Completed schedules</h2>
+            <button type="button" className={`${mono} text-[12px] underline underline-offset-4`} onClick={()=>{clearSelection();setLibraryOpen(false);setHistoryMode(false);}}>Back to Weekly Schedule</button>
+          </div>
+          {libraryLoading ? <p role="status" className={`${mono} text-[12px]`}>Loading completed schedules…</p> : historyMode ? <div className={`${mono} text-[12px]`}><span>Read-only schedule details. Viewing history does not start publishing.</span>{" "}<button type="button" className="underline underline-offset-4" onClick={()=>void openLibrary()}>Back to Library</button></div> : (
+            completedSchedules.length ? <ul className="grid gap-2" data-completed-history>
+              {completedSchedules.map(s=><li key={s.id}>
+                <button type="button" className="w-full rounded-lg border p-3 text-left" style={{borderColor:"var(--line)",color:"var(--ink)"}} onClick={()=>{clearSelection();setHistoryMode(true);selectedRef.current=s.id;setSelected(s.id);}}>
+                  <span className="font-semibold">{s.name}</span>
+                  <span className={`mt-1 block ${mono} text-[11.5px]`} style={{color:"var(--mute)"}}>{s.days} {s.days===1?"day":"days"} · {s.withVideo} {s.withVideo===1?"video":"videos"} · Completed {s.completedAt ? `${new Intl.DateTimeFormat("en-GB",{timeZone:s.timezone??DEFAULT_TIMEZONE,dateStyle:"medium",timeStyle:"short"}).format(new Date(s.completedAt))} ${zoneLabel(s.timezone??DEFAULT_TIMEZONE)}` : "date unavailable"}</span>
+                </button>
+              </li>)}
+            </ul> : <p className={`${mono} text-[12px]`} style={{color:"var(--mute)"}}>No completed schedules yet. Both platforms must confirm every video.</p>
+          )}
+        </section>
+      )}
+      {!selected && !libraryOpen && !showNew && list && <p role="status" className={`mb-5 ${mono} text-[12px]`} style={{color:"var(--mute)"}}>Choose an active schedule or open Library to view completed schedules.</p>}
+
       {!view && selected && (
         <p className={`${mono} text-[12.5px]`} style={{ color: "var(--mute-2)" }}>Loading…</p>
       )}
       {view && view.workflowVersion < 2 && view.status !== "DRAFT" && <p role="status" className="slab mb-4 p-4 text-[12px]" style={{color:"var(--amber)"}}>This historical plan is excluded from automatic processing. Review its existing platform results before creating or activating further posts; uncertain uploads are never repeated automatically.</p>}
 
-      {view && (
-        <>
+      {view && (!libraryOpen || historyMode) && (
+        <fieldset disabled={historyMode} className="min-w-0" data-history-details={historyMode ? "true" : undefined}>
           {/* ---- the schedule as a whole */}
-          <section className="slab mb-5 space-y-4 p-4 sm:p-5">
+          <section className="slab mb-5 space-y-4 p-4 sm:p-5" aria-label="Schedule summary">
+            {batchCompleted && (
+              <div data-batch-completed role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border px-4 py-3" style={{borderColor:"var(--cyan)",background:"color-mix(in srgb, var(--cyan) 12%, transparent)"}}>
+                <span className="font-display text-[22px] font-bold tracking-wide" style={{color:"var(--cyan)"}}>COMPLETED</span>
+                <span className={`${mono} text-[12px]`} style={{color:"var(--ink)"}}>All {completion.totalVideos} videos confirmed on YouTube and Instagram.</span>
+                {!historyMode && <button type="button" onClick={done} className={`ml-auto rounded-lg px-4 py-2 ${mono} text-[13px] font-semibold`} style={{background:"var(--cyan)",color:"var(--on-accent)"}}>Done</button>}
+              </div>
+            )}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className="font-display text-[20px] font-semibold">{view.name}</span>
-                <Chip label={view.status} tone={TONE[view.status] ?? "var(--mute)"} />
-                <span className={`${mono} text-[11.5px]`} style={{ color: "var(--mute-2)" }} data-counts>
-                  {view.counts.withVideo}/{view.counts.slots} videos · {view.counts.jobs} posts · {view.counts.posted} posted
-                  {view.counts.scheduledOnPlatform ? ` · ${view.counts.scheduledOnPlatform} scheduled on platforms` : ""}
-                  {view.counts.failed ? ` · ${view.counts.failed} failed` : ""}
-                  {view.counts.waiting ? ` · ${view.counts.waiting} waiting` : ""}
+                {!batchCompleted && <Chip label={view.status} tone={TONE[view.status] ?? "var(--mute)"} />}
+                <span className={`${mono} text-[11.5px]`} style={{ color: "var(--mute-2)" }} data-counts role="status" aria-live="polite">
+                  {completion?.totalVideos} total videos · {completion?.completedVideos} fully completed · {completion?.partiallyCompletedVideos} partially completed · {completion?.pendingOrFailedVideos} pending/failed · {completion?.confirmedScheduledPosts} confirmed scheduled posts
+                  {completion?.confirmedPostedPosts ? ` · ${completion.confirmedPostedPosts} posted` : ""}
                 </span>
               </div>
 
@@ -916,7 +1001,7 @@ function Board() {
                     Activate
                   </button>
                 )}
-                {view.status === "ACTIVE" && (
+                {!batchCompleted && view.status === "ACTIVE" && (
                   <button type="button" disabled={busy || retrying} aria-busy={retrying} data-schedule-retry
                     onClick={() => void retryFailed()}
                     className={`rounded-lg border px-3 py-1.5 ${mono} text-[12px] font-semibold disabled:opacity-40`}
@@ -926,17 +1011,17 @@ function Board() {
                       : "Check for safely retryable jobs. Scheduled, published, processing and approval-required jobs are skipped."}
                   >{retrying ? "Retrying…" : "Retry"}</button>
                 )}
-                {view.status === "ACTIVE" && (
+                {!batchCompleted && view.status === "ACTIVE" && (
                   <button type="button" disabled={busy} onClick={() => void run(() => post(`/api/schedule-board/${view.id}/pause`), "Paused. Nothing will start until you resume.", refresh)} className={`rounded-lg border px-3 py-1.5 ${mono} text-[12px] disabled:opacity-40`} style={{ borderColor: "var(--line)", color: "var(--ink)" }}>
                     Pause
                   </button>
                 )}
-                {view.status === "PAUSED" && (
+                {!batchCompleted && view.status === "PAUSED" && (
                   <button type="button" disabled={busy} onClick={() => void run(() => post(`/api/schedule-board/${view.id}/resume`), "Resumed. A post whose time has passed is held, not published late.", refresh)} className={`rounded-lg px-3 py-1.5 ${mono} text-[12px] font-semibold disabled:opacity-40`} style={{ background: "var(--cyan)", color: "var(--on-accent)" }}>
                     Resume
                   </button>
                 )}
-                {(view.status === "ACTIVE" || view.status === "PAUSED") && (
+                {!batchCompleted && (view.status === "ACTIVE" || view.status === "PAUSED") && (
                   <button
                     type="button"
                     disabled={busy}
@@ -950,7 +1035,7 @@ function Board() {
                     Cancel schedule
                   </button>
                 )}
-                {(draft || view.status === "CANCELLED") && (
+                {!batchCompleted && (draft || view.status === "CANCELLED") && (
                   <button
                     type="button"
                     disabled={busy}
@@ -1159,7 +1244,7 @@ function Board() {
               <li>Only BookReel’s credentials and browser profiles are used. Historical jobs with uncertain outcomes are held for inspection, never blindly uploaded again.</li>
             </ul>
           </section>
-        </>
+        </fieldset>
       )}
 
       <section className="slab mt-5 p-4 text-[12px]" aria-label="Publishing readiness"><p>YouTube target: {view?.youtubeChannel ?? "BookReel’s configured channel"}. The account is verified before any file is uploaded.</p><p className="mt-1">{view?.instagramEnabled ? "Instagram execution is enabled by configuration." : "Instagram publishing is disabled until explicitly enabled. Its settings do not block YouTube."}</p><p className="mt-1">{view?.workerEnabled ? "Background queue processing is enabled." : "Background publishing is disabled. Drafts do not upload anything. Activate is an explicit request to start uploads; queued work needs this server running."}</p>{view && <p className="mt-1" style={{color:"var(--amber)"}}>BookReel reviews the video’s audience before upload. Child-directed or uncertain content needs human review; a general-audience result is required before selecting Not made for kids.</p>}</section>

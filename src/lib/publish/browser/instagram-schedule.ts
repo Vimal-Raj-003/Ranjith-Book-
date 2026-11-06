@@ -387,31 +387,50 @@ export async function setReelDate(page: Page, target: ReelTarget, log: PublishLo
   }
 
   // Otherwise open the control and choose the day in the month grid.
-  await control.click({ timeout: 8_000 }).catch(() => {});
+  await control.click({ timeout: 8_000 });
   await pause(600, 1000);
   await igShot(page, "03-date-picker");
   const chose = await page
     .evaluate(
-      ({ attr, day }) => {
+      ({ attr, day, month, year }) => {
         for (const old of document.querySelectorAll(`[${attr}="day"]`)) old.removeAttribute(attr);
-        // The day cell: an element whose whole text is the day number, not disabled.
-        const cells = [...document.querySelectorAll('[role="option"],[role="gridcell"],button,td,div,span')].filter((e) => {
-          const h = e as HTMLElement;
-          if (h.getClientRects().length === 0) return false;
-          return new RegExp(`^${day}$`).test((h.innerText || "").trim());
-        }) as HTMLElement[];
-        const wanted = cells.find((c) => !c.closest('[aria-disabled="true"],[disabled]'));
+        // A notification badge can contain the same number as a day. Locate
+        // the displayed month first, then search only its calendar grid.
+        const headings = [...document.querySelectorAll('div,span,button,h2,h3')].filter(el =>
+          (el as HTMLElement).getClientRects().length &&
+          (el.textContent ?? '').replace(/\s+/g, ' ').trim() === `${month} ${year}`);
+        let calendar: Element | null = null;
+        for (const heading of headings) {
+          let root = heading.parentElement;
+          for (let depth = 0; root && depth < 6; depth++, root = root.parentElement) {
+            const text = (root as HTMLElement).innerText ?? '';
+            const days = [...root.querySelectorAll('button,td,div,span,[role="gridcell"],[role="option"]')]
+              .filter(el => (el as HTMLElement).getClientRects().length && /^(?:[1-9]|[12]\d|3[01])$/.test((el.textContent ?? '').trim()));
+            if (['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].every(label => text.includes(label)) &&
+                new Set(days.map(el => el.textContent?.trim())).size >= 7) { calendar = root; break; }
+          }
+          if (calendar) break;
+        }
+        if (!calendar) return false;
+        const cells = [...calendar.querySelectorAll('[role="option"],[role="gridcell"],button,td,div,span')]
+          .filter(el => (el as HTMLElement).getClientRects().length && (el.textContent ?? '').trim() === String(day) &&
+            !el.closest('[aria-disabled="true"],[disabled]'));
+        const leaves = cells.filter(el => !cells.some(other => other !== el && el.contains(other)));
+        const targets = [...new Set(leaves.map(el => el.closest('button,[role="button"],[role="option"],[role="gridcell"],td') ?? el))]
+          .filter(el => calendar!.contains(el));
+        const wanted = targets.length === 1 ? targets[0] : null;
         if (wanted) wanted.setAttribute(attr, "day");
         return !!wanted;
       },
-      { attr: SEEN, day: target.day },
+      { attr: SEEN, day: target.day, month: new Date(Date.UTC(target.year,target.month-1,1)).toLocaleString('en-US',{month:'long',timeZone:'UTC'}), year: target.year },
     )
     .catch(() => false);
   if (chose) {
     await page.locator(`[${SEEN}="day"]`).first().scrollIntoViewIfNeeded({ timeout: 5_000 }).catch(() => {});
-    await humanClick(page, `[${SEEN}="day"]`).catch(() => {});
+    await humanClick(page, `[${SEEN}="day"]`);
     await pause(400, 800);
   }
+  if (!dateMatches(await dateShown(page), target)) throw new Error(`Instagram did not select ${target.day} ${target.monthShort} ${target.year} in the displayed calendar. Nothing was scheduled.`);
   await igShot(page, "03-date-set");
 }
 
