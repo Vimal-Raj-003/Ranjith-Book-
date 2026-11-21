@@ -119,7 +119,7 @@ async function runAlign(python: string, job: object, workDir: string): Promise<A
 
 /** The old estimate, labelled as such. */
 function estimated(voice: VoiceoverResult, notes: string[]): NarrationTiming {
-  const captions = buildCaptions(voice.beats);
+  const captions = buildCaptions(voice.beats, 3);
   const words: TimedWord[] = [];
   for (const line of captions) {
     for (const w of line.words) {
@@ -208,7 +208,7 @@ export async function timeNarration(voice: VoiceoverResult, workDir: string): Pr
     source: estimatedBeats === 0 ? "audio" : estimatedBeats === perBeat.length ? "estimated" : "mixed",
     model: out.model,
     words,
-    captions: buildCaptionsFromWords(words),
+    captions: buildCaptionsFromWords(words, 3),
     beats,
     perBeat,
     notes,

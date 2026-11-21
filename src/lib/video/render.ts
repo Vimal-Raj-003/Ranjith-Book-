@@ -19,21 +19,36 @@ const HIDE_SHIM = path
   .split(path.sep)
   .join("/");
 
-const CLI_ENV = () => ({
-  ...process.env,
-  // Static binaries downloaded into tools/bin — HyperFrames shells out to these.
-  // path.delimiter, not ":" — Windows separates PATH entries with ";", so a
-  // hardcoded colon fuses the whole list into one unusable entry and every
-  // lookup on it fails.
-  PATH: `${path.join(process.cwd(), "tools", "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
-  FFMPEG_PATH: FFMPEG,
-  FFPROBE_PATH: FFPROBE,
-  ...(process.platform === "win32"
-    ? {
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require "${HIDE_SHIM}"`.trim(),
-      }
-    : {}),
-});
+export function buildRenderCliEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: Record<string, string | undefined> = { ...baseEnv };
+  // On Windows, spreading `process.env` into a plain object preserves the mixed-case
+  // `Path` key; adding a separate uppercase `PATH` key alongside it leaves two
+  // competing path entries in the child environment block, causing `where.exe ffmpeg`
+  // inside HyperFrames to read the old `Path` and fail with "FFmpeg not found".
+  let inheritedPath = baseEnv.PATH ?? "";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "path") {
+      if (!inheritedPath && typeof env[key] === "string") inheritedPath = env[key]!;
+      delete env[key];
+    }
+  }
+  const toolsBin = path.join(process.cwd(), "tools", "bin");
+  const ffmpegDir = path.dirname(FFMPEG);
+  const prefixDirs = [toolsBin, ...(ffmpegDir && ffmpegDir !== "." && ffmpegDir !== toolsBin ? [ffmpegDir] : [])];
+  const mergedPath = [...prefixDirs, inheritedPath].filter(Boolean).join(path.delimiter);
+  env.PATH = mergedPath;
+  env.FFMPEG_PATH = FFMPEG;
+  env.FFPROBE_PATH = FFPROBE;
+  env.HYPERFRAMES_FFMPEG_PATH = FFMPEG;
+  env.HYPERFRAMES_FFPROBE_PATH = FFPROBE;
+  if (process.platform === "win32") {
+    env.PATHEXT = baseEnv.PATHEXT || ".COM;.EXE;.BAT;.CMD";
+    env.NODE_OPTIONS = `${baseEnv.NODE_OPTIONS ?? ""} --require "${HIDE_SHIM}"`.trim();
+  }
+  return env as NodeJS.ProcessEnv;
+}
+
+const CLI_ENV = () => buildRenderCliEnv(process.env);
 
 export interface ProjectFiles {
   dir: string;
@@ -41,18 +56,24 @@ export interface ProjectFiles {
   audioSource: string; // absolute path to the mastered wav
   /** Optional ambient bed, copied in beside the voice. */
   musicSource?: string | null;
+  /** Optional procedural SFX track, copied in beside the voice and music bed. */
+  sfxSource?: string | null;
   /** Images and screenshots the composition references, copied in alongside. */
   assets?: { from: string; to: string }[];
 }
 
 export async function writeProject(files: ProjectFiles) {
-  const { dir, indexHtml, audioSource, musicSource, assets = [] } = files;
+  const { dir, indexHtml, audioSource, musicSource, sfxSource, assets = [] } = files;
   await fs.mkdir(path.join(dir, "assets"), { recursive: true });
   await fs.writeFile(path.join(dir, "index.html"), indexHtml, "utf8");
   await fs.copyFile(audioSource, path.join(dir, "assets", "voice.wav"));
   if (musicSource) {
     // A missing bed must never sink the render; the video simply runs dry.
     await fs.copyFile(musicSource, path.join(dir, "assets", "music.wav")).catch(() => {});
+  }
+  if (sfxSource) {
+    // A missing SFX track must never sink the render.
+    await fs.copyFile(sfxSource, path.join(dir, "assets", "sfx.wav")).catch(() => {});
   }
   for (const a of assets) {
     // A missing asset must never sink the render.
@@ -231,11 +252,110 @@ export async function renderProject(
       90 * 60_000,
     );
   } else {
-    const w = workers && Number.isInteger(workers) && workers >= 1 && workers <= 8 ? ["--workers", String(workers)] : [];
+    void workers;
+    // Always use 1 sequential capture worker on local renders unless explicitly
+    // overridden via BOOKREEL_PARALLEL_WORKERS: HyperFrames reuses probeSession
+    // as Worker 0 while spawning separate pages for Workers 1..N, which causes
+    // periodic every-Nth-frame WebGL/compositor blinking across the video.
+    const envWorkers = Number(process.env.BOOKREEL_PARALLEL_WORKERS);
+    const safeWorkers =
+      Number.isInteger(envWorkers) && envWorkers >= 1 && envWorkers <= 8 ? envWorkers : 1;
+    const w = ["--workers", String(safeWorkers)];
     await hf(dir, ["render", "--quality", quality, "--output", outputAbs, ...w], 60 * 60_000);
+    await masterRenderedVideoAudio(dir, outputAbs).catch(() => {});
   }
 
   const stat = await fs.stat(outputAbs);
   if (stat.size < 1024) throw new Error("Render produced an empty file");
   return outputAbs;
+}
+
+/**
+ * Lossless-video (`-c:v copy`) broadcast audio mastering pass after HyperFrames
+ * completes. Blends centered studio voiceover with stereo-widened cinematic music
+ * and organic SFX, glued together at YouTube Shorts' -14 LUFS loudness standard.
+ */
+async function masterRenderedVideoAudio(projectDir: string, mp4Path: string): Promise<void> {
+  const assetsDir = path.join(projectDir, "assets");
+  const voiceWav = path.join(assetsDir, "voice.wav");
+  const musicWav = path.join(assetsDir, "music.wav");
+  const sfxWav = path.join(assetsDir, "sfx.wav");
+
+  const hasFile = async (p: string) => fs.stat(p).then((s) => s.size > 512, () => false);
+  const [hasVoice, hasMusic, hasSfx] = await Promise.all([
+    hasFile(voiceWav),
+    hasFile(musicWav),
+    hasFile(sfxWav),
+  ]);
+  if (!hasVoice || (!hasMusic && !hasSfx)) return;
+
+  const { stdout: durOut } = await exec(
+    FFPROBE,
+    ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp4Path],
+    { windowsHide: true, timeout: 15_000, ...abortOpts() },
+  );
+  const dur = parseFloat(durOut.trim());
+  if (!Number.isFinite(dur) || dur <= 0.5) return;
+
+  const inputs: string[] = ["-i", mp4Path, "-i", voiceWav];
+  const mixInputs: string[] = ["[vpan]"];
+  const chains: string[] = [
+    // Voice starts at AUDIO_OFFSET (700ms), centered cleanly across L/R
+    `[1:a]adelay=700|700,apad,atrim=0:${dur.toFixed(3)},pan=stereo|c0=c0|c1=c0[vpan]`,
+  ];
+
+  let nextIdx = 2;
+  if (hasMusic) {
+    inputs.push("-i", musicWav);
+    chains.push(
+      // Subtle Haas 14ms stereo spread on the already sidechain-ducked cinematic score
+      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=0.88,asplit=2[ml][mr];[mr]adelay=14[mrd];[ml][mrd]amerge=inputs=2[mpan]`,
+    );
+    mixInputs.push("[mpan]");
+    nextIdx += 1;
+  }
+  if (hasSfx) {
+    inputs.push("-i", sfxWav);
+    chains.push(
+      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=1.08,asplit=2[sl][sr];[sr]adelay=9[srd];[sl][srd]amerge=inputs=2[span]`,
+    );
+    mixInputs.push("[span]");
+  }
+
+  chains.push(
+    `${mixInputs.join("")}amix=inputs=${mixInputs.length}:duration=longest:normalize=0,` +
+      `acompressor=threshold=-16dB:ratio=2.2:attack=18:release=220:makeup=1,` +
+      `loudnorm=I=-14:TP=-1.2:LRA=9[aout]`,
+  );
+
+  const tmpMp4 = `${mp4Path}.mastered.mp4`;
+  try {
+    await exec(
+      FFMPEG,
+      [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        ...inputs,
+        "-filter_complex", chains.join(";"),
+        "-map", "0:v:0",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "48000",
+        "-movflags", "+faststart",
+        tmpMp4,
+      ],
+      { windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 * 16, ...abortOpts() },
+    );
+    const st = await fs.stat(tmpMp4);
+    if (st.size > 4096) {
+      await fs.rename(tmpMp4, mp4Path);
+    } else {
+      await fs.rm(tmpMp4, { force: true }).catch(() => {});
+    }
+  } catch {
+    await fs.rm(tmpMp4, { force: true }).catch(() => {});
+  }
 }

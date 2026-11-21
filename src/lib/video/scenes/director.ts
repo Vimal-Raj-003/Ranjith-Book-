@@ -81,12 +81,12 @@ THE ENVIRONMENTS (every scene, of any kind, also gets an "environment": the worl
 ${environmentCatalogue()}
 
 RULES:
-1. Return roughly as many scenes as the user message asks for (never fewer than 5). Every sentence must be covered exactly once, in order: the first scene starts at sentence 0, each next scene starts at the sentence after the previous one ends, the last ends at the final sentence.
-2. Scene 0 MUST be cinematic: it is the hook, and the first thing a viewer sees. Choose the hero for the idea of the hook, never a book page. Keep scene 0 to the first one or two sentences.
-3. At least 40% of the scenes must be cinematic. Every important concept in the narration gets its own cinematic scene with the hero that matches its meaning. Prefer cinematic over kinetic-text, icon-concept and quote.
-4. Show the book too: use AT LEAST 3 scenes that show it (book-page, book-crop or quote), spread through the video, but at most two quote scenes and never two book scenes in a row.
+1. Return roughly as many scenes as the user message asks for (never fewer than 5). Every sentence must be covered exactly once, in order: the first scene starts at sentence 0, each next scene starts at the sentence after the previous one ends, the last ends at the final sentence. Keep scenes brisk — ideally 1 sentence (3-5 seconds) per scene so the visual changes before the viewer's eye can drift.
+2. Scene 0 MUST be cinematic: it is the scroll-stopping hook, and the first thing a viewer sees. Choose the hero for the concrete conflict or object of the hook, never a book page. Keep scene 0 to the first sentence whenever possible.
+3. At least 40% of the scenes must be cinematic. Every dramatic object, real-world moment, or physical example in the narration gets its own cinematic scene with concrete "concept" words describing the exact objects on screen (e.g. "running shoes beside rain doorway", "dumbbell next to glazed donut") — never vague abstractions.
+4. Show the book as crisp visual proof: use AT LEAST 3 book scenes (book-page or book-crop, plus at most ONE short <= 12-word quote scene across the entire video), spread out and NEVER two book scenes in a row. Prefer book-crop (zoomed into the exact highlighted sentence) over long static quote cards.
 5. Never use the same kind more than twice in a row. Never use the same hero twice in a row, and no hero more than twice in the whole video. Use "orb" only when nothing else fits.
-6. Use icon-concept at most twice. Use comparison, steps, timeline, growth-curve or stat only when the narration REALLY does that; otherwise choose cinematic.
+6. Whenever the narration contrasts two habits/choices ("instead of X, do Y", "wrong vs right"), actively choose comparison. Whenever it lists 2-4 excuses, steps, or rules, choose steps or timeline. Whenever it cites a number printed on the page, choose stat or growth-curve. Use icon-concept at most twice.
 7. Invent nothing. Every keyword, lead, label, item, side, step and number must come from what the narration or the page actually says.
 8. The environment must follow the meaning of the sentence: the mood of what is being SAID, which is not always the mood of the object shown. A scene about losing time is "dusk" even when its hero is a clock. Consecutive scenes should not all share one: a story moves, so let the world change when the idea does, and keep a world for as long as the idea stays. Use "still" only when a sentence has no mood of its own, and never for a whole video.
 

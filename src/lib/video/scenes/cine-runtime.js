@@ -1679,6 +1679,11 @@
     }
     var E = { T: T, light: light, acc: acc, acc2: acc2, soft: softTexture(T), scene: scene, camera: camera };
     var built = {};
+    var plates = {};
+    function hideAll(activeGroup) {
+      Object.keys(built).forEach(function (k) { built[k].group.visible = built[k].group === activeGroup; });
+      Object.keys(plates).forEach(function (k) { plates[k].group.visible = plates[k].group === activeGroup; });
+    }
     function ensure(id) {
       var key = HEROES[id] ? id : "orb";
       if (!built[key]) {
@@ -1687,6 +1692,308 @@
         scene.add(built[key].group);
       }
       return built[key];
+    }
+    function hashSeed(str) {
+      var h = 2166136261;
+      var s = String(str || "plate");
+      for (var i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return h | 0;
+    }
+    function buildPlate(key, imgEl, depthEl, cfg) {
+      if (!imgEl || !imgEl.naturalWidth || !imgEl.naturalHeight) return null;
+      cfg = cfg || {};
+      var g = new T.Group();
+      var pc = document.createElement("canvas");
+      pc.width = W; pc.height = H;
+      var px = pc.getContext("2d");
+      var iw = imgEl.naturalWidth, ih = imgEl.naturalHeight;
+      var sc = Math.max(W / iw, H / ih);
+      var dw = iw * sc, dh = ih * sc;
+      px.drawImage(imgEl, (W - dw) * 0.5, (H - dh) * 0.5, dw, dh);
+      var tex = new T.CanvasTexture(pc);
+      tex.colorSpace = T.SRGBColorSpace;
+
+      var segX = 72, segY = 128, cols = segX + 1, rows = segY + 1;
+      var depths = null;
+      if (depthEl && depthEl.naturalWidth > 0 && depthEl.naturalHeight > 0) {
+        try {
+          var dc = document.createElement("canvas");
+          dc.width = cols; dc.height = rows;
+          var dx = dc.getContext("2d");
+          dx.drawImage(depthEl, 0, 0, cols, rows);
+          depths = dx.getImageData(0, 0, cols, rows).data;
+        } catch (e) {
+          depths = null;
+        }
+      }
+
+      var isDoc = cfg.treatment === "documentary";
+      var pIntensity = typeof cfg.parallaxIntensity === "number" ? clamp(cfg.parallaxIntensity, 0.15, 1.2) : (isDoc ? 0.55 : 0.92);
+      var accCol = new T.Color(cfg.accentHex || o.accent || "#d9531e");
+      var domCol = new T.Color(cfg.dominantHex || "#1a2232");
+      var shdCol = new T.Color(cfg.shadowHex || "#090d16");
+      var grade = cfg.colorGrade || "warm-cinema";
+      var gradeTint = new T.Color(
+        grade === "archival-sepia" ? 0xf8eedf :
+        grade === "cool-noir" ? 0xf3f8ff :
+        grade === "golden-amber" ? 0xfff8ed :
+        grade === "crisp-editorial" ? 0xfafcff : 0xfffcf8
+      );
+
+      // 1. Far background plane (z = -0.92): anchors deep parallax so outer silhouettes never clip.
+      var bgGeo = new T.PlaneGeometry(7.2, 12.8);
+      bgGeo.clearGroups();
+      var bgMat = new T.MeshBasicMaterial({
+        color: shdCol.clone().lerp(domCol, 0.35),
+        depthWrite: false,
+      });
+      var bgMesh = new T.Mesh(bgGeo, bgMat);
+      bgMesh.position.z = -0.92;
+      g.add(bgMesh);
+
+      // 2. Midground 72x128 depth-displaced plate mesh.
+      var geo = new T.PlaneGeometry(5.92, 10.52, segX, segY);
+      geo.clearGroups();
+      var pos = geo.attributes.position;
+      var zSpan = 1.48 * pIntensity;
+      for (var ry = 0; ry < rows; ry++) {
+        var v = ry / segY;
+        var ey = smooth(0, 0.09, v) * smooth(1, 0.91, v);
+        for (var rx = 0; rx < cols; rx++) {
+          var u = rx / segX;
+          var ex = smooth(0, 0.09, u) * smooth(1, 0.91, u);
+          var idx = ry * cols + rx;
+          var d01;
+          if (depths) {
+            d01 = depths[idx * 4] / 255;
+          } else {
+            var cx = u - 0.5, cy = v - 0.48;
+            d01 = clamp(0.26 + v * 0.34 + Math.max(0, 0.42 - Math.sqrt(cx * cx + cy * cy)) * 0.85, 0, 1);
+          }
+          var z = lerp(-0.22 * pIntensity, (d01 - 0.42) * zSpan, ex * ey);
+          pos.setZ(idx, z);
+        }
+      }
+      pos.needsUpdate = true;
+      geo.computeVertexNormals();
+
+      var mat = new T.MeshStandardMaterial({
+        map: tex,
+        color: gradeTint,
+        emissiveMap: tex,
+        emissive: gradeTint,
+        emissiveIntensity: isDoc ? (E.light ? 0.88 : 0.86) : (E.light ? 0.84 : 0.82),
+        roughness: isDoc ? 0.9 : 0.86,
+        metalness: 0.02,
+      });
+      var plane = new T.Mesh(geo, mat);
+      g.add(plane);
+
+      var lightCol = gradeTint.clone().lerp(accCol, isDoc ? 0.12 : 0.2);
+      var keyLight = new T.PointLight(lightCol.getHex(), isDoc ? (E.light ? 1.2 : 1.6) : (E.light ? 1.5 : 2.1), 18, 1.5);
+      keyLight.position.set(0, 0.8, 3.4);
+      g.add(keyLight);
+
+      var glow = sprite(E, lightCol, isDoc ? 4.8 : 5.4, isDoc ? 0.02 : (E.light ? 0.03 : 0.04));
+      glow.position.set(0, 0.6, 0.9);
+      g.add(glow);
+
+      var rnd = mulberry(hashSeed(key));
+      var atm = cfg.atmosphere || "dust";
+      var motes = null, moteData = [], fgBokeh = null, fgData = [], rainLines = null, rainData = [], rays = [], mists = [], accentGroup = null;
+
+      // 3. Optional Hybrid 3D sculptural accent (single-group Torus rings in 3D space, never forced on documentary).
+      if (cfg.accent3d && !isDoc) {
+        accentGroup = new T.Group();
+        var rOuter = new T.Mesh(
+          new T.TorusGeometry(1.55, 0.014, 8, 96),
+          new T.MeshBasicMaterial({
+            color: accCol,
+            transparent: true,
+            opacity: E.light ? 0.34 : 0.46,
+            depthWrite: false,
+            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
+          })
+        );
+        var rInner = new T.Mesh(
+          new T.TorusGeometry(1.12, 0.009, 6, 84),
+          new T.MeshBasicMaterial({
+            color: gradeTint,
+            transparent: true,
+            opacity: E.light ? 0.22 : 0.3,
+            depthWrite: false,
+            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
+          })
+        );
+        rOuter.rotation.x = 1.05;
+        rInner.rotation.y = 0.72;
+        accentGroup.position.set(0, -0.35, 1.05);
+        accentGroup.add(rOuter);
+        accentGroup.add(rInner);
+        g.add(accentGroup);
+      }
+
+      // 4. Foreground bokeh separation plane (z = +2.15..+2.85) for true 3-plane parallax on hybrid scenes.
+      if (!isDoc && atm !== "none") {
+        var FN = 16;
+        fgBokeh = points(E, FN, 0.095, accCol.clone().lerp(gradeTint, 0.45), E.light ? 0.16 : 0.24);
+        for (var f1 = 0; f1 < FN; f1++) {
+          fgData.push([rnd() * 4.4 - 2.2, rnd() * 7.8 - 3.9, 2.15 + rnd() * 0.7, rnd()]);
+        }
+        g.add(fgBokeh);
+      }
+
+      if (atm === "rain") {
+        var RN = 68;
+        var rg = new T.BufferGeometry();
+        rg.setAttribute("position", new T.BufferAttribute(new Float32Array(RN * 6), 3));
+        rainLines = new T.LineSegments(rg, lineMat(E, E.light ? 0x6b7c96 : 0xcfe2ff, E.light ? 0.32 : 0.42));
+        rainLines.frustumCulled = false;
+        for (var r1 = 0; r1 < RN; r1++) rainData.push([rnd() * 5.2 - 2.6, rnd(), 0.7 + rnd() * 0.7, 0.5 + rnd() * 1.5]);
+        g.add(rainLines);
+      } else if (atm !== "none" && atm !== "still") {
+        var MN = atm === "embers" ? 56 : (isDoc ? 28 : 48);
+        var pCol = atm === "embers" ? accCol : (E.light ? 0x8a7a68 : 0xdfe8ff);
+        var pSize = atm === "embers" ? 0.055 : (isDoc ? 0.032 : 0.042);
+        var pOp = atm === "embers" ? 0.82 : (isDoc ? (E.light ? 0.2 : 0.28) : (E.light ? 0.34 : 0.48));
+        motes = points(E, MN, pSize, pCol, pOp);
+        for (var m1 = 0; m1 < MN; m1++) {
+          moteData.push([rnd() * 4.8 - 2.4, rnd() * 8.4 - 4.2, 0.45 + rnd() * 1.6, rnd()]);
+        }
+        g.add(motes);
+      }
+
+      if (atm === "mist") {
+        for (var mi = 0; mi < 4; mi++) {
+          var mp = puff(E, E.light ? 0xffffff : shdCol.clone().lerp(accCol, 0.22), 4.6 + mi * 0.7, E.light ? 0.2 : 0.18);
+          mp.position.set((mi % 2 ? 1 : -1) * 1.1, -2.4 + mi * 0.65, 0.75 + mi * 0.15);
+          g.add(mp);
+          mists.push(mp);
+        }
+      } else if (atm === "rays") {
+        for (var ri = 0; ri < 3; ri++) {
+          var rayGeo = new T.PlaneGeometry(0.85 + ri * 0.35, 9.6);
+          rayGeo.clearGroups();
+          var rayMat = new T.MeshBasicMaterial({
+            color: lightCol,
+            transparent: true,
+            opacity: isDoc ? (E.light ? 0.035 : 0.055) : (E.light ? 0.06 : 0.1),
+            depthWrite: false,
+            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
+            side: T.DoubleSide,
+          });
+          var ray = new T.Mesh(rayGeo, rayMat);
+          ray.rotation.z = -0.26 + ri * 0.08;
+          ray.position.set(-1.1 + ri * 1.05, 0.7, 0.8 + ri * 0.1);
+          g.add(ray);
+          rays.push(ray);
+        }
+      }
+
+      var move = cfg.cameraMove || "push-in";
+      var angle = cfg.shotAngle || "eye-level";
+      return {
+        group: g,
+        tex: tex,
+        geo: geo,
+        mat: mat,
+        bgGeo: bgGeo,
+        bgMat: bgMat,
+        update: function (t, p) {
+          var ep = smooth(0, 1, p);
+          keyLight.position.set(Math.sin(t * 0.45) * 1.4, lerp(1.1, -0.3, ep), 3.1 + Math.cos(t * 0.35) * 0.4);
+          glow.position.set(Math.sin(t * 0.3) * 0.7, lerp(0.9, 0.2, ep), 0.9);
+          glow.material.opacity = (isDoc ? 0.02 : (E.light ? 0.03 : 0.04)) + 0.012 * Math.sin(t * 1.3);
+
+          if (accentGroup) {
+            accentGroup.rotation.z = t * 0.16;
+            accentGroup.rotation.y = Math.sin(t * 0.28) * 0.24;
+          }
+          if (fgBokeh) {
+            var fpAttr = fgBokeh.geometry.attributes.position;
+            for (var fq = 0; fq < fgData.length; fq++) {
+              var fd = fgData[fq];
+              var fwy = ((fd[1] + 3.9 + t * 0.11 * (0.4 + fd[3])) % 7.8) - 3.9;
+              var fwx = fd[0] + Math.sin(t * 0.32 + fd[3] * 6.28) * 0.28;
+              fpAttr.setXYZ(fq, fwx, fwy, fd[2]);
+            }
+            fpAttr.needsUpdate = true;
+          }
+          if (motes) {
+            var mpAttr = motes.geometry.attributes.position;
+            var riseRate = atm === "embers" ? 0.52 : 0.14;
+            for (var q = 0; q < moteData.length; q++) {
+              var d = moteData[q];
+              var wy = ((d[1] + 4.2 + t * riseRate * (0.5 + d[3])) % 8.4) - 4.2;
+              var wx = d[0] + Math.sin(t * 0.42 + d[3] * 6.28) * 0.22;
+              mpAttr.setXYZ(q, wx, wy, d[2]);
+            }
+            mpAttr.needsUpdate = true;
+          }
+          if (rainLines) {
+            var rpAttr = rainLines.geometry.attributes.position;
+            for (var rk = 0; rk < rainData.length; rk++) {
+              var rd = rainData[rk];
+              var rf = fract(rd[1] + t * 1.35 * rd[2]);
+              var ry2 = 4.6 - rf * 9.2;
+              var rx2 = rd[0] - rf * 0.55;
+              rpAttr.setXYZ(rk * 2, rx2, ry2, rd[3]);
+              rpAttr.setXYZ(rk * 2 + 1, rx2 - 0.07, ry2 - 0.42, rd[3]);
+            }
+            rpAttr.needsUpdate = true;
+          }
+          for (var m2 = 0; m2 < mists.length; m2++) {
+            mists[m2].position.x = lerp(-1.8, 1.8, fract(0.18 * m2 + t * 0.025));
+          }
+          for (var r2 = 0; r2 < rays.length; r2++) {
+            rays[r2].material.opacity = (isDoc ? (E.light ? 0.03 : 0.05) : (E.light ? 0.045 : 0.085)) * (0.7 + 0.3 * Math.sin(t * 0.8 + r2 * 1.7));
+          }
+        },
+        cam: function (t, p, cam) {
+          var ep = smooth(0, 1, p);
+          var motionScale = isDoc ? 0.72 : 1.0;
+          var swayX = Math.sin(t * 0.38) * 0.045 * motionScale;
+          var swayY = Math.cos(t * 0.31) * 0.045 * motionScale;
+          var ay = angle === "low-angle-heroic" ? -0.22 : angle === "high-angle-overview" ? 0.24 : 0;
+          var lookY = angle === "low-angle-heroic" ? 0.09 : angle === "high-angle-overview" ? -0.09 : 0;
+          var distBias = angle === "close-intimate" ? -0.65 : angle === "wide-establishing" ? 0.45 : 0;
+          if (move === "pull-back") {
+            cam.position.set(swayX, ay + lerp(-0.14, 0.1, ep) * motionScale + swayY, lerp(13.5, 16.8, ep) + distBias);
+            cam.lookAt(0, lookY + lerp(-0.05, 0.03, ep), 0);
+          } else if (move === "pan-right") {
+            var px1 = lerp(-0.58, 0.58, ep) * motionScale;
+            cam.position.set(px1, ay + swayY, lerp(16.0, 14.3, ep) + distBias);
+            cam.lookAt(px1 * 0.36, lookY, 0);
+          } else if (move === "pan-left") {
+            var px2 = lerp(0.58, -0.58, ep) * motionScale;
+            cam.position.set(px2, ay + swayY, lerp(16.0, 14.3, ep) + distBias);
+            cam.lookAt(px2 * 0.36, lookY, 0);
+          } else if (move === "rise-reveal") {
+            var py1 = ay + lerp(-0.54, 0.42, ep) * motionScale;
+            cam.position.set(swayX, py1, lerp(16.2, 14.2, ep) + distBias);
+            cam.lookAt(0, lookY + py1 * 0.42, 0);
+          } else if (move === "orbit-drift") {
+            var ang = lerp(-0.085, 0.085, ep) * motionScale, dist = lerp(16.1, 14.1, ep) + distBias;
+            cam.position.set(Math.sin(ang) * dist, ay + swayY * 1.4, Math.cos(ang) * dist);
+            cam.lookAt(0, lookY, 0);
+          } else {
+            cam.position.set(swayX * 1.4, ay + lerp(0.12, -0.08, ep) * motionScale + swayY, lerp(16.8, 13.5, ep) + distBias);
+            cam.lookAt(0, lookY + lerp(0.04, -0.04, ep), 0);
+          }
+        },
+      };
+    }
+    function ensurePlate(key, imgEl, depthEl, cfg) {
+      if (plates[key]) return plates[key];
+      var builtPlate = buildPlate(key, imgEl, depthEl, cfg);
+      if (!builtPlate) return null;
+      builtPlate.group.visible = false;
+      scene.add(builtPlate.group);
+      plates[key] = builtPlate;
+      return builtPlate;
     }
     // How each hero is framed in the 9:16 frame: zoom < 1 pulls the camera back,
     // dy (buffer pixels) pushes the object DOWN, so the top third stays free for
@@ -1701,10 +2008,27 @@
     };
     return {
       canvas: canvas,
+      renderer: renderer,
       ensure: ensure,
+      ensurePlate: ensurePlate,
+      drawPlate: function (key, t, p) {
+        var pl = plates[key];
+        if (!pl) return false;
+        hideAll(pl.group);
+        pl.group.position.y = 0;
+        pl.update(t, p);
+        pl.cam(t, p, camera);
+        camera.zoom = 1;
+        if (camera.clearViewOffset) camera.clearViewOffset();
+        else camera.setViewOffset(W, H, 0, 0, W, H);
+        camera.updateProjectionMatrix();
+        renderer.render(scene, camera);
+        try { renderer.getContext().finish(); } catch (e) { /* the blit below still reads what is there */ }
+        return true;
+      },
       draw: function (id, t, p, low) {
         var h = ensure(id);
-        Object.keys(built).forEach(function (k) { built[k].group.visible = built[k] === h; });
+        hideAll(h.group);
         h.group.position.y = 0;
         h.update(t, p);
         if (h.cam) h.cam(t, p, camera); else { camera.position.set(0, 0.6, 7); camera.lookAt(0, 0, 0); }
@@ -1718,7 +2042,16 @@
         try { renderer.getContext().finish(); } catch (e) { /* the blit below still reads what is there */ }
       },
       dispose: function () {
-        try { renderer.dispose(); } catch (e) { /* the page is going away regardless */ }
+        try {
+          Object.keys(plates).forEach(function (k) {
+            if (plates[k].tex) plates[k].tex.dispose();
+            if (plates[k].geo) plates[k].geo.dispose();
+            if (plates[k].mat) plates[k].mat.dispose();
+            if (plates[k].bgGeo) plates[k].bgGeo.dispose();
+            if (plates[k].bgMat) plates[k].bgMat.dispose();
+          });
+          renderer.dispose();
+        } catch (e) { /* the page is going away regardless */ }
       },
     };
   }

@@ -46,6 +46,10 @@ export interface PlanScenesOptions {
   hook?: { text: string; keywords: string[] };
   /** The embedder that chooses each scene's hero by meaning. Defaults to the local sentence model; tests inject one. */
   heroEmbedder?: Embedder;
+  /** Optional page width in column pixels for horizontal shot-fit safety. */
+  pageWidthFor?: (page: number) => number | null;
+  /** Optional card height in column pixels. */
+  cardHeightInColumnPx?: number;
 }
 
 /** How many scenes to aim for, from the video's length. */
@@ -150,6 +154,8 @@ export async function planScenes(opts: PlanScenesOptions): Promise<ScenePlan> {
     locate: quoteLocator(opts.pageWords),
     hook: opts.hook,
     heroRanker: ranker,
+    cardHeightInColumnPx: opts.cardHeightInColumnPx,
+    pageWidthFor: opts.pageWidthFor,
   };
   const report = await validateScenes(resolved, ctx);
 

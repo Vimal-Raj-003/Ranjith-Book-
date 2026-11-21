@@ -30,6 +30,7 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [rights, setRights] = useState<string>("in-copyright");
+  const [rightsTouched, setRightsTouched] = useState(false);
   const [drag, setDrag] = useState(false);
   const [pct, setPct] = useState<number | null>(null);
   const [starting, setStarting] = useState(false);
@@ -42,6 +43,9 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
     if (f.size > MAX_BYTES) return setError(strings.books.tooLarge);
     setFile(f);
     if (!title.trim()) setTitle(titleFromFile(f.name));
+    if (!rightsTouched && /\b(?:IA[_\s-]+[A-Za-z0-9]{5,}|gutenberg)\b/i.test(f.name)) {
+      setRights("public-domain");
+    }
   }
 
   function upload(f: File): Promise<{ uploadId: string }> {
@@ -83,6 +87,7 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
       show(strings.books.started, "ok");
       setFile(null);
       setTitle("");
+      setRightsTouched(false);
       onStarted(uploadId);
     } catch (err) {
       const text = err instanceof Error ? err.message : strings.books.uploadError;
@@ -167,7 +172,10 @@ export default function PdfUpload({ onStarted }: { onStarted: (uploadId: string)
           <select
             id={rightsId}
             value={rights}
-            onChange={(e) => setRights(e.target.value)}
+            onChange={(e) => {
+              setRightsTouched(true);
+              setRights(e.target.value);
+            }}
             className="rounded-lg border px-3 py-1.5 text-[14px]"
             style={fieldStyle}
           >

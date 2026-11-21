@@ -213,7 +213,7 @@ test("the generator is seeded, not random: the same seed gives the same numbers"
 /* ============================================================== checking == */
 
 const NOW = new Date("2026-10-19T10:00:00Z"); // before the plan starts
-const opts = { now: NOW, timezone: IST, windows: DEFAULT_WINDOWS, endInclusive: false, minGapMinutes: 30 };
+const opts = { now: NOW, timezone: IST, windows: DEFAULT_WINDOWS, endInclusive: false };
 const slotsOf = (input: PlanInput = base): SlotTime[] =>
   generatePlan(input).times.map((t) => ({ key: `${t.day}-${t.position}`, ...t }));
 const slot = (key: string, day: number, position: number, date: string, time: string): SlotTime => ({
@@ -232,13 +232,24 @@ test("a time in the past, and one too soon to prepare for, are errors", () => {
   assert.match(found?.message ?? "", /less than 5 minutes/);
 });
 
-test("two posts at the same moment, or too close together, are errors", () => {
-  const same = checkSlots([slot("a", 0, 2, "2026-10-20", "13:10"), slot("b", 1, 2, "2026-10-20", "13:10")], opts);
-  assert.ok(same.some((i) => i.severity === "error" && /Same moment/.test(i.message)));
-  const close = checkSlots([slot("a", 0, 1, "2026-10-20", "05:40"), slot("b", 0, 2, "2026-10-20", "05:55")], opts);
-  assert.ok(close.some((i) => i.key === "b" && i.severity === "error" && /Only 15 minutes/.test(i.message)));
-  const fine = checkSlots([slot("a", 0, 1, "2026-10-20", "05:40"), slot("b", 0, 2, "2026-10-20", "13:00")], opts);
-  assert.ok(!fine.some((i) => i.severity === "error"));
+test("posts 27 minutes apart, 5 minutes apart, at the exact same time, and across midnight have no spacing errors", () => {
+  const gap27 = checkSlots([slot("a", 0, 3, "2026-10-20", "21:42"), slot("b", 1, 3, "2026-10-20", "22:09")], opts);
+  assert.ok(!gap27.some((i) => i.severity === "error"), JSON.stringify(gap27));
+
+  const gap5 = checkSlots([slot("a", 0, 1, "2026-10-20", "05:40"), slot("b", 0, 2, "2026-10-20", "05:45")], opts);
+  assert.ok(!gap5.some((i) => i.severity === "error"), JSON.stringify(gap5));
+
+  const sameDifferentDay = checkSlots([slot("a", 0, 2, "2026-10-20", "13:10"), slot("b", 1, 2, "2026-10-20", "13:10")], opts);
+  assert.ok(!sameDifferentDay.some((i) => i.severity === "error"), JSON.stringify(sameDifferentDay));
+
+  const sameDaySameMoment = checkSlots([slot("a", 0, 1, "2026-10-20", "13:10"), slot("b", 0, 2, "2026-10-20", "13:10")], opts);
+  assert.ok(!sameDaySameMoment.some((i) => i.severity === "error"), JSON.stringify(sameDaySameMoment));
+
+  const midnight = checkSlots([slot("a", 0, 3, "2026-10-20", "23:57"), slot("b", 1, 1, "2026-10-21", "00:02")], opts);
+  assert.ok(!midnight.some((i) => i.severity === "error"), JSON.stringify(midnight));
+
+  const movedAcrossMidnight = checkSlots([slot("a", 0, 3, "2026-10-21", "00:05"), slot("b", 1, 1, "2026-10-21", "05:30")], opts);
+  assert.ok(!movedAcrossMidnight.some((i) => i.severity === "error"), JSON.stringify(movedAcrossMidnight));
 });
 
 test("a day's slots must stay in order", () => {

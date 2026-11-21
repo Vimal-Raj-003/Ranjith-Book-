@@ -852,7 +852,7 @@ test("the render starts the platform copy right after the script is stored, neve
   const stored = src.indexOf("title: stripAngleBrackets(pkg.title)");
   const started = src.indexOf("runPlatformMetadataStep(episodeId");
   const assets = src.indexOf("await startStep(EPISODE_STEPS[3]); // Preparing page assets");
-  const render = src.indexOf("await startStep(EPISODE_STEPS[9]); // Rendering the video");
+  const render = src.indexOf("await startStep(EPISODE_STEPS[10]); // Rendering the video");
   const joined = src.indexOf("PLATFORM_COPY_GRACE_MS", render);
   const done = src.indexOf('data: { status: "DONE", videoPath', render);
 

@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db";
 import { AppError } from "@/lib/errors";
 import { loadPublishRequest } from "@/lib/publish/state";
 import { publishingEnabled } from "@/lib/publish/execution";
-import { generatePlan, DEFAULT_WINDOWS, checkSlots, checkAgainst, checkOrder, type TimeWindow } from "./plan";
+import { generatePlan, DEFAULT_WINDOWS, checkSlots, checkOrder, type TimeWindow } from "./plan";
 import { DEFAULT_TIMEZONE, addDays, todayIn, zonedInstant, localParts } from "./reference-time";
 import { boardView, ownedPlan, planWindows, platformState, platforms, toTime } from "./board-read";
 import { activateSchedule, type ActivateOptions } from "./store";
@@ -96,10 +96,7 @@ export async function editBoardSlot(userId:string,id:string,slotId:string,body:B
     if(at.getTime()<Date.now()+20*60000)refuse("Choose a future time at least 20 minutes away.",409);
     const t={...toTime(anchor,s),scheduledAt:at,localDate:localParts(at,s.timezone).date,localTime:localParts(at,s.timezone).time};
     const mates=rows.filter(r=>r.platform==="youtube"&&r.position!==anchor.position&&r.episodeId&&r.controlState!=="cancelled").map(r=>toTime(r,s));
-    const plans=await prisma.weeklySchedule.findMany({where:{userId,id:{not:id},status:{in:["draft","active","paused"]}}});
-    const foreign=await prisma.scheduleSlot.findMany({where:{scheduleId:{in:plans.map(p=>p.id)},platform:"youtube",episodeId:{not:""},controlState:{not:"cancelled"}}});
-    const issues=checkSlots([t],{now:new Date(),timezone:s.timezone,windows:force?[]:planWindows(s),endInclusive:s.endInclusive,minGapMinutes:30,minAheadMinutes:20});
-    issues.push(...checkAgainst([t],[...mates,...foreign.map(r=>toTime(r,plans.find(p=>p.id===r.scheduleId)!))],30));
+    const issues=checkSlots([t],{now:new Date(),timezone:s.timezone,windows:force?[]:planWindows(s),endInclusive:s.endInclusive,minAheadMinutes:20});
     if(!force)issues.push(...checkOrder(t,mates));
     if(issues.some(i=>i.severity==="error"))refuse(issues.filter(i=>i.severity==="error").map(i=>i.message).join(" "),409);
   }

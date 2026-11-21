@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source("..");
 
 /* Dark is the default. Light is a full repaint of the same token set, so every
    component follows without knowing which theme is active. */

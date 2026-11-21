@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ffmpeg, durationOf, concatWithGaps, masterVoice } from "./ffmpeg";
 import { synthPocket, DEFAULT_POCKET_VOICE } from "./pocket-tts";
+import { synthEdgeNeural, resolveEdgeTtsBin } from "./edge-tts";
 import { getSetting } from "../db";
 import { abortOpts, currentSignal, throwIfCancelled } from "../cancel";
 
@@ -37,9 +38,9 @@ export interface VoiceoverResult {
   provider: VoiceProvider;
 }
 
-const GAP = 0.34; // pause between beats
-const LEAD = 0.09; // silence before speech, so no word onset is clipped
-const TAIL = 0.22; // silence after speech, so nothing is cut short
+const GAP = 0.18; // crisp breath between beats — tight enough to hold Shorts retention
+const LEAD = 0.06; // silence before speech, so no word onset is clipped
+const TAIL = 0.14; // silence after speech, so nothing is cut short
 
 async function synthSystem(text: string, out: string, voice: string) {
   // macOS `say`: free, offline, no key required. There is no Linux equivalent,
@@ -158,10 +159,22 @@ export async function synthesizeVoiceover(
     const ready = path.join(workDir, `beat-${n}.wav`);
     const text = beatTexts[i];
 
-    if (provider === "pocket") await synthPocket(text, spoken, voiceId);
-    else if (provider === "elevenlabs" && elevenKey) await synthElevenLabs(text, spoken, elevenKey, voiceId);
-    else if (provider === "openai" && openaiKey) await synthOpenAI(text, spoken, openaiKey, voiceId);
-    else await synthSystem(text, spoken, voiceId);
+    const useStudioEdge =
+      provider === "pocket" &&
+      process.env.BOOKREEL_AUDIO_TESTS !== "1" &&
+      Boolean(await resolveEdgeTtsBin());
+
+    if (useStudioEdge) {
+      await synthEdgeNeural(text, spoken, voiceId).catch(() => synthPocket(text, spoken, voiceId));
+    } else if (provider === "pocket") {
+      await synthPocket(text, spoken, voiceId);
+    } else if (provider === "elevenlabs" && elevenKey) {
+      await synthElevenLabs(text, spoken, elevenKey, voiceId);
+    } else if (provider === "openai" && openaiKey) {
+      await synthOpenAI(text, spoken, openaiKey, voiceId);
+    } else {
+      await synthSystem(text, spoken, voiceId);
+    }
 
     await conditionBeat(spoken, ready);
     await fs.rm(spoken, { force: true });

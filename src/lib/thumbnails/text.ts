@@ -40,10 +40,14 @@ export function escapeHtml(value: unknown): string {
   return String(value).replace(/[&<>"']/g, (c) => ENTITIES[c]);
 }
 
-/** Collapse whitespace; a newline inside a hook becomes a wrap we did not choose. */
+/** Collapse whitespace and strip ugly trailing library/scan catalog IDs like "(IA CAT31310001)". */
 export function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
-  return String(value).replace(/\s+/g, " ").trim();
+  return String(value)
+    .replace(/\s*\((?:IA|OCLC|ISBN|ISSN|LCCN|ARK|BHL|OL)\b[^)]*\)\s*$/gi, "")
+    .replace(/\s*\[(?:IA|OCLC|ISBN|ISSN|LCCN)\b[^\]]*\]\s*$/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**

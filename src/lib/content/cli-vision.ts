@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { extractJson, CliError, run, cliBin, discardScratch, resolveProvider, runCodexCli, runGemini, type CliProvider } from "./cli";
+import { extractJson, CliError, formatClaudeErrorDetail, run, cliBin, discardScratch, resolveProvider, runCodexCli, runGemini, type CliProvider } from "./cli";
 import { recordCall } from "./cli-metrics";
 
 const TIMEOUT_MS = 6 * 60_000;
@@ -102,7 +102,7 @@ export async function runCliVisionJson<T>(
       if (envelope!.is_error && envelope!.subtype !== "error_max_turns") {
         const detail =
           typeof envelope!.result === "string" && envelope!.result.trim()
-            ? envelope!.result.trim()
+            ? formatClaudeErrorDetail(envelope!.result.trim())
             : `The Claude CLI failed while reading a page (${envelope!.subtype ?? "error"}).`;
         throw new CliError(detail);
       }

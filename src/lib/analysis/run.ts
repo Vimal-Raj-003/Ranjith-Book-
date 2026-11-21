@@ -43,6 +43,7 @@ import {
   type LinedPage,
 } from "../pdf/page-text";
 import { detectSections } from "./sections";
+import { detectPublicDomainFrontMatter } from "./public-domain";
 import { buildWindows, chunkSections } from "./chunks";
 import { CANDIDATE_SCHEMA, CANDIDATE_SYSTEM, groundCandidates, ideasPerWindow, windowPrompt } from "./candidates";
 import { RANK_SCHEMA, RANK_SYSTEM, applyRanking, rankPrompt } from "./rank";
@@ -365,6 +366,19 @@ export async function runBookAnalysis(uploadId: string): Promise<void> {
       ({ pages, manifest } = await extractAndRead(uploadId, upload.sourcePath, report, model, stats));
     }
     stats.pages = pages.length;
+    if (upload.book.rightsStatus === "in-copyright") {
+      const pd = detectPublicDomainFrontMatter(
+        pages.slice(0, 12).map((p) => p.words.join(" ")),
+        bookTitle,
+      );
+      if (pd.isPublicDomain) {
+        await prisma.book.update({
+          where: { id: upload.bookId },
+          data: { rightsStatus: "public-domain" },
+        });
+        if (pd.reason) report.note(`${pd.reason} Book rights status was set to Public domain.`);
+      }
+    }
 
     // 3: structure, chunks, embeddings.
     await report.step("Analyzing the book");

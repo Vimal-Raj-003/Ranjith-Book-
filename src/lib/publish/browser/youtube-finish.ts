@@ -184,8 +184,10 @@ export async function watchUpload(deps: WatchDeps, opts: WatchOptions = WATCH_DE
                   : "Waiting for YouTube to report on the upload",
       );
       lastPhase = state.phase;
-    }
-    if (state.phase === "uploading" && state.percent !== null && state.percent - lastPercentLogged >= 10) {
+      if (state.phase === "uploading" && state.percent !== null) {
+        lastPercentLogged = state.percent;
+      }
+    } else if (state.phase === "uploading" && state.percent !== null && state.percent !== lastPercentLogged) {
       lastPercentLogged = state.percent;
       deps.log(`Uploading the video (${state.percent}%)`);
     }

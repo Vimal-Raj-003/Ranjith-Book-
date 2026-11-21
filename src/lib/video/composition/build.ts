@@ -3,6 +3,8 @@ import { embed, esc } from "./escape";
 import { renderScene, sceneCss, environmentCss, isLightPalette, cineRuntimeSource, CINE_BUFFER, SCENE_FADE, type SceneAnim } from "../scenes/render";
 import { resolveEnvironment } from "../scenes/environment";
 import { ENVIRONMENTS, PAGE_KINDS, type Environment, type Scene, type SceneTone } from "../scenes/types";
+import { emphasizeWords } from "../scenes/emphasis";
+import { normalizeToken } from "../../ingest/align";
 import type { SweepStep, CameraKey } from "../sweep";
 import type { CaptionLine } from "../../media/captions";
 import type { ContentPackage } from "../../content/schema";
@@ -115,8 +117,8 @@ export function captionFontSize(text: string): number {
  */
 export const BYLINE_Y = BANDS.title.top;
 
-/** Fade duration for captions — short enough to read as a cut, not a dissolve. */
-const CAPTION_FADE = 0.15;
+/** Fade duration for captions — crisp 2-frame cut so lines never sit half-faded. */
+const CAPTION_FADE = 0.08;
 /** The hook card's dissolve into the page, and the CTA end card's fade in. */
 export const HOOK_FADE = 0.35;
 /**
@@ -279,6 +281,18 @@ export interface CompositionInput {
    * which is exactly the stretch the voice track never covers.
    */
   music?: boolean;
+  /**
+   * Whether a procedural SFX track (`assets/sfx.wav`, from `generateSfxTrack`)
+   * was produced for this render. Like `music`, optional and gated so unit
+   * tests and dry renders never reference an unwritten asset.
+   */
+  sfx?: boolean;
+  /**
+   * When true, renders boxless high-impact Shorts subtitles (2–3 word phrases,
+   * heavy black stroke + drop shadow, and word-by-word pop-bounce active highlight)
+   * instead of static boxed theme plates.
+   */
+  viralCaptions?: boolean;
 
   /* --- Byline and purchase card (spec 2026-08-23 §9 / §11) ----------------
    *
@@ -482,7 +496,10 @@ export function bylineText(
   bookTitle: string | null | undefined,
   author: string | null | undefined,
 ): string | null {
-  const title = typeof bookTitle === "string" ? bookTitle.trim() : "";
+  const title = (typeof bookTitle === "string" ? bookTitle : "")
+    .replace(/\s*\((?:IA|OCLC|ISBN|ISSN|LCCN|ARK|BHL|OL)\b[^)]*\)\s*$/gi, "")
+    .replace(/\s*\[(?:IA|OCLC|ISBN|ISSN|LCCN)\b[^\]]*\]\s*$/gi, "")
+    .trim();
   if (title.length === 0) return null;
 
   const name = typeof author === "string" ? author.trim() : "";
@@ -542,9 +559,28 @@ function purchaseLink(bookLink: string | null | undefined): string | null {
  * The same rule is why `hookMarkup` and `ctaMarkup` below bake their text in
  * too, rather than the runtime script writing `pkg.hook` into an empty div.
  */
-function captionMarkup(captions: CaptionLine[]): string {
+function captionMarkup(captions: CaptionLine[], hookKeywords?: string[]): string {
+  const keySet = new Set(
+    (hookKeywords ?? [])
+      .filter((k): k is string => typeof k === "string")
+      .flatMap((k) => k.split(/\s+/))
+      .map((k) => normalizeToken(k))
+      .filter((k) => k.length >= 3),
+  );
   return captions
-    .map((c, i) => `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${esc(c.text)}</div>`)
+    .map((c, i) => {
+      if (!c.words || c.words.length === 0) {
+        return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${esc(c.text)}</div>`;
+      }
+      const emph = emphasizeWords(c.words.map((w) => w.word));
+      const inner = c.words
+        .map((w, wi) => {
+          const isKey = keySet.has(normalizeToken(w.word)) || Boolean(emph[wi]);
+          return `<span class="cap-w${isKey ? " cap-w-key" : ""}" data-cw="${i}-${wi}">${esc(w.word)}</span>`;
+        })
+        .join(" ");
+      return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${inner}</div>`;
+    })
     .join("\n");
 }
 
@@ -717,8 +753,8 @@ function sharedCss(theme: BookTheme): string {
   .card-stage .card { pointer-events:auto; }
   .cine-vignette { position:absolute; inset:0; pointer-events:none;
                    background: ${isLightPalette(p.backdropDeep)
-                     ? "radial-gradient(ellipse 100% 72% at 50% 44%, transparent 56%, rgba(96,74,44,0.2) 100%)"
-                     : "radial-gradient(ellipse 96% 70% at 50% 44%, transparent 50%, rgba(0,0,0,0.52) 100%)"}; }
+                     ? "radial-gradient(ellipse 100% 74% at 50% 44%, transparent 60%, rgba(96,74,44,0.16) 100%)"
+                     : "radial-gradient(ellipse 102% 76% at 50% 45%, transparent 58%, rgba(0,0,0,0.36) 100%)"}; }
   .cine-bokeh { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
   .bokeh-dot { position:absolute; border-radius:50%; filter:blur(8px); }
 
@@ -746,7 +782,8 @@ function sharedCss(theme: BookTheme): string {
   .scaler { position:absolute; left:0; top:0; transform-origin: top left; }
   .column { position:relative; }
   .page { position:absolute; left:0; }
-  .page img { display:block; width:100%; height:100%; object-fit:cover; }
+  .page img { display:block; width:100%; height:100%; object-fit:cover;
+              filter:contrast(1.06) brightness(0.97) saturate(1.06); }
   .stroke { position:absolute; transform-origin:left center; border-radius:3px;
             filter:blur(0.6px); mix-blend-mode:multiply; }
   /* The surround of the cited lines. Lives in #column so it scrolls and scales
@@ -764,6 +801,7 @@ function sharedCss(theme: BookTheme): string {
                 mix-blend-mode:screen; transform:rotate(-8deg) scale(1.25); }
   .card-sweep-band { position:absolute; left:0; top:0; width:42%; height:100%;
                      transform:translateX(${SWEEP_FROM}%);
+                     opacity:0.42;
                      background: linear-gradient(90deg,
                        rgba(255,255,255,0) 0%, ${p.sweepLight} 50%, rgba(255,255,255,0) 100%);
                      filter: blur(24px); }
@@ -789,6 +827,23 @@ function sharedCss(theme: BookTheme): string {
                   overflow:hidden;
                   opacity:0; visibility:hidden; font-family: Inter, system-ui, sans-serif;
                   background:${p.captionBg}; color:${p.captionInk}; }
+  .cap-w { opacity:0.42; }
+  .cap-w-key { color:${p.hookKey}; }
+  .captions-viral .caption-line {
+    background:transparent !important; border:none !important; box-shadow:none !important; border-radius:0 !important;
+    font-family:"Arial Black", "Segoe UI Black", Impact, Inter, system-ui, sans-serif !important;
+    font-size:70px !important; font-weight:900 !important; text-transform:uppercase !important;
+    letter-spacing:-0.5px !important; line-height:1.15 !important; padding:22px 24px !important;
+    display:block !important; -webkit-line-clamp:unset !important; overflow:visible !important;
+    color:#ffffff !important;
+    -webkit-text-stroke:12px rgba(0,0,0,0.95); paint-order:stroke fill;
+    filter:drop-shadow(0 10px 22px rgba(0,0,0,0.92)) drop-shadow(0 3px 6px rgba(0,0,0,0.96));
+  }
+  .captions-viral .cap-w {
+    display:inline-block; margin:0 0.1em; opacity:0.62; color:#ffffff;
+    transform-origin:50% 68%;
+  }
+  .captions-viral .cap-w-key { color:#ffd60a; }
 
   /* --- hook card (§2.2) --------------------------------------------------- */
   /* Rest state is VISIBLE: the hook owns t=0, so a render that never ran the
@@ -937,10 +992,62 @@ const TIMELINE_JS = `
   var capEls = document.querySelectorAll(".caption-line");
   data.captions.forEach(function (line, i) {
     var el = capEls[i];
-    if (!el) return;
+    if (!el || line.suppress) return;
     // Text is already in the DOM (see captionMarkup's doc comment) — not
     // assigned here.
     tl.fromTo(el, { autoAlpha: 0 }, { autoAlpha: 1, duration: CAPTION_FADE, ease: "none", immediateRender: false }, line.start);
+    if (line.words && line.words.length > 0) {
+      var wordSpans = el.querySelectorAll(".cap-w");
+      if (data.viralCaptions) {
+        var spanEnd = line.hold ? data.duration : line.end;
+        var spanDur = Math.max(0.05, spanEnd - line.start);
+        var keyFlags = Array.prototype.map.call(wordSpans, function (node) {
+          return node.classList.contains("cap-w-key");
+        });
+        tl.fromTo(
+          {},
+          {},
+          {
+            duration: spanDur,
+            ease: "none",
+            immediateRender: false,
+            onUpdate: function () {
+              var now = tl.time();
+              for (var wi = 0; wi < line.words.length; wi++) {
+                var wNode = wordSpans[wi];
+                if (!wNode) continue;
+                var wt = line.words[wi];
+                var isLastW = wi === line.words.length - 1;
+                var activeEnd = isLastW ? Math.max(wt.end, wt.start + 0.22) : line.words[wi + 1].start;
+                if (now < wt.start) {
+                  wNode.style.opacity = "0.58";
+                  wNode.style.transform = "scale(0.94) translateY(0px)";
+                  wNode.style.color = "#ffffff";
+                } else if (now < activeEnd) {
+                  var u = Math.max(0, Math.min(1, (now - wt.start) / Math.max(0.08, activeEnd - wt.start)));
+                  var liftScale = 1 + 0.19 * Math.sin(Math.min(1, u * 2.4) * 1.5708) * (1 - 0.22 * u);
+                  wNode.style.opacity = "1";
+                  wNode.style.transform = "scale(" + liftScale.toFixed(3) + ") translateY(-4px)";
+                  wNode.style.color = keyFlags[wi] ? "#ff5e36" : "#ffd60a";
+                } else {
+                  wNode.style.opacity = "1";
+                  wNode.style.transform = "scale(1) translateY(0px)";
+                  wNode.style.color = keyFlags[wi] ? "#ffd60a" : "#ffffff";
+                }
+              }
+            },
+          },
+          line.start,
+        );
+      } else {
+        line.words.forEach(function (wt, wi) {
+          var wEl = wordSpans[wi];
+          if (!wEl) return;
+          gsap.set(wEl, { opacity: 0.42 });
+          tl.fromTo(wEl, { opacity: 0.42 }, { opacity: 1, duration: 0.12, ease: "power2.out", immediateRender: false }, wt.start);
+        });
+      }
+    }
     // A "held" line (the last beat's, i.e. the CTA's) never fades out — there is
     // nothing after it to cut to, so it stays on screen through the outro tail
     // instead of going dark at its own beat's end.
@@ -1011,13 +1118,18 @@ const TIMELINE_JS = `
     try {
       var probe = document.createElement("canvas");
       var gl = probe.getContext("webgl2") || probe.getContext("webgl") || probe.getContext("experimental-webgl");
-      // Software WebGL (SwiftShader and similar, common in headless/cloud
-      // rendering with no real GPU attached — see the module doc) still
-      // returns a working context here and is treated exactly like hardware
-      // WebGL: slower, never absent. There is nothing in this feature's tiny
-      // geometry and single draw call per frame that a software rasteriser
-      // cannot keep up with.
-      return !!gl;
+      if (!gl) return false;
+      // Release the probe context immediately! Blink caps active WebGL contexts
+      // per browser process at 16; leaking one probe context per parallel capture
+      // worker pushes 8 workers past 16 and evicts Worker 0's WebGLRenderer,
+      // causing every 8th frame in the rendered MP4 to blink blank!
+      try {
+        var lose = gl.getExtension("WEBGL_lose_context");
+        if (lose) lose.loseContext();
+      } catch (ignoreErr) {
+        /* ignore */
+      }
+      return true;
     } catch (e) {
       return false;
     }
@@ -1220,8 +1332,66 @@ const TIMELINE_JS = `
     });
     return cineEngine;
   }
+  function tryPromotePlate(inst) {
+    if (inst.plateKey || inst.plateFailed || !inst.plateSpec || !inst.imgEl || !inst.eng.ensurePlate) return;
+    if (!inst.imgEl.complete) return;
+    if (inst.imgEl.naturalWidth <= 0) {
+      inst.plateFailed = true;
+      return;
+    }
+    if (inst.depthEl && !inst.depthEl.complete) return;
+    var builtPlate = inst.eng.ensurePlate("plate_" + inst.sceneIdx, inst.imgEl, inst.depthEl, inst.plateSpec);
+    if (builtPlate) {
+      inst.plateKey = "plate_" + inst.sceneIdx;
+      if (inst.scrimEl) inst.scrimEl.style.display = "";
+      var docPlate = inst.plateSpec && inst.plateSpec.treatment === "documentary";
+      if (inst.bloomEl && !data.cineLight) inst.bloomEl.style.opacity = docPlate ? "0.10" : "0.22";
+    } else {
+      inst.plateFailed = true;
+    }
+  }
   function cineRenderAt(inst, t, p) {
-    inst.eng.draw(inst.hero, t, p, inst.hook);
+    if (inst.videoOnly) return;
+    inst.lastT = t;
+    inst.lastP = p;
+    var gl = inst.eng && inst.eng.renderer && inst.eng.renderer.getContext ? inst.eng.renderer.getContext() : null;
+    var contextLost = !!(gl && gl.isContextLost && gl.isContextLost());
+    if (contextLost) {
+      // HyperFrames' pre-render inspection on Worker 0 can lose its initial WebGL
+      // context before capture starts. Recreating the shared WebGL engine once
+      // restores full 3D/plate parity with Workers 1..N so frames never blink!
+      cineEngine = null;
+      var recovered = getCineEngine();
+      if (recovered) {
+        var rgl = recovered.renderer && recovered.renderer.getContext ? recovered.renderer.getContext() : null;
+        if (rgl && (!rgl.isContextLost || !rgl.isContextLost())) {
+          inst.eng = recovered;
+          inst.plateKey = null;
+          inst.plateFailed = false;
+          recovered.ensure(inst.hero);
+          contextLost = false;
+        }
+      }
+    }
+    if (contextLost && inst.imgEl && inst.imgEl.complete && inst.imgEl.naturalWidth > 0) {
+      var zoom2d = 1.03 + 0.08 * Math.max(0, Math.min(1, p));
+      var dw = inst.w * zoom2d;
+      var dh = inst.h * zoom2d;
+      inst.ctx.clearRect(0, 0, inst.w, inst.h);
+      inst.ctx.drawImage(inst.imgEl, (inst.w - dw) * 0.5, (inst.h - dh) * 0.5, dw, dh);
+      try { inst.ctx.getImageData(0, 0, 1, 1); } catch (flushErr) { /* best-effort flush only */ }
+      return;
+    }
+    if (inst.eng !== cineEngine && cineEngine) {
+      // Another scene instance in this same worker already recovered cineEngine!
+      inst.eng = cineEngine;
+      inst.plateKey = null;
+      inst.plateFailed = false;
+      cineEngine.ensure(inst.hero);
+    }
+    tryPromotePlate(inst);
+    var drewPlate = inst.plateKey && inst.eng.drawPlate ? inst.eng.drawPlate(inst.plateKey, t, p) : false;
+    if (!drewPlate) inst.eng.draw(inst.hero, t, p, inst.hook);
     inst.ctx.clearRect(0, 0, inst.w, inst.h);
     inst.ctx.drawImage(inst.eng.canvas, 0, 0, inst.w, inst.h);
     if (inst.bctx) {
@@ -1234,18 +1404,67 @@ const TIMELINE_JS = `
   // Anything that throws before that leaves the fallback showing and the canvas
   // hidden: a plain glow under the type, never a blank.
   function setupCineInstance(canvasEl, a) {
+    var parent = canvasEl.parentNode;
+    var videoEl = a.plate && a.plate.videoSrc && parent ? parent.querySelector("[data-plate-video]") : null;
+    if (videoEl) {
+      var vfb = parent.querySelector(".cine-fallback");
+      if (vfb) vfb.style.display = "none";
+      return { videoOnly: true };
+    }
     var ctx = canvasEl.getContext("2d");
     if (!ctx) return null;
     var eng = getCineEngine();
     if (!eng) return null;
-    var bloomEl = a.bloom !== undefined && a.bloom !== null ? canvasEl.parentNode.querySelector('[data-el="' + a.bloom + '"]') : null;
-    var inst = { ctx: ctx, eng: eng, hero: a.hero, hook: !!a.hook, w: canvasEl.width, h: canvasEl.height, bctx: bloomEl ? bloomEl.getContext("2d") : null, bw: bloomEl ? bloomEl.width : 0, bh: bloomEl ? bloomEl.height : 0 };
+    var bloomEl = a.bloom !== undefined && a.bloom !== null && parent ? parent.querySelector('[data-el="' + a.bloom + '"]') : null;
+    var imgEl = a.plate && parent ? parent.querySelector("[data-plate-img]") : null;
+    var depthEl = a.plate && parent ? parent.querySelector("[data-plate-depth]") : null;
+    var scrim = parent ? parent.querySelector(".cine-plate-scrim") : null;
+    // Always prepare the procedural hero too so any frame rendered before async image load (or on 404) is valid.
     eng.ensure(a.hero);
+    if (scrim) scrim.style.display = "none";
+    var inst = {
+      ctx: ctx,
+      eng: eng,
+      sceneIdx: a.s,
+      hero: a.hero,
+      plateSpec: a.plate || null,
+      imgEl: imgEl,
+      depthEl: depthEl,
+      scrimEl: scrim,
+      bloomEl: bloomEl,
+      plateKey: null,
+      plateFailed: false,
+      lastT: 0,
+      lastP: 0,
+      hook: !!a.hook,
+      w: canvasEl.width,
+      h: canvasEl.height,
+      bctx: bloomEl ? bloomEl.getContext("2d") : null,
+      bw: bloomEl ? bloomEl.width : 0,
+      bh: bloomEl ? bloomEl.height : 0,
+    };
+    tryPromotePlate(inst);
+    if (!inst.plateKey && inst.plateSpec && imgEl) {
+      var onAssetReady = function () {
+        tryPromotePlate(inst);
+        if (inst.plateKey) cineRenderAt(inst, inst.lastT, inst.lastP);
+      };
+      imgEl.addEventListener("load", onAssetReady, { once: true });
+      imgEl.addEventListener("error", onAssetReady, { once: true });
+      if (depthEl) {
+        depthEl.addEventListener("load", onAssetReady, { once: true });
+        depthEl.addEventListener("error", onAssetReady, { once: true });
+      }
+    }
     cineRenderAt(inst, 0, 0);
     canvasEl.style.opacity = "1";
     canvasEl.style.visibility = "visible";
-    if (bloomEl && !data.cineLight) { bloomEl.style.opacity = "0.7"; bloomEl.style.visibility = "visible"; }
-    var fb = canvasEl.parentNode.querySelector(".cine-fallback");
+    if (bloomEl && !data.cineLight) {
+      var isDocInit = inst.plateSpec && inst.plateSpec.treatment === "documentary";
+      bloomEl.style.opacity = inst.plateKey ? (isDocInit ? "0.10" : "0.22") : "0.7";
+      bloomEl.style.visibility = "visible";
+    }
+    var fb = parent ? parent.querySelector(".cine-fallback") : null;
     if (fb) fb.style.display = "none";
     return inst;
   }
@@ -1269,6 +1488,12 @@ const TIMELINE_JS = `
       tl.to(el, { autoAlpha: 0, duration: d, ease: "power1.in" }, a.t);
     } else if (a.k === "rise") {
       tl.fromTo(el, { autoAlpha: 0, y: a.v || 20 }, { autoAlpha: 1, y: 0, duration: d, ease: "power2.out", immediateRender: false }, a.t);
+    } else if (a.k === "reveal") {
+      tl.fromTo(el, { autoAlpha: 0, y: a.v || 22 }, { autoAlpha: 1, y: 0, duration: d, ease: "power3.out", immediateRender: false }, a.t);
+    } else if (a.k === "slide-x") {
+      tl.fromTo(el, { autoAlpha: 0, x: a.v || -28 }, { autoAlpha: 1, x: 0, duration: d, ease: "power3.out", immediateRender: false }, a.t);
+    } else if (a.k === "scale-soft") {
+      tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.94, y: 12 }, { autoAlpha: 1, scale: 1, y: 0, duration: d, ease: "power3.out", immediateRender: false }, a.t);
     } else if (a.k === "pop") {
       tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.7 }, { autoAlpha: 1, scale: 1, duration: d, ease: "back.out(1.6)", immediateRender: false }, a.t);
     } else if (a.k === "wipe") {
@@ -1276,7 +1501,7 @@ const TIMELINE_JS = `
     } else if (a.k === "grow") {
       tl.fromTo(el, { autoAlpha: 1, scaleY: 0 }, { autoAlpha: 1, scaleY: 1, duration: d, ease: "power2.out", immediateRender: false }, a.t);
     } else if (a.k === "draw") {
-      tl.fromTo(el, { autoAlpha: 1, strokeDashoffset: a.v || 0 }, { autoAlpha: 1, strokeDashoffset: 0, duration: d, ease: "power1.inOut", immediateRender: false }, a.t);
+      tl.fromTo(el, { autoAlpha: 1, strokeDashoffset: a.v || 0 }, { autoAlpha: 1, strokeDashoffset: 0, duration: d, ease: "power2.inOut", immediateRender: false }, a.t);
     } else if (a.k === "count") {
       // Digit-by-digit reveal of a stat's own number (render.ts's \`counted\`).
       // GSAP has nothing built in it can animate text content with, so this
@@ -1381,7 +1606,7 @@ const TIMELINE_JS = `
     } else if (a.k === "focus") {
       // A rack-focus reveal: out of focus, a little low, then sharp. One tween on
       // one element; its from-state is the CSS rest state (hidden).
-      tl.fromTo(el, { autoAlpha: 0, y: a.v || 24, filter: "blur(16px)" }, { autoAlpha: 1, y: 0, filter: "blur(0px)", duration: d, ease: "power2.out", immediateRender: false }, a.t);
+      tl.fromTo(el, { autoAlpha: 0, y: a.v || 20, filter: "blur(9px)" }, { autoAlpha: 1, y: 0, filter: "blur(0px)", duration: d, ease: "power3.out", immediateRender: false }, a.t);
     } else if (a.k === "cine") {
       // A cinematic hero (cine-runtime.js). Driven by onUpdate from tl.time()
       // directly, for the same reason "lottie" and "three" are: only the outer
@@ -1464,10 +1689,13 @@ const TIMELINE_JS = `
   // state is SET rather than tweened, so a composition whose first scene is
   // not a book scene does not flash the page on frame zero.
   var cardEl = document.getElementById("card");
+  var cardOvEl = document.getElementById("card-overlay");
   if (cardEl && data.cardVis) {
     gsap.set(cardEl, { autoAlpha: data.cardVis.start });
+    if (cardOvEl) gsap.set(cardOvEl, { autoAlpha: data.cardVis.start });
     data.cardVis.at.forEach(function (c) {
       tl.to(cardEl, { autoAlpha: c.v, duration: Math.max(0.001, c.d), ease: "power1.inOut" }, c.t);
+      if (cardOvEl) tl.to(cardOvEl, { autoAlpha: c.v, duration: Math.max(0.001, c.d), ease: "power1.inOut" }, c.t);
     });
   }
 
@@ -1500,9 +1728,9 @@ const TIMELINE_JS = `
   // because scenes are sequential.
   var zoomEl = document.getElementById("card-zoom");
   if (zoomEl && (data.zooms || []).length) {
-    gsap.set(zoomEl, { scale: 1 });
+    gsap.set(zoomEl, { scale: 1, x: 0, y: 0 });
     data.zooms.forEach(function (z) {
-      tl.to(zoomEl, { scale: z.v, duration: Math.max(0.001, z.d), ease: "power2.inOut" }, z.t);
+      tl.to(zoomEl, { scale: z.v, x: z.x || 0, y: z.y || 0, duration: Math.max(0.001, z.d), ease: "power2.inOut" }, z.t);
     });
   }
 
@@ -1728,7 +1956,7 @@ export function bokehField(count = 11): Bokeh[] {
 }
 
 export function buildComposition(input: CompositionInput): string {
-  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music } = input;
+  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music, sfx, viralCaptions } = input;
   const { bookTitle, author, bookLink } = input;
 
   // Includes AUDIO_OFFSET: the audio element itself starts at AUDIO_OFFSET, not
@@ -1763,13 +1991,31 @@ export function buildComposition(input: CompositionInput): string {
   // the whole array — not every line naming the last beat — is held.
   const lastBeatIndex = pkg.beats.length - 1;
   const lastCaptionIndex = captions.length - 1;
+  const firstCineHookScene = (input.scenes ?? [])[0]?.cine?.hook === true ? (input.scenes ?? [])[0] : null;
+  const hookSceneEnd = firstCineHookScene ? AUDIO_OFFSET + firstCineHookScene.end : 0;
+  const hasPostHookCaptions =
+    firstCineHookScene !== null &&
+    captions.some((later) => AUDIO_OFFSET + later.start >= hookSceneEnd - 0.05);
 
-  const captionData = captions.map((c, i) => ({
-    text: c.text,
-    start: AUDIO_OFFSET + c.start,
-    end: AUDIO_OFFSET + c.end,
-    hold: i === lastCaptionIndex && c.beatIndex === lastBeatIndex,
-  }));
+  const captionData = captions.map((c, i) => {
+    const start = AUDIO_OFFSET + c.start;
+    const end = AUDIO_OFFSET + c.end;
+    const suppress =
+      hasPostHookCaptions &&
+      c.beatIndex === 0 &&
+      end <= hookSceneEnd + 0.35 &&
+      !(i === lastCaptionIndex && c.beatIndex === lastBeatIndex);
+    return {
+      text: c.text,
+      start,
+      end,
+      hold: i === lastCaptionIndex && c.beatIndex === lastBeatIndex,
+      ...(suppress ? { suppress: true } : {}),
+      ...(c.words && c.words.length > 0
+        ? { words: c.words.map((w) => ({ start: AUDIO_OFFSET + w.start, end: AUDIO_OFFSET + w.end })) }
+        : {}),
+    };
+  });
 
   // --- Hook window (spec §2.2) ---------------------------------------------
   // The hook card owns the opening, then hands over to the page.
@@ -1865,7 +2111,16 @@ export function buildComposition(input: CompositionInput): string {
   const cardCine = scenes.length ? cardCineMoves(scenes, AUDIO_OFFSET) : [];
   const bokeh = scenes.length ? bokehField() : [];
   const cardVis = scenes.length ? cardVisibility(scenes, AUDIO_OFFSET) : null;
-  const zooms = scenes.length ? cardZooms(scenes, AUDIO_OFFSET, cardViewportHeight(columnWidth)) : [];
+  const zooms = scenes.length
+    ? cardZooms(scenes, AUDIO_OFFSET, cardViewportHeight(columnWidth), {
+        columnWidth,
+        columnHeight,
+        strokes,
+        camera: cameraData,
+        guardStrokeWidth: Boolean(viralCaptions),
+        enablePan: Boolean(viralCaptions),
+      })
+    : [];
   const dim = scenes.length ? dimKeys(scenes, AUDIO_OFFSET) : [];
   const glow = scenes.length ? glowKeys(scenes, AUDIO_OFFSET) : [];
   const env = environmentKeys(scenes, AUDIO_OFFSET);
@@ -1874,6 +2129,7 @@ export function buildComposition(input: CompositionInput): string {
     strokes,
     camera: cameraData,
     captions: captionData,
+    ...(viralCaptions ? { viralCaptions: true } : {}),
     pops,
     lightSweeps,
     hook: hookData,
@@ -1948,6 +2204,9 @@ export function buildComposition(input: CompositionInput): string {
   const musicHtml = music
     ? `<audio id="music" src="assets/music.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="10" data-volume="1"></audio>`
     : "";
+  const sfxHtml = sfx
+    ? `<audio id="sfx" src="assets/sfx.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="15" data-volume="1"></audio>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -2016,15 +2275,16 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
     </div></div>
     ${sceneHtml}
     ${scenes.length ? `<div class="cine-vignette"></div>` : ""}
-    ${theme.overlay()}
+    ${scenes.length ? `<div id="card-overlay" style="position:absolute;inset:0;pointer-events:none">${theme.overlay()}</div>` : theme.overlay()}
     ${bylineHtml}
-    <div class="captions" id="captions">
-      ${captionMarkup(captions)}
+    <div class="captions${viralCaptions ? " captions-viral" : ""}" id="captions">
+      ${captionMarkup(captions, pkg.hookKeywords)}
     </div>
     ${hookHtml}
     ${ctaHtml}
     ${buyHtml}
     <audio id="voice" src="assets/voice.wav" data-start="${AUDIO_OFFSET.toFixed(3)}" data-duration="${totalDuration.toFixed(3)}" data-track-index="20" data-volume="1"></audio>
+    ${sfxHtml}
     ${musicHtml}
   </div>
 </div>

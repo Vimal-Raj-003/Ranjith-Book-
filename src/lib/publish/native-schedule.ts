@@ -431,7 +431,8 @@ export function judgeScheduledView(view: ScheduledView | null, want: { title: st
 function titleMatches(shown: string | null, wanted: string): boolean {
   // A title that could not be read is not a mismatch; one that was read and differs is.
   if (!shown || !squash(shown)) return true;
-  return squash(shown).toLowerCase().includes(squash(wanted).slice(0, 40).toLowerCase());
+  const norm = (s: string) => squash(s).normalize("NFKC").replace(/[\u200B-\u200D\uFE0E\uFE0F]/g, "").toLowerCase();
+  return norm(shown).includes(norm(wanted).slice(0, 40));
 }
 
 /* ------------------------------------------------------------- the API ---- */

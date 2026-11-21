@@ -110,14 +110,16 @@ For every beat:
   sourcePage and word range name.
 
 - THE LAST BEAT IS THE CALL TO ACTION, and it is the one exception to every
-  rule above. It asks the viewer to do something rather than discussing the
-  page, so there are no words it is "about" and no range can honestly describe
-  it. Point its sourcePage at the page the beat before it covered, and start
-  its range AT that beat's endWord (for example, if the beat before it ended
-  at word 175, use startWord 175 and an endWord of 175 or later) — never at
-  an earlier word, even to repeat the same passage. Do not hunt for a better
-  match: there is none. That range is somewhere for the marker to rest while
-  the ask is spoken, not a claim about what you are saying.
+  rule above ONLY when it is a pure viewer request (such as "Follow BookReel
+  for more ideas from books.") with ZERO factual or takeaway claims about the
+  book. Put any takeaway summarizing the book's argument in the beat BEFORE
+  the last beat, and give that takeaway beat the full sentence range
+  (startWord..endWord) on sourcePage that supports it — never a 1- or 2-word
+  stub. For the pure request-only last beat, point its sourcePage at the page
+  the beat before it covered, and start its range AT that beat's endWord (for
+  example, if the beat before it ended at word 175, use startWord 175 and
+  endWord 175) — never at an earlier word, and never bundle book claims into
+  the call-to-action beat.
 
 A wrong index is worse than no highlight: the marker will sweep words that
 have nothing to do with what is being said, and that mismatch is the first
@@ -198,9 +200,11 @@ ${TRANSFORMATIVE_RULE}
 
 ${INDEX_RULE}
 
-Voice: direct, specific, unhurried. One idea, argued properly. No
-throat-clearing, no "in this video", no "let's dive in". Open on the
-sharpest thing you have.
+Voice: sharp, human, punchy, magnetic. One idea, argued with real tension and stakes. No
+throat-clearing, no "in this video", no "let's dive in", no textbook essay tone ("Making
+healthy habits is important..."). Open on the sharpest contradiction, painful mistake, or
+counter-intuitive truth on the page — spoken directly to "you" in under 14 words so a
+viewer scrolling past stops on word three.
 
 SPOKEN, NOT WRITTEN. Every beat's voiceover is read aloud by a neural speech
 engine, one beat at a time, with nothing else on the page:
@@ -209,12 +213,13 @@ engine, one beat at a time, with nothing else on the page:
   "(laughs)", no "(beat)", no "(sighs)". If a pause matters, end the
   sentence instead.
 - No emoji, no URLs, no hashtags inside voiceover.
-- Write the way a real person talks: contractions, short sentences, commas
-  and full stops placed where a breath goes.
+- Write the way a captivating storyteller talks to one person across a table:
+  contractions, crisp 6–14 word sentences, active verbs, concrete contrasts
+  ("not X, but Y"), and commas/full stops placed where a breath goes.
 
 ${
   opts.hasAuthor
-    ? `You may name the author where it helps.`
+    ? `You may name the author once where it sharpens the point; otherwise speak the idea directly to the viewer ("you").`
     : `The author of this book has NOT been established. Do not name an author,
 do not guess at one, do not write "the author of" as a stand-in for a name, and
 do not write any sentence whose sense depends on knowing who wrote this.
@@ -227,11 +232,13 @@ Forbidden phrasings include, but are not limited to: "the writer",
 other construction that attributes belief, argument, or intent to an
 unnamed authorial figure.
 
-Refer only to "the page", "the passage", or "the book" — never to a person,
-named or implied. "The page argues" and "the book makes the case that" are
-fine; "the writer argues" is not, for the same reason a name is not. Those
-three nouns are not a starting suggestion — they are the ONLY sanctioned
-subjects for this kind of sentence.
+State the passage's facts and contrasts DIRECTLY to "you" in natural spoken
+English ("Grabbing a sweet treat right after a workout undoes the habit") rather
+than chanting robotic meta-phrases like "The page suggests" or "The passage
+states" on every beat. When you do refer to the source text — at most once or
+twice in the whole script — refer ONLY to "the page", "the passage", or "the
+book", never to a person, named or implied. Those three nouns are the ONLY
+sanctioned subjects when referring to the source.
 
 This is not a formatting preference — a name, or a stand-in for one, would be
 a fabrication. Decide this BEFORE you write a single beat: never compose a
@@ -258,12 +265,16 @@ Rules that are not negotiable:
   be bought is added afterwards, in code, from a link the operator typed
   themselves. A link you compose is a link you invented, and a wrong one
   published under someone else's name is worse than no link at all.
-- The call to action is the last beat, and it asks for one thing.
+- The call to action is the last beat, and it asks for one crisp viewer action
+  in 4 to 9 words (e.g. "Save this before your next excuse." or "Follow for the
+  next page.") with zero book facts bundled in, so the outro feels sharp and
+  replayable rather than padded.
 - ideaKey is the single angle this episode takes, in kebab-case.
 - hook is the first thing on screen and the line the thumbnail is built from.
-  It has about two seconds to stop someone scrolling, so make it a statement or
-  a question that lands on its own, with no set-up — not a summary of what the
-  video will cover, and not a title.
+  It has under two seconds to stop someone scrolling, so make it a sharp
+  second-person ("You...") contradiction, painful everyday mistake, or bold
+  question in 6 to 12 words that lands immediately with zero set-up — never a
+  textbook summary and never a title.
 - hookKeywords are the two or three words in hook that carry its meaning. They
   are painted in a bright accent colour while the rest of the hook stays white,
   in the opening card and on every thumbnail — so they must appear in hook

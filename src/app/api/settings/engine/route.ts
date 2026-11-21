@@ -15,7 +15,22 @@ import {
   type CliStatus,
 } from "@/lib/content/cli";
 
-async function buildEngineSnapshot() {
+const ENGINE_PROBE_TTL_MS = 60_000;
+let cachedProbeStatus: { at: number; status: Record<CliProvider, CliStatus> } | null = null;
+
+async function getCachedProbeStatuses(forceRefresh = false): Promise<Record<CliProvider, CliStatus>> {
+  if (!forceRefresh && cachedProbeStatus && Date.now() - cachedProbeStatus.at < ENGINE_PROBE_TTL_MS) {
+    return cachedProbeStatus.status;
+  }
+  const entries = await Promise.all(
+    CLI_PROVIDERS.map(async (p): Promise<[CliProvider, CliStatus]> => [p, await probeCli(p)]),
+  );
+  const status = Object.fromEntries(entries) as Record<CliProvider, CliStatus>;
+  cachedProbeStatus = { at: Date.now(), status };
+  return status;
+}
+
+async function buildEngineSnapshot(forceRefresh = false) {
   const [row, chosenRow, geminiModel] = await Promise.all([
     prisma.setting.findUnique({ where: { key: "cliProvider" } }),
     prisma.setting.findUnique({ where: { key: "engineChosen" } }),
@@ -26,12 +41,11 @@ async function buildEngineSnapshot() {
   const provider: CliProvider = parsed ?? resolveProvider(process.env.BOOKREEL_CLI_PROVIDER);
   const defaultProvider: CliProvider = resolveProvider(process.env.BOOKREEL_CLI_PROVIDER);
 
-  const entries = await Promise.all(
-    CLI_PROVIDERS.map(async (p): Promise<[CliProvider, CliStatus]> => [p, await probeCli(p)]),
-  );
-  const status = Object.fromEntries(entries) as Record<CliProvider, CliStatus>;
-  const hasGeminiKey = Boolean(await resolveGeminiApiKey());
-  const hasCodexKey = Boolean(await resolveCodexApiKey());
+  const [status, hasGeminiKey, hasCodexKey] = await Promise.all([
+    getCachedProbeStatuses(forceRefresh),
+    resolveGeminiApiKey().then(Boolean),
+    resolveCodexApiKey().then(Boolean),
+  ]);
 
   return {
     chosen,
@@ -44,10 +58,11 @@ async function buildEngineSnapshot() {
   };
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     await requireUser();
-    const snapshot = await buildEngineSnapshot();
+    const forceRefresh = new URL(req.url).searchParams.get("refresh") === "1";
+    const snapshot = await buildEngineSnapshot(forceRefresh);
     return NextResponse.json(snapshot);
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });
@@ -165,7 +180,8 @@ export async function PUT(req: Request) {
       }
     }
 
-    const snapshot = await buildEngineSnapshot();
+    cachedProbeStatus = null;
+    const snapshot = await buildEngineSnapshot(true);
     return NextResponse.json(snapshot);
   } catch (err) {
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });

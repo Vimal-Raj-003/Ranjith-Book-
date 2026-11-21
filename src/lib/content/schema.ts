@@ -205,7 +205,7 @@ export interface IdeaBrief {
 
 /** Spoken words in a package — what the long-episode length gate counts. */
 export function spokenWordCount(pkg: Pick<ContentPackage, "beats">): number {
-  return pkg.beats.reduce((n, b) => n + b.voiceover.split(/\s+/).filter(Boolean).length, 0);
+  return pkg.beats.reduce((n, b) => n + (b?.voiceover ?? "").split(/\s+/).filter(Boolean).length, 0);
 }
 
 /** `CONTENT_JSON_SCHEMA` with the beat count of the given length (or of an explicit spec). */
@@ -274,7 +274,7 @@ function sanitizeForSpeech(text: string): string {
  */
 export function voScriptFromPackage(pkg: ContentPackage): string {
   return pkg.beats
-    .map((b) => sanitizeForSpeech(b.voiceover))
+    .map((b) => sanitizeForSpeech(b?.voiceover ?? ""))
     .filter(Boolean)
     .join(" ");
 }
@@ -288,5 +288,5 @@ export function voScriptFromPackage(pkg: ContentPackage): string {
  * string, rather than shifting every later beat's audio file by one.
  */
 export function beatTexts(pkg: ContentPackage): string[] {
-  return pkg.beats.map((b) => sanitizeForSpeech(b.voiceover));
+  return pkg.beats.map((b) => sanitizeForSpeech(b?.voiceover ?? ""));
 }

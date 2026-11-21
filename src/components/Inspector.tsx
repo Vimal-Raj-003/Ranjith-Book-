@@ -8,6 +8,12 @@ import { Badge, Disclosure, EmptyState, Hint, RailToggle } from "./ui";
 import Thumbnails from "./Thumbnails";
 import ReleaseSlider from "./ReleaseSlider";
 import { TOAST_MAX_MS, useToast } from "./Toast";
+import {
+  REMINDER_SYNC_EVENT,
+  broadcastReminderSync,
+  requestReminderBrowserPermission,
+  type ScheduleReminderClientStatus,
+} from "./ScheduleReminderControl";
 import type { EpisodeState } from "./types";
 // The music panel's choices, from `strings.ts` for the same reason `VOICES` is:
 // `media/moods.ts` is client-safe but holds the harmony, not the names, and
@@ -84,6 +90,7 @@ const GLYPH = {
   theme: "M12 4a8 8 0 1 0 0 16h1.5a1.5 1.5 0 0 0 1.1-2.5 1.5 1.5 0 0 1 1.1-2.5H18a2 2 0 0 0 2-2 8 8 0 0 0-8-9zM7.5 12.5h.01M10 8.5h.01M14 8h.01",
   voice: "M12 4a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3zM6 11a6 6 0 0 0 12 0M12 17v3",
   music: "M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z",
+  reminder: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0",
   thumbs: "M4 5h16v14H4zM4 15l4-4 4 4 3-3 5 5M9 9h.01",
   download: "M12 4v10m0 0 4-4m-4 4-4-4M5 18h14",
 } as const;
@@ -135,6 +142,9 @@ export default function Inspector({
   const previewHintId = `${voiceFieldId}-preview-hint`;
   const musicFieldId = useId();
   const musicHintId = `${musicFieldId}-hint`;
+  const reminderFieldId = useId();
+  const reminderHintId = `${reminderFieldId}-hint`;
+  const [reminderStatus, setReminderStatus] = useState<ScheduleReminderClientStatus | null>(null);
   // What each control shows, by key: what `GET /api/settings` said, with any
   // edit still in flight laid over it. A key that is absent has not been read
   // (or could not be), which the controls show as nothing selected rather than
@@ -232,6 +242,9 @@ export default function Inspector({
             body: JSON.stringify({ [key]: step.send }),
           });
           ok = res.ok;
+          if (ok && key === "scheduleReminder") {
+            broadcastReminderSync({ enabled: step.send === "on" });
+          }
         } catch {
           // Unreachable counts as refused: the server was not told.
         }
@@ -240,6 +253,33 @@ export default function Inspector({
     },
     [toast],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadReminderStatus = async () => {
+      try {
+        const res = await fetch("/api/reminders", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as ScheduleReminderClientStatus;
+        if (!cancelled) setReminderStatus(data);
+      } catch {
+        // Silent fallback to static hint.
+      }
+    };
+    void loadReminderStatus();
+    const onSync = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ enabled?: boolean }>).detail;
+      if (typeof detail?.enabled === "boolean") {
+        void drive("scheduleReminder", { type: "read", value: detail.enabled ? "on" : "off" });
+      }
+      void loadReminderStatus();
+    };
+    window.addEventListener(REMINDER_SYNC_EVENT, onSync);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(REMINDER_SYNC_EVENT, onSync);
+    };
+  }, [drive]);
 
   useEffect(() => {
     let cancelled = false;
@@ -373,6 +413,11 @@ export default function Inspector({
     : strings.themePanel.summaryUnknown;
 
   const thumbSummary = strings.thumbnails.summary(thumbCount);
+  const reminderSetting = settings.scheduleReminder;
+  const reminderSummary =
+    reminderSetting === "on" || reminderSetting === "off"
+      ? strings.reminderPanel.summary(reminderSetting === "on")
+      : strings.reminderPanel.summaryUnknown;
   const currentEngineId = (engineSnapshot?.provider ?? settings.cliProvider) as GenerationEngineId | undefined;
   const currentEngine = GENERATION_ENGINES.find((e) => e.id === currentEngineId);
   const currentEngineStatus = currentEngineId ? engineSnapshot?.status?.[currentEngineId] : undefined;
@@ -425,6 +470,7 @@ export default function Inspector({
           { key: "theme", glyph: GLYPH.theme, text: themeSummary },
           { key: "voice", glyph: GLYPH.voice, text: voiceSummary },
           { key: "music", glyph: GLYPH.music, text: musicSummary },
+          { key: "reminder", glyph: GLYPH.reminder, text: reminderSummary },
           { key: "thumbs", glyph: GLYPH.thumbs, text: thumbSummary },
         ].map((chip) => (
           <button
@@ -469,6 +515,7 @@ export default function Inspector({
         >
           {GENERATION_ENGINES.map((eng) => {
             const selected = currentEngineId === eng.id;
+            const engStatus = engineSnapshot?.status?.[eng.id];
             return (
               <button
                 key={eng.id}
@@ -476,8 +523,13 @@ export default function Inspector({
                 className="chip"
                 data-state={selected ? "on" : "off"}
                 aria-pressed={selected}
-                title={eng.description}
+                title={engStatus?.detail ? `${eng.description} — ${engStatus.detail}` : eng.description}
                 onClick={() => {
+                  if (engStatus && !engStatus.signedIn) {
+                    toast.show(engStatus.detail || `${eng.label} is not connected.`, "warn", TOAST_MAX_MS);
+                    onOpenEngineModal?.();
+                    return;
+                  }
                   save("cliProvider", eng.id);
                   void onSelectEngine?.(eng.id);
                 }}
@@ -851,6 +903,57 @@ export default function Inspector({
         </div>
       </Disclosure>
 
+      <Disclosure className="disclosure-panel reminder-group" summary={reminderSummary}>
+        <span className="field-label" id={`${reminderFieldId}-toggle`}>
+          {strings.reminderPanel.toggleLabel}
+        </span>
+        <div
+          role="group"
+          aria-labelledby={`${reminderFieldId}-toggle`}
+          aria-describedby={reminderHintId}
+          className="chip-grid"
+          style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
+        >
+          {([
+            { id: "on", label: strings.reminderPanel.on },
+            { id: "off", label: strings.reminderPanel.off },
+          ] as const).map((option) => {
+            const selected = reminderSetting === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="chip"
+                data-state={selected ? "on" : "off"}
+                data-settings-reminder={option.id}
+                aria-pressed={selected}
+                onClick={() => {
+                  if (option.id === "on") {
+                    requestReminderBrowserPermission();
+                  }
+                  save("scheduleReminder", option.id);
+                }}
+              >
+                <span className="truncate">{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2 flex flex-col gap-1">
+          {reminderStatus?.lastScheduledDateFormatted && (
+            <p className="font-mono text-[11px]" style={{ color: reminderStatus.due ? "var(--amber)" : "var(--ink)" }}>
+              Last scheduled: {reminderStatus.lastScheduledDateFormatted}
+              {reminderStatus.followingDateFormatted
+                ? ` · Next day: ${reminderStatus.followingDateFormatted}`
+                : ""}
+            </p>
+          )}
+          <Hint id={reminderHintId}>
+            {reminderStatus?.statusSummary ?? strings.reminderPanel.hint}
+          </Hint>
+        </div>
+      </Disclosure>
+
       {/* Opened for you the moment there is something in it, closed while
           there is not — a run that has produced thumbnails should not need a
           click to prove it. */}
@@ -859,6 +962,86 @@ export default function Inspector({
           <Thumbnails episode={episode} onCount={reportThumbs} />
         ) : (
           <EmptyState>{strings.inspector.noEpisode}</EmptyState>
+        )}
+      </Disclosure>
+
+      <Disclosure
+        className="disclosure-panel"
+        summary={strings.visualsPanel.summary(episode?.sceneVisuals?.length ?? 0)}
+        defaultOpen={(episode?.sceneVisuals?.length ?? 0) > 0}
+      >
+        <Hint>{strings.visualsPanel.activeHint}</Hint>
+        {!episode ? (
+          <div className="mt-2">
+            <EmptyState>{strings.visualsPanel.emptyIdle}</EmptyState>
+          </div>
+        ) : (episode.sceneVisuals?.length ?? 0) === 0 ? (
+          <div className="mt-2">
+            <EmptyState>{strings.visualsPanel.emptyRunning}</EmptyState>
+          </div>
+        ) : (
+          <div className="mt-2.5 grid grid-cols-2 gap-2">
+            {episode.sceneVisuals!.map((v) => {
+              const modeLabel =
+                v.mode === "comfyui-video"
+                  ? strings.visualsPanel.modeVideo
+                  : v.mode === "threejs-3d"
+                    ? strings.visualsPanel.mode3d
+                    : v.mode === "motion-graphics"
+                      ? strings.visualsPanel.modeMotion
+                      : v.mode === "comfyui-image-25d"
+                        ? v.visualTreatment === "documentary"
+                          ? strings.visualsPanel.modeDocumentary
+                          : strings.visualsPanel.modeHybrid
+                        : strings.visualsPanel.modeProcedural;
+              const fallbackCardText =
+                v.mode === "threejs-3d"
+                  ? `${strings.visualsPanel.mode3d} · ${v.cameraMove}`
+                  : v.mode === "motion-graphics"
+                    ? `${strings.visualsPanel.modeMotion} · ${v.sceneKind}`
+                    : v.fallbackReason || strings.visualsPanel.modeProcedural;
+              return (
+                <div
+                  key={v.key}
+                  className="overflow-hidden rounded-[var(--r-control)] border p-1.5"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-2)" }}
+                >
+                  {v.hasImage ? (
+                    <div className="relative aspect-[9/16] w-full overflow-hidden rounded-[6px]" style={{ background: v.dominantHex }}>
+                      <img
+                        src={`/api/episodes/${episode.id}/visuals/${encodeURIComponent(v.key)}`}
+                        alt={v.summary}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      className="flex aspect-[9/16] w-full items-center justify-center rounded-[6px] p-2 text-center text-[11px]"
+                      style={{
+                        background: `radial-gradient(circle at 50% 38%, ${v.accentHex}33 0%, ${v.dominantHex} 80%)`,
+                        color: "var(--mute)",
+                      }}
+                    >
+                      {fallbackCardText}
+                    </div>
+                  )}
+                  <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1">
+                    <span className="text-[11px] font-semibold" style={{ color: "var(--ink)" }}>
+                      {strings.visualsPanel.sceneLabel(v.sceneIndex + 1)}
+                    </span>
+                    <Badge tone={v.mode === "procedural-fallback" ? "plain" : "done"}>
+                      {modeLabel}
+                      {v.cacheHit ? ` · ${strings.visualsPanel.cached}` : ""}
+                    </Badge>
+                  </div>
+                  <p className="mt-0.5 line-clamp-2 text-[11px]" style={{ color: "var(--mute)" }} title={v.summary}>
+                    {v.summary}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
         )}
       </Disclosure>
 

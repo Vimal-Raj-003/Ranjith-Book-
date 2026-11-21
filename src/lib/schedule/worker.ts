@@ -4,6 +4,7 @@ import { recoverInterruptedBrowserJobs } from "@/lib/publish/browser/recover";
 import { recoverYouTubeUploads } from "@/lib/publish/youtube/run";
 import { runSchedule, slotOutcome, type RunScheduleOptions } from "./activate";
 import { confirmKnownSchedules } from "./confirm";
+import { checkAndDispatchScheduleReminders } from "./reminder";
 import { runImmediateQueue } from "@/lib/publish/immediate-queue";
 
 const state = globalThis as unknown as { bookreelScheduleTimer?: ReturnType<typeof setInterval>; bookreelQueueBusy?: boolean; bookreelConfirmationAt?: number };
@@ -31,6 +32,9 @@ export async function processScheduleQueue(options: RunScheduleOptions = {}): Pr
       }
     }
     for (const plan of plans) await runSchedule(plan.id, { ...options, automatic: true });
+    if (!process.env.BOOKREEL_TEST_DB_PID) {
+      await checkAndDispatchScheduleReminders();
+    }
   } finally { state.bookreelQueueBusy = false; }
 }
 

@@ -557,3 +557,48 @@ test("runGemini retries transient 503/network errors and rotates across Gemini m
     else process.env.GEMINI_API_KEY = prevGeminiKey;
   }
 });
+
+test("probeCli('claude-cli') detects expired OAuth token even when `claude auth status` reports loggedIn: true", async () => {
+  const prevClaudeBin = process.env.CLAUDE_CLI_BIN;
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "bookreel-claude-expired-test-"));
+  const fakeClaude = path.join(tmpDir, "fake-claude-expired.mjs");
+
+  await fs.writeFile(
+    fakeClaude,
+    `
+const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  console.log("2.1.117 (Claude Code)");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" }));
+  process.exit(0);
+}
+process.stdin.resume();
+process.stdin.on("end", () => {
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    result: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token has expired. Re-authenticate to continue."}}'
+  }));
+  process.exit(1);
+});
+`,
+    "utf8",
+  );
+
+  process.env.CLAUDE_CLI_BIN = fakeClaude;
+  try {
+    const status = await probeCli("claude-cli");
+    assert.equal(status.installed, true);
+    assert.equal(status.signedIn, false);
+    assert.match(status.detail, /Claude CLI session expired/i);
+    assert.match(status.detail, /claude login/i);
+  } finally {
+    if (prevClaudeBin === undefined) delete process.env.CLAUDE_CLI_BIN;
+    else process.env.CLAUDE_CLI_BIN = prevClaudeBin;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});

@@ -48,6 +48,7 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   const [generating, setGenerating] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [episodeStates, setEpisodeStates] = useState<Record<string, EpisodeState>>({});
+  const [savingRights, setSavingRights] = useState(false);
 
   // One EpisodeCard per video polls it and reports here; the preview reads
   // the same snapshot, exactly as the photo Studio does.
@@ -197,6 +198,27 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
     }
   }
 
+  async function updateRights(nextRights: "in-copyright" | "public-domain" | "own-work") {
+    if (!view || nextRights === (view.rightsStatus ?? "in-copyright")) return;
+    const prevRights = view.rightsStatus ?? "in-copyright";
+    setSavingRights(true);
+    setView((v) => (v ? { ...v, rightsStatus: nextRights } : v));
+    try {
+      const res = await fetch(`/api/books/${uploadId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rightsStatus: nextRights }),
+      });
+      if (!res.ok) throw new Error();
+      show(strings.books.rightsSaved, "ok");
+    } catch {
+      setView((v) => (v ? { ...v, rightsStatus: prevRights } : v));
+      show(strings.books.rightsError, "error");
+    } finally {
+      setSavingRights(false);
+    }
+  }
+
   const live = view.status !== "DONE";
   const selectedCount = view.ideas.filter((i) => i.selected).length;
   // Videos are listed in the order of the ideas they were made from.
@@ -216,6 +238,20 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
         <span className="text-[12px]" style={{ color: "var(--mute)" }}>
           {strings.books.pages(view.pageCount)}
         </span>
+        <select
+          aria-label={strings.upload.rightsLabel}
+          value={view.rightsStatus ?? "in-copyright"}
+          disabled={savingRights}
+          onChange={(e) => void updateRights(e.target.value as "in-copyright" | "public-domain" | "own-work")}
+          className="rounded-lg border px-2 py-0.5 text-[11.5px] font-mono disabled:opacity-50"
+          style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--mute)" }}
+        >
+          {(["in-copyright", "public-domain", "own-work"] as const).map((r) => (
+            <option key={r} value={r}>
+              {strings.upload.rightsOptions[r]}
+            </option>
+          ))}
+        </select>
         {/* The Weekly Schedule sits in the header, centred in the space between the title and
             the clock, once there is a video to schedule. It reads the same per-episode snapshots
             the cards report, so a video is offered only when `publishEnabled` says it is finished. */}

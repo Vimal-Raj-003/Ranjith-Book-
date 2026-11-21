@@ -574,6 +574,13 @@ export function claudeArgs(system: string, opts: { model?: string; env?: Record<
   return args;
 }
 
+export function formatClaudeErrorDetail(detail: string): string {
+  if (/OAuth access token has expired|authentication_error|Failed to authenticate.*401/i.test(detail)) {
+    return "Claude CLI session expired (401 OAuth token expired). Run `claude login` in a terminal to re-authenticate, or switch Engine to Gemini in Settings.";
+  }
+  return detail;
+}
+
 /**
  * Claude Code in headless mode, as a plain model call: our system prompt
  * REPLACES Claude Code's (it is complete on its own), no tools, no MCP
@@ -607,7 +614,7 @@ async function runClaudeCli(system: string, user: string, model?: string): Promi
     if (envelope!.is_error && envelope!.subtype !== "error_max_turns") {
       const detail =
         typeof envelope!.result === "string" && envelope!.result.trim()
-          ? envelope!.result.trim()
+          ? formatClaudeErrorDetail(envelope!.result.trim())
           : `Claude CLI failed (${envelope!.subtype ?? "error"}).`;
       throw new CliError(detail);
     }
@@ -1174,41 +1181,40 @@ export async function probeCli(provider: CliProvider): Promise<CliStatus> {
     }
   }
 
-  // claude-cli: try fast `claude auth status` first
+  // claude-cli: check `claude auth status` first so logged-out installs return
+  // immediately, then verify the OAuth token actually works against the API
+  // (`claude auth status` alone only checks that `.credentials.json` exists on
+  // disk and still reports `loggedIn: true` after the OAuth token has expired).
+  let authDetail: string | null = null;
   try {
     const { stdout } = await execBin(bin, ["auth", "status"], { timeout: 10_000, env: cleanEnv() });
     const status = JSON.parse(stdout) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
     if (typeof status.loggedIn === "boolean") {
-      if (status.loggedIn) {
-        const sub = status.subscriptionType ? ` · ${status.subscriptionType}` : "";
+      if (!status.loggedIn) {
         return {
           installed: true,
-          signedIn: true,
+          signedIn: false,
           version,
-          detail: `Connected via Claude CLI (${status.authMethod ?? "signed in"}${sub}).`,
-          authMethod: "cli",
+          detail: "Claude CLI is installed but not signed in. Run `claude login` in a terminal.",
+          authMethod: "none",
         };
       }
-      return {
-        installed: true,
-        signedIn: false,
-        version,
-        detail: "Claude CLI is installed but not signed in. Run `claude login` in a terminal.",
-        authMethod: "none",
-      };
+      const sub = status.subscriptionType ? ` · ${status.subscriptionType}` : "";
+      authDetail = `Connected via Claude CLI (${status.authMethod ?? "signed in"}${sub}).`;
     }
   } catch {
     // Fallback for older Claude CLI or test fixtures without `auth status`
   }
 
   try {
-    const reply = await runCli(resolved, "Answer with one word.", "Reply with the word: ready");
+    const probeModel = process.env.CLAUDE_CLI_BIN?.trim() ? undefined : "haiku";
+    const reply = await runCli(resolved, "Answer with one word.", "Reply with the word: ready", probeModel);
     const ok = /ready/i.test(reply);
     return {
       installed: true,
       signedIn: ok,
       version,
-      detail: ok ? "Signed in and responding." : "Responded, but not as expected.",
+      detail: ok ? (authDetail ?? "Signed in and responding.") : "Responded, but not as expected.",
       authMethod: ok ? "cli" : "none",
     };
   } catch (err) {
@@ -1216,7 +1222,7 @@ export async function probeCli(provider: CliProvider): Promise<CliStatus> {
       installed: true,
       signedIn: false,
       version,
-      detail: isCliError(err) ? err.message : "Not signed in. Run `claude` once in a terminal.",
+      detail: isCliError(err) ? formatClaudeErrorDetail(err.message) : "Not signed in. Run `claude login` in a terminal.",
       authMethod: "none",
     };
   }

@@ -423,37 +423,62 @@ async function shownDate(page: Page, style: PickerStyle): Promise<{ y: number; m
 
 const sameDay = (a: { y: number; m: number; d: number } | null, t: StudioTarget) => !!a && a.y === t.year && a.m === t.month && a.d === t.day;
 
-/** Click the day in the calendar grid: the month's heading is found, and the day under it. */
+/** Click the day in the calendar grid: either Studio's [role="listitem"][aria-label] month + .calendar-day, or month heading + day cell. */
 async function clickDayInGrid(page: Page, target: StudioTarget): Promise<boolean> {
   const found = await page
     .evaluate(
       ({ year, month, day, attr }) => {
         for (const old of document.querySelectorAll(`[${attr}="day"]`)) old.removeAttribute(attr);
         const names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-        const everything = [...document.querySelectorAll("*")].filter((e) => (e as HTMLElement).getClientRects().length > 0) as HTMLElement[];
-        const headings: { el: HTMLElement; y: number; m: number }[] = [];
-        const cells: HTMLElement[] = [];
-        for (const e of everything) {
-          if (e.children.length > 0 && !/^(button|td|div|span)$/i.test(e.tagName)) continue;
-          const t = (e.innerText || "").replace(/\s+/g, " ").trim();
-          const mh = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(t);
-          if (mh && names.indexOf(mh[1].slice(0, 3).toLowerCase()) >= 0 && e.children.length === 0) {
-            headings.push({ el: e, y: Number(mh[2]), m: names.indexOf(mh[1].slice(0, 3).toLowerCase()) + 1 });
-          } else if (/^\d{1,2}$/.test(t) && e.children.length === 0) cells.push(e);
-        }
         let hit: HTMLElement | null = null;
-        for (const c of cells) {
-          if (Number((c.innerText || "").trim()) !== day) continue;
-          if (c.closest("[disabled], [aria-disabled='true']")) continue;
-          let owner: { y: number; m: number } | null = null;
-          for (const h of headings) {
-            if (h.el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) owner = h;
-          }
-          if (owner && owner.y === year && owner.m === month) {
+
+        // 1. YouTube Studio Polymer ytcp-date-picker: [role="listitem"][aria-label="November 2026"] > .calendar-day
+        for (const item of document.querySelectorAll('[role="listitem"][aria-label]')) {
+          const el = item as HTMLElement;
+          const label = (el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+          const mh = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(label);
+          if (!mh) continue;
+          const mIdx = names.indexOf(mh[1].slice(0, 3).toLowerCase()) + 1;
+          if (mIdx !== month || Number(mh[2]) !== year) continue;
+          el.scrollIntoView({ block: "nearest" });
+          for (const cell of el.querySelectorAll(".calendar-day, button, td, span, div")) {
+            const c = cell as HTMLElement;
+            if (c.children.length > 0 || c.getClientRects().length === 0) continue;
+            if (Number((c.innerText || "").trim()) !== day) continue;
+            if (c.closest("[disabled], [aria-disabled='true'], .disabled, .is-disabled")) continue;
             hit = c;
             break;
           }
+          if (hit) break;
         }
+
+        // 2. Fallback: visible month heading followed by day cell in document order
+        if (!hit) {
+          const everything = [...document.querySelectorAll("*")].filter((e) => (e as HTMLElement).getClientRects().length > 0) as HTMLElement[];
+          const headings: { el: HTMLElement; y: number; m: number }[] = [];
+          const cells: HTMLElement[] = [];
+          for (const e of everything) {
+            if (e.children.length > 0 && !/^(button|td|div|span)$/i.test(e.tagName)) continue;
+            const t = (e.innerText || "").replace(/\s+/g, " ").trim();
+            const mh = /^([A-Za-z]{3,9})\.?\s+(\d{4})$/.exec(t);
+            if (mh && names.indexOf(mh[1].slice(0, 3).toLowerCase()) >= 0 && e.children.length === 0) {
+              headings.push({ el: e, y: Number(mh[2]), m: names.indexOf(mh[1].slice(0, 3).toLowerCase()) + 1 });
+            } else if (/^\d{1,2}$/.test(t) && e.children.length === 0) cells.push(e);
+          }
+          for (const c of cells) {
+            if (Number((c.innerText || "").trim()) !== day) continue;
+            if (c.closest("[disabled], [aria-disabled='true'], .disabled, .is-disabled")) continue;
+            let owner: { y: number; m: number } | null = null;
+            for (const h of headings) {
+              if (h.el.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) owner = h;
+            }
+            if (owner && owner.y === year && owner.m === month) {
+              hit = c;
+              break;
+            }
+          }
+        }
+
         if (hit) hit.setAttribute(attr, "day");
         return !!hit;
       },
@@ -476,7 +501,7 @@ export async function setDate(page: Page, target: StudioTarget, log: PublishLog)
   await settleNoOverlay(page);
   await clickMarked(page, "date-trigger");
 
-  // The calendar opens with a text box holding the date. Typing into it is the exact way in.
+  // The calendar opens with a text box holding the date and/or a Polymer month grid.
   let typed = false;
   for (let i = 0; i < 15 && !typed; i++) {
     typed = await mark(page, "calendar-input");
@@ -488,8 +513,12 @@ export async function setDate(page: Page, target: StudioTarget, log: PublishLog)
     log("Schedule: the calendar showed no text box for the date; choosing the day in its grid");
   }
 
-  if (!sameDay(await shownDate(page, target.style), target)) {
-    // Typing did not take, or there was nowhere to type: the grid is the other way in. Opened again if it closed.
+  // In YouTube Studio, typing into ytcp-date-picker's text input scrolls the calendar
+  // but may not commit Polymer's selectedDate before Escape closes the popup. If the
+  // calendar grid is still open with selectable day cells, click the exact target day to commit it.
+  if (await clickDayInGrid(page, target)) {
+    log(`Schedule: confirmed day ${target.day} in the calendar grid`);
+  } else if (!sameDay(await shownDate(page, target.style), target)) {
     if (!(await mark(page, "calendar-input"))) {
       await mark(page, "date-trigger");
       await clickMarked(page, "date-trigger").catch(() => {});
@@ -500,6 +529,14 @@ export async function setDate(page: Page, target: StudioTarget, log: PublishLog)
   // The calendar closes once a date is accepted; make sure its overlay and scrim are gone
   // before the next control, or the time box will be clicked through a scrim that eats it.
   await settleNoOverlay(page);
+  if (!sameDay(await shownDate(page, target.style), target)) {
+    if (await mark(page, "date-trigger")) {
+      await clickMarked(page, "date-trigger").catch(() => {});
+      await page.waitForTimeout(700);
+      if (await clickDayInGrid(page, target)) log(`Schedule: re-selected ${target.day} in the calendar grid after overlay close`);
+      await settleNoOverlay(page);
+    }
+  }
 }
 
 /** The value the time box holds now, re-finding it (its attribute is dropped when it re-renders). */
@@ -687,7 +724,24 @@ export async function readScheduledFromChannel(page: Page, videoId: string): Pro
     await page.waitForTimeout(2500);
     const view = await page.evaluate(() => {
       const title = document.querySelector("#title-textarea #textbox") as HTMLElement | null;
-      const titleText = title ? (title.innerText || "").replace(/\s+/g, " ").trim() : null;
+      let titleText: string | null = null;
+      if (title) {
+        let raw = "";
+        const stack: Node[] = [];
+        for (let i = title.childNodes.length - 1; i >= 0; i--) stack.push(title.childNodes[i]);
+        while (stack.length > 0) {
+          const node = stack.pop()!;
+          if (node.nodeType === 3) {
+            raw += node.nodeValue ?? "";
+          } else if (node.nodeType === 1) {
+            const elem = node as HTMLElement;
+            if (elem.tagName === "IMG") raw += elem.getAttribute("alt") ?? "";
+            else if (elem.tagName === "BR") raw += " ";
+            else for (let i = elem.childNodes.length - 1; i >= 0; i--) stack.push(elem.childNodes[i]);
+          }
+        }
+        titleText = (raw || title.innerText || "").replace(/\s+/g, " ").trim();
+      }
 
       const own = "[contenteditable], textarea, input, #title-textarea, #description-textarea, #tags-container, ytcp-chip-bar";
       const hidden: [HTMLElement, string][] = [];

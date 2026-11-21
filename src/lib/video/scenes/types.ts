@@ -13,6 +13,42 @@
  */
 import type { SourceRef } from "../../analysis/types";
 import type { HeroId } from "./heroes";
+import type {
+  AtmosphereKind,
+  CameraMoveKind,
+  ColorGradePreset,
+  SceneTransitionKind,
+  ShotAngleKind,
+} from "../visual-engine/types";
+
+/**
+ * Generated cinematic plate assets attached to a `cinematic` scene by the
+ * Hybrid Cinematic Visual Engine (`visual-engine/`). When absent, or if
+ * loading fails at render time, the composition automatically renders the
+ * procedural 3D `hero` in `cine-runtime.js`.
+ */
+export interface CinePlateSpec {
+  /** Relative composition asset path (`assets/cine-plate-0.jpg`). */
+  imageSrc: string;
+  /** Relative composition asset path for 2.5D depth displacement (`assets/cine-depth-0.png`). */
+  depthSrc: string;
+  /** Optional relative composition asset path for local ComfyUI video (`assets/cine-video-0.mp4`). */
+  videoSrc?: string;
+  cameraMove: CameraMoveKind;
+  shotAngle?: ShotAngleKind;
+  treatment?: "hybrid-cinematic" | "documentary";
+  /** 0..1 foreground/midground/background parallax and depth relief intensity. */
+  parallaxIntensity?: number;
+  colorGrade?: ColorGradePreset;
+  /** Optional subtle Three.js 3D orbital accent layered into a `hybrid-cinematic` plate. */
+  accent3d?: boolean;
+  /** Optional grounded 2–3 word callout badge rendered cleanly above the headline. */
+  callout?: string;
+  atmosphere: AtmosphereKind;
+  dominantHex: string;
+  accentHex: string;
+  shadowHex: string;
+}
 
 /** One spoken sentence, cut from the 3B word timings. */
 export interface Sentence {
@@ -170,6 +206,10 @@ export interface Scene {
   fallbackFrom?: VisualKind;
   /** Page kinds only: how tightly this scene is framed. */
   shot?: ShotSize;
+  /** Planned transition arriving into this scene from the previous scene. */
+  transitionIn?: SceneTransitionKind;
+  /** Optional blurred cinematic plate backdrop behind non-book motion-graphics scenes so cards never float on an empty grid. */
+  bgImageSrc?: string;
 
   // --- per-template content, all resolved and checked ---------------------
   /** `quote`: the words as the book prints them, plus the page they are on. */
@@ -200,7 +240,14 @@ export interface Scene {
    * the opening scene: it shows the spoken hook sentence word by word instead
    * of a lead and keyword, and replaces the old scrim-over-the-page hook card.
    */
-  cine?: { hero: HeroId; keyword: string; lead: string; hook?: boolean; accentWords?: string[] };
+  cine?: {
+    hero: HeroId;
+    keyword: string;
+    lead: string;
+    hook?: boolean;
+    accentWords?: string[];
+    plate?: CinePlateSpec;
+  };
 }
 
 /** What the validator did, for the episode's notes and for tests. */

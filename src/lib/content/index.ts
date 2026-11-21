@@ -6,7 +6,7 @@ import type { Archetype, Beat, ContentPackage, GenerateInput, IdeaBrief, LengthS
 import { LENGTHS, spokenWordCount, voScriptFromPackage } from "./schema";
 import { expectedSeconds, maxWordsFor, VIDEO_MAX_SECONDS } from "./duration";
 import { checkRanges } from "./ranges";
-import { repairQuotedRanges } from "./quoted-ranges";
+import { alignBeatRangesToSource, isPureClosingRequest, repairQuotedRanges } from "./quoted-ranges";
 import { repairQuotation } from "./quotation-repair";
 import { generateWithCli, runCliJson } from "./cli-provider";
 import type { CliProvider } from "./cli";
@@ -354,7 +354,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
     return `${brief}\n\nYour previous draft beats (for reference while fixing the issue above):\n${beatLines}`;
   }
 
-  function repairBeatRangesForGate(
+  function clampPagesAndBounds(
     beats: Beat[],
     lengths: Map<number, number>,
   ): { beats: Beat[]; repairs: string[] } {
@@ -389,6 +389,19 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       }
     });
 
+    return { beats: out, repairs };
+  }
+
+  function repairBeatRangesForGate(
+    beats: Beat[],
+    lengths: Map<number, number>,
+    lockedBeats: ReadonlySet<number> = new Set(),
+  ): { beats: Beat[]; repairs: string[] } {
+    const clamped = clampPagesAndBounds(beats, lengths);
+    const out = clamped.beats;
+    const repairs = [...clamped.repairs];
+    if (lengths.size === 0) return { beats: out, repairs };
+
     let runStart = 0;
     while (runStart < out.length) {
       let runEnd = runStart;
@@ -398,55 +411,50 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       }
       const runLen = runEnd - runStart + 1;
       if (runLen > 1) {
-        const subCheck = checkRanges(out.slice(runStart, runEnd + 1), lengths);
+        const localLocked = new Set<number>();
+        for (let idx = runStart; idx <= runEnd; idx++) {
+          if (lockedBeats.has(idx)) localLocked.add(idx - runStart);
+        }
+        const subCheck = checkRanges(out.slice(runStart, runEnd + 1), lengths, localLocked);
         if (subCheck.problems.length > 0) {
           const n = Math.max(1, lengths.get(pageIdx) ?? 1);
-          const hasCta = runEnd === out.length - 1;
+          const hasCta = runEnd === out.length - 1 && isPureClosingRequest(out[runEnd].voiceover);
           const contentEnd = hasCta ? runEnd - 1 : runEnd;
           const contentCount = contentEnd - runStart + 1;
 
-          if (contentCount >= 2) {
-            const first = out[runStart];
-            const second = out[runStart + 1];
-            if (first.startWord > second.startWord) {
-              const span = Math.max(1, Math.floor((second.endWord - second.startWord) / 2));
-              first.startWord = second.startWord;
-              first.endWord = Math.min(second.endWord, second.startWord + span);
-            } else {
-              const sortedRanges = out
-                .slice(runStart, contentEnd + 1)
-                .map((b) => ({ s: b.startWord, e: b.endWord }))
-                .sort((a, b) => a.s - b.s || a.e - b.e);
-              for (let j = 0; j < contentCount; j++) {
-                out[runStart + j].startWord = sortedRanges[j].s;
-                out[runStart + j].endWord = sortedRanges[j].e;
+          // Only repair 1-word boundary ties (`startWord === prev.endWord === endWord`)
+          // where the beat already sits at the right spot on the page. Never sort or
+          // swap ranges across beats whose voiceover is in reverse passage order —
+          // doing so hands Beat A's indices to Beat B and guarantees grounding failure;
+          // letting `checkRanges` return a `ranges` brief prompts the writer to reorder.
+          for (let j = 1; j < contentCount; j++) {
+            const idx = runStart + j;
+            if (lockedBeats.has(idx)) continue;
+            const prev = out[idx - 1];
+            const cur = out[idx];
+            if (cur.startWord === prev.endWord && cur.endWord === prev.endWord) {
+              let ceilingWord = n - 1;
+              for (let k = idx + 1; k <= contentEnd; k++) {
+                if (lockedBeats.has(k)) {
+                  ceilingWord = Math.max(cur.startWord, out[k].startWord);
+                  break;
+                }
+              }
+              const nextEnd = Math.min(ceilingWord, cur.startWord + 12);
+              if (nextEnd > cur.startWord) {
+                cur.endWord = nextEnd;
+                repairs.push(`Expanded single-word boundary tie on beats[${idx}] (PAGE ${pageIdx}) to ${cur.startWord}-${cur.endWord}.`);
               }
             }
           }
 
-          for (let j = 0; j < contentCount; j++) {
-            const idx = runStart + j;
-            const remainingAfter = contentCount - 1 - j;
-            const maxEnd = Math.max(0, n - 1 - remainingAfter);
-            if (j === 0) {
-              out[idx].startWord = Math.min(out[idx].startWord, maxEnd);
-              out[idx].endWord = Math.min(Math.max(out[idx].startWord, out[idx].endWord), maxEnd);
-            } else {
-              const prevEnd = out[idx - 1].endWord;
-              const s = Math.min(Math.max(out[idx].startWord, prevEnd), maxEnd);
-              const minEnd = Math.min(n - 1, Math.max(s, prevEnd + 1));
-              const e = Math.min(Math.max(out[idx].endWord, minEnd), Math.max(minEnd, maxEnd));
-              out[idx].startWord = Math.min(s, e);
-              out[idx].endWord = e;
+          if (hasCta && contentCount >= 1 && !lockedBeats.has(runEnd)) {
+            const prevEnd = out[contentEnd].endWord;
+            if (out[runEnd].startWord < prevEnd) {
+              out[runEnd].startWord = prevEnd;
+              out[runEnd].endWord = Math.min(n - 1, Math.max(out[runEnd].endWord, prevEnd));
             }
           }
-
-          if (hasCta && contentCount >= 1) {
-            const prevEnd = out[contentEnd].endWord;
-            out[runEnd].startWord = prevEnd;
-            out[runEnd].endWord = Math.min(n - 1, Math.max(out[runEnd].endWord, prevEnd));
-          }
-          repairs.push(`Normalized same-page word ranges on PAGE ${pageIdx} into forward order.`);
         }
       }
       runStart = runEnd + 1;
@@ -456,24 +464,42 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
   }
 
   const gate = (candidate: ContentPackage): GateIssue | null => {
-    // Word ranges, checked in code: the most common reason drafts were sent
-    // back, and one no model call is needed to see (see ./ranges).
-    let ranges = checkRanges(candidate.beats, pageLengths);
-    if (ranges.problems.length) {
-      const repaired = repairBeatRangesForGate(candidate.beats, pageLengths);
-      const rechecked = checkRanges(repaired.beats, pageLengths);
+    // 1. Clamp invalid page indices/bounds first so verbatim quote anchoring sees valid pages.
+    const pageClamped = clampPagesAndBounds(candidate.beats, pageLengths);
+    // 2. Anchor verbatim quotes BEFORE arithmetic ordering so quoted spans are never clipped or swapped.
+    const anchored = repairQuotedRanges(pageClamped.beats, pages);
+    let workingBeats = anchored.beats;
+    const collectedRepairs: string[] = [...pageClamped.repairs, ...anchored.repairs];
+
+    // 3. Repair forward-order slips on unlocked beats around any locked quotes.
+    const preCheck = checkRanges(workingBeats, pageLengths, anchored.matched);
+    if (preCheck.problems.length > 0) {
+      const repaired = repairBeatRangesForGate(workingBeats, pageLengths, anchored.matched);
+      const rechecked = checkRanges(repaired.beats, pageLengths, anchored.matched);
       if (rechecked.problems.length === 0) {
-        ranges = {
-          beats: rechecked.beats,
-          repairs: [...repaired.repairs, ...rechecked.repairs],
-          problems: [],
-        };
+        workingBeats = rechecked.beats;
+        collectedRepairs.push(...repaired.repairs, ...rechecked.repairs);
       }
     }
-    // Arithmetic repairs must never truncate a quoted sentence to satisfy order.
-    const anchored = repairQuotedRanges(ranges.beats, pages);
-    const checked = checkRanges(anchored.beats, pageLengths, anchored.matched);
-    ranges = { ...checked, repairs: [...ranges.repairs, ...anchored.repairs, ...checked.repairs] };
+
+    // 4. Expand 1–3 word stubs (e.g. `145–146` `"second reason"`) and snap ungrounded ranges to supporting sentences.
+    const aligned = alignBeatRangesToSource(workingBeats, pages, anchored.matched);
+    const checked = checkRanges(aligned.beats, pageLengths, anchored.matched);
+    const ranges =
+      checked.problems.length === 0
+        ? {
+            beats: checked.beats,
+            repairs: [...collectedRepairs, ...aligned.repairs, ...checked.repairs],
+            problems: [] as string[],
+          }
+        : (() => {
+            const fallback = checkRanges(workingBeats, pageLengths, anchored.matched);
+            return {
+              ...fallback,
+              repairs: [...collectedRepairs, ...fallback.repairs],
+            };
+          })();
+
     if (ranges.problems.length) {
       return {
         kind: "ranges",

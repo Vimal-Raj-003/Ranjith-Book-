@@ -148,3 +148,32 @@ for (const scenario of ["scheduled", "receipt-open", "receipt-saved-mismatch", "
     } finally { await context.close(); await fs.rm(directory, { recursive: true, force: true }); }
   });
 }
+
+test("confirmScheduleReceipt matches Polymer <img alt> emoji titles and rejects mismatched titles or IDs", { skip: !chrome }, async () => {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const targetAt = new Date("2026-11-16T08:19:00.000Z"); // 16 Nov 2026, 13:49 IST (GMT+05:30 -> +330 min)
+    await page.setContent(`<!doctype html>
+      <div role="dialog" aria-label="Video scheduled">
+        <h2>Video scheduled</h2>
+        <p>Your video will be set to Public on Nov 16, 2026 at 1:49 PM</p>
+        <yt-formatted-string class="video-title">Why You Forget Details <img class="small-emoji emoji" alt="🧠" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></yt-formatted-string>
+        <a href="https://youtube.com/shorts/TOCJ6ACzUUE">https://youtube.com/shorts/TOCJ6ACzUUE</a>
+      </div>`);
+
+    const matched = await confirmScheduleReceipt(page, "TOCJ6ACzUUE", "Why You Forget Details 🧠", targetAt, 330);
+    assert.deepEqual(matched, { ok: true, problem: undefined });
+
+    const variationMatched = await confirmScheduleReceipt(page, "TOCJ6ACzUUE", "Why You Forget Details 🧠\uFE0F", targetAt, 330);
+    assert.deepEqual(variationMatched, { ok: true, problem: undefined });
+
+    const wrongTitle = await confirmScheduleReceipt(page, "TOCJ6ACzUUE", "Different Approved Title 🧠", targetAt, 330);
+    assert.equal(wrongTitle?.ok, false);
+
+    const wrongId = await confirmScheduleReceipt(page, "OTHERID1234", "Why You Forget Details 🧠", targetAt, 330);
+    assert.equal(wrongId?.ok, false);
+  } finally {
+    await context.close();
+  }
+});

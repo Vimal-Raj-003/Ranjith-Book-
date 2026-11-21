@@ -49,11 +49,13 @@ test("an uncertain earlier upload cannot be uploaded again unless the calendar c
   assert.equal(judgeInstagramCalendar(parseInstagramCalendar(response())!, expected).kind, "confirmed");
 });
 
-test("the 30-minute gap is checked against actual scheduled content without moving either post", () => {
+test("other unrelated scheduled posts less than 30 minutes apart or at the exact same time are allowed without moving either post", () => {
   const other = (offset: number) => parseInstagramCalendar(response([row({ caption_text: "Other repo", scheduled_publish_time: at.getTime()/1000 + offset })]))!;
-  assert.equal(judgeInstagramCalendar(other(29 * 60), identity).kind, "blocked");
-  assert.equal(judgeInstagramCalendar(other(30 * 60), identity).kind, "clear");
-  assert.equal(judgeInstagramCalendar(other(-29 * 60), identity).kind, "blocked");
+  assert.equal(judgeInstagramCalendar(other(27 * 60), identity).kind, "clear");
+  assert.equal(judgeInstagramCalendar(other(-27 * 60), identity).kind, "clear");
+  assert.equal(judgeInstagramCalendar(other(5 * 60), identity).kind, "clear");
+  assert.equal(judgeInstagramCalendar(other(-5 * 60), identity).kind, "clear");
+  assert.equal(judgeInstagramCalendar(other(0), identity).kind, "clear");
 });
 
 test("scheduling rejects passed/missing/too-near times rather than sharing immediately", () => {

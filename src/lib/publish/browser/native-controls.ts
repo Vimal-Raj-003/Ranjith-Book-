@@ -8,19 +8,60 @@ import type { EnvLike } from "../youtube/secrets";
 import { judgeScheduledView, parseOffset, studioTargetAtOffset, gmtLabel } from "../native-schedule";
 
 // The receipt uses the zone verified by this page's scheduling picker. Never
-// infer it from the server's timezone or from the requested time alone.
+// infer it from the requested time alone or from the server's timezone.
 const verifiedZones = new WeakMap<PageLike, number>();
+
+export function cleanStudioText(value: string): string {
+  return (value ?? "").normalize("NFKC").replace(/[\u200B-\u200D\uFE0E\uFE0F]/g, "").replace(/\s+/g, " ").trim();
+}
 
 export async function confirmScheduleReceipt(page: Page, id: string, title: string, at: Date, offset?: number): Promise<{ok:boolean;problem?:string} | null> {
   const dialog = page.getByRole("dialog", {name:"Video scheduled",exact:true});
   if (!(await dialog.isVisible().catch(()=>false))) return null;
   if (offset === undefined) return null;
+  const normalizedExpected = cleanStudioText(title);
   const receipt = await dialog.evaluate((root, expectedTitle) => {
-    return {text:(root as HTMLElement).innerText,
-      titleMatches:[...root.querySelectorAll("*")].some(el=>(el.textContent??"").normalize("NFKC").replace(/\s+/g," ").trim()===expectedTitle.normalize("NFKC").replace(/\s+/g," ").trim()),
-      links:[...root.querySelectorAll("a[href]")].map(a=>a.getAttribute("href")??"")};
-  }, title);
-  const matchingId = receipt.links.some(link=>/(?:youtu\.be\/|[?&]v=|\/shorts\/)([\w-]{11})(?![\w-])/.exec(link)?.[1]===id);
+    // YouTube Polymer renders emojis inside <yt-formatted-string> as <img alt="🧠">.
+    // Node.textContent drops <img alt>, so walk child nodes inline (no inner named functions: tsx __name guard).
+    let titleMatches = false;
+    const candidates = [root, ...root.querySelectorAll("*")];
+    for (const el of candidates) {
+      let raw = "";
+      const stack: Node[] = [];
+      for (let i = el.childNodes.length - 1; i >= 0; i--) stack.push(el.childNodes[i]);
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        if (node.nodeType === 3) {
+          raw += node.nodeValue ?? "";
+        } else if (node.nodeType === 1) {
+          const elem = node as HTMLElement;
+          if (elem.tagName === "IMG") {
+            raw += elem.getAttribute("alt") ?? "";
+          } else if (elem.tagName === "BR") {
+            raw += " ";
+          } else {
+            for (let i = elem.childNodes.length - 1; i >= 0; i--) stack.push(elem.childNodes[i]);
+          }
+        }
+      }
+      const norm = raw.normalize("NFKC").replace(/[\u200B-\u200D\uFE0E\uFE0F]/g, "").replace(/\s+/g, " ").trim();
+      if (norm === expectedTitle) {
+        titleMatches = true;
+        break;
+      }
+    }
+    return {
+      text: (root as HTMLElement).innerText,
+      titleMatches,
+      links: [...root.querySelectorAll("a[href]")].map(a => a.getAttribute("href") ?? ""),
+    };
+  }, normalizedExpected);
+  const linkIds = receipt.links
+    .map(link => /(?:youtu\.be\/|[?&]v=|\/shorts\/)([\w-]{11})(?![\w-])/.exec(link)?.[1] ?? null)
+    .filter((v): v is string => Boolean(v));
+  const matchingId = linkIds.length > 0
+    ? linkIds.includes(id)
+    : /(?:youtu\.be\/|[?&]v=|\/shorts\/)([\w-]{11})(?![\w-])/.exec(receipt.text)?.[1] === id;
   const verdict = judgeScheduledView({title, text:`${receipt.text} ${gmtLabel(offset)}`}, {title,target:studioTargetAtOffset(at,offset)});
   const ok = matchingId && receipt.titleMatches && verdict.scheduled && verdict.timeConfirmed;
   return {ok,problem:ok?undefined:"Studio's scheduling receipt did not match the approved video ID, exact title, date and time."};
@@ -62,7 +103,7 @@ export const youtubeScheduleControls: YouTubeScheduleControls = {
     const offset = parseOffset(view?.text ?? "");
     if (!view || offset === null) return { ok: false, problem: "Studio did not confirm the saved schedule and time zone." };
     const verdict = judgeScheduledView(view, { title, target: studioTargetAtOffset(at, offset) });
-    const exactTitle = (view.title ?? "").normalize("NFKC").replace(/\s+/g, " ").trim() === title.normalize("NFKC").replace(/\s+/g, " ").trim();
+    const exactTitle = cleanStudioText(view.title ?? "") === cleanStudioText(title);
     return { ok: verdict.scheduled && verdict.timeConfirmed && exactTitle, problem: verdict.problems.join(" ") || (!exactTitle ? "Studio did not show the exact approved title." : undefined) };
   },
   async uploadComplete(page, log) {
@@ -73,7 +114,7 @@ export const youtubeScheduleControls: YouTubeScheduleControls = {
     const page = like as unknown as Page;
     const view = await readScheduledFromChannel(page, id);
     if (!view) throw new Error("The earlier YouTube upload could not be read. Inspect Studio; no second file was selected.");
-    const clean = (value: string) => value.normalize("NFKC").replace(/\s+/g, " ").trim();
+    const clean = cleanStudioText;
     const title = clean(view.title ?? "");
     const description = await page.locator("#description-textarea #textbox").first().innerText({ timeout: 5_000 }).catch(() => null);
     const exactTitle = title === clean(metadata.title);

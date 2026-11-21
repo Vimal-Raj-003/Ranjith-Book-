@@ -1,5 +1,6 @@
 import type { StepTiming } from "./PipelineRail";
 import type { AttemptIdentity } from "@/lib/episodes/attempt-groups";
+import type { PublicSceneVisual } from "@/lib/video/visual-engine/types";
 
 /**
  * The shapes the client binds to. Types only — nothing here is emitted, so it
@@ -45,6 +46,9 @@ export interface EpisodeState extends AttemptIdentity {
   durationSec?: number | null;
   /** Added by the thumbnail workstream; absent until then. */
   thumbnails?: ThumbnailRef[];
+  /** Automatic local cinematic visual engine mode and per-scene previews. */
+  visualEngine?: string | null;
+  sceneVisuals?: PublicSceneVisual[];
   /** The poster the operator picked; null or absent means "no choice made". */
   thumbChoice?: string | null;
   /** The operator's headline override; null or absent means the generated one. */
@@ -118,6 +122,7 @@ export interface IdeaView {
 export interface AnalysisView {
   id: string;
   bookTitle: string;
+  rightsStatus?: "public-domain" | "in-copyright" | "own-work";
   status: string;
   step: string;
   error: string | null;

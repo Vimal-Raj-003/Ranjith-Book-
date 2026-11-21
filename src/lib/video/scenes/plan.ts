@@ -27,8 +27,8 @@ export const SCENE_SECONDS = 5.6;
  * retention failure it exists to prevent. It is cut at the first sentence
  * boundary after HOOK_MIN_SEC when it would run past HOOK_MAX_SEC.
  */
-export const HOOK_MIN_SEC = 3.0;
-export const HOOK_MAX_SEC = 5.8;
+export const HOOK_MIN_SEC = 2.8;
+export const HOOK_MAX_SEC = 4.6;
 
 /** A word ending a sentence: terminal punctuation, allowing closing quotes. */
 const SENTENCE_END = /[.!?]["'”’)\]]*$/;
@@ -46,7 +46,7 @@ const CLAUSE_END = /[,;:—–]["'”’)\]]*$/;
  * be a scene, and below MAX_SCENE_SEC so the split happens BEFORE the run
  * becomes unsplittable rather than after.
  */
-const CLAUSE_SPLIT_SEC = 7.5;
+const CLAUSE_SPLIT_SEC = 5.0;
 
 /**
  * Below this a piece has no usable time on screen at all and must be merged

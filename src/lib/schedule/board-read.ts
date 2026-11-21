@@ -10,9 +10,10 @@ import { publishingEnabled } from "@/lib/publish/execution";
 import { expectedHandle } from "@/lib/publish/identity";
 import { parseThumbnails } from "@/lib/thumbnails";
 import { connectionFor } from "@/lib/publish/youtube/accounts";
-import { checkAgainst, checkSlots, DEFAULT_WINDOWS, type SlotTime, type TimeWindow } from "./plan";
+import { checkSlots, DEFAULT_WINDOWS, type SlotTime, type TimeWindow } from "./plan";
 import { localParts } from "./reference-time";
 import { batchCompletion } from "./board-completion";
+import { deriveUploadProgress } from "./upload-progress";
 import type { Candidate, GeneratedVideo, JobSummary, JobView, Platform, PlatformState, ScheduleView, SlotView, VideoPage } from "./board-types";
 
 export const platforms: Platform[] = ["youtube", "instagram"];
@@ -28,7 +29,7 @@ export async function ownedPlan(userId: string, id: string) {
 export const toTime = (slot: ScheduleSlot, s: WeeklySchedule): SlotTime => ({key: slot.id, day: Math.floor(slot.position / perDay(s)), position: slot.position % perDay(s) + 1, localDate: localParts(slot.assignedAt,s.timezone).date, localTime: localParts(slot.assignedAt,s.timezone).time, scheduledAt: slot.assignedAt});
 
 export function jobStatus(job: PublishJob): string {
-  return ({QUEUED: "SCHEDULED", PREPARING: "PUBLISHING", UPLOADING: "PUBLISHING", PUBLISHED: "POSTED", SCHEDULED: "PLATFORM_SCHEDULED", REQUIRES_CONNECTION: "FAILED", READY: "DRAFT", HELD: "DRAFT"} as Record<string,string>)[job.status] ?? job.status;
+  return ({QUEUED: "SCHEDULED", PREPARING: "PUBLISHING", UPLOADING: "PUBLISHING", SCHEDULING: "PUBLISHING", PUBLISHED: "POSTED", SCHEDULED: "PLATFORM_SCHEDULED", REQUIRES_CONNECTION: "FAILED", READY: "DRAFT", HELD: "DRAFT"} as Record<string,string>)[job.status] ?? job.status;
 }
 export function jobView(job: PublishJob, slot?: ScheduleSlot, plan?: WeeklySchedule): JobView {
   const options = json<{scheduledAt?: string}>(job.optionsJson, {});
@@ -39,7 +40,18 @@ export function jobView(job: PublishJob, slot?: ScheduleSlot, plan?: WeeklySched
   const confirmation = job.externalId && job.status === "SCHEDULED" && job.scheduledFor && Number.isFinite(job.scheduledFor.getTime()) &&
     (!target || Math.abs(job.scheduledFor.getTime() - target.getTime()) < 60_000) ? "scheduled" :
     job.externalId && job.status === "PUBLISHED" && job.publishedAt && Number.isFinite(job.publishedAt.getTime()) ? "posted" : null;
-  return {id: job.id, confirmation, sourceStatus: job.status, platform: job.platform, status: paused?"DRAFT":jobStatus(job), error: paused?"Paused locally. Resume the activated schedule and slot to continue.":job.lastError || job.progress, remoteUrl: job.externalUrl,
+  const status = paused ? "DRAFT" : jobStatus(job);
+  const prog = deriveUploadProgress({
+    status,
+    sourceStatus: job.status,
+    confirmation,
+    uploadedBytes: job.uploadedBytes,
+    totalBytes: job.totalBytes,
+    progressText: paused ? null : job.progress,
+    nativeSchedule: native,
+    preUpload,
+  });
+  return {id: job.id, confirmation, sourceStatus: job.status, mode: job.mode ?? "api", platform: job.platform, status, error: paused?"Paused locally. Resume the activated schedule and slot to continue.":job.lastError || job.progress, progress: job.progress, uploadedBytes: job.uploadedBytes, totalBytes: job.totalBytes, uploadPercent: prog.percent, stage: prog.stage, remoteUrl: job.externalUrl,
     startAt: job.retryAt?.toISOString() ?? (native ? job.createdAt : slot?.assignedAt)?.toISOString() ?? null,
     publishAt: options.scheduledAt ?? slot?.assignedAt.toISOString() ?? null, startedAt: job.preparedAt?.toISOString() ?? null,
     lastAttemptAt: job.preparedAt?.toISOString() ?? null, updatedAt: job.updatedAt.toISOString(), postedAt: job.publishedAt?.toISOString() ?? null,
@@ -49,12 +61,12 @@ export function jobView(job: PublishJob, slot?: ScheduleSlot, plan?: WeeklySched
 export function platformState(platform: Platform, job: PublishJob | undefined, slot?: ScheduleSlot, plan?: WeeklySchedule): PlatformState {
   const enabled = publishingEnabled(platform);
   const protectedRemote = !!(job?.externalId || job?.remoteDraftId || job?.sessionUrlEnc);
-  const blocked = !!job && (protectedRemote || ["QUEUED","PREPARING","UPLOADING","SCHEDULED","PUBLISHED","AWAITING_HUMAN","HELD"].includes(job.status));
+  const blocked = !!job && (protectedRemote || ["QUEUED","PREPARING","UPLOADING","SCHEDULING","SCHEDULED","PUBLISHED","AWAITING_HUMAN","HELD"].includes(job.status));
   const kind = !enabled ? "disabled" : job?.status === "SCHEDULED" ? "platform-scheduled" : job?.status === "PUBLISHED" ? "posted" : job?.status === "AWAITING_HUMAN" || protectedRemote ? "waiting-on-you" : job?.status === "QUEUED" ? (slot ? "scheduled-post" : "immediate-queued") : "immediate-publishing";
   const reason = !enabled ? "Instagram publishing is disabled. YouTube can proceed independently." : blocked ? `${platform === "youtube" ? "YouTube" : "Instagram"}: ${job?.status === "PUBLISHED" ? "already published" : job?.status === "SCHEDULED" ? "already scheduled on the platform" : protectedRemote ? "an upload already exists; inspect it before retrying" : job?.status === "AWAITING_HUMAN" ? "waiting for your review" : "a post is already queued or running"}.` : null;
   const view = job ? jobView(job, slot, plan) : null;
-  const summary: JobSummary | null = view && job ? {id: job.id, mode: job.mode ?? "api", status: view.status, scheduledAt: view.startAt, publishAt: view.publishAt, remoteUrl: view.remoteUrl, error: view.error, attempts: job.attempts, postedAt: view.postedAt, createdAt: job.createdAt.toISOString(), nativeSchedule: view.nativeSchedule, slotId: slot?.id ?? null, platformStatus: view.platformStatus, platformPublishAt: view.platformPublishAt} : null;
-  const status = !job ? (enabled ? "none" : "disabled") : ({QUEUED: "queued", PREPARING: "publishing", UPLOADING: "publishing", PUBLISHED: "published", SCHEDULED: "scheduled-on-platform", AWAITING_HUMAN: "needs-you", FAILED: "failed", REQUIRES_CONNECTION: "failed", CANCELLED: "cancelled", HELD: "held"} as const)[job.status as "QUEUED"] ?? "held";
+  const summary: JobSummary | null = view && job ? {id: job.id, mode: job.mode ?? "api", status: view.status, scheduledAt: view.startAt, publishAt: view.publishAt, remoteUrl: view.remoteUrl, error: view.error, attempts: job.attempts, postedAt: view.postedAt, createdAt: job.createdAt.toISOString(), nativeSchedule: view.nativeSchedule, slotId: slot?.id ?? null, platformStatus: view.platformStatus, platformPublishAt: view.platformPublishAt, confirmation: view.confirmation, sourceStatus: view.sourceStatus, preUpload: view.preUpload, progress: view.progress, uploadedBytes: view.uploadedBytes, totalBytes: view.totalBytes, uploadPercent: view.uploadPercent, stage: view.stage} : null;
+  const status = !job ? (enabled ? "none" : "disabled") : ({QUEUED: "queued", PREPARING: "publishing", UPLOADING: "publishing", SCHEDULING: "publishing", PUBLISHED: "published", SCHEDULED: "scheduled-on-platform", AWAITING_HUMAN: "needs-you", FAILED: "failed", REQUIRES_CONNECTION: "failed", CANCELLED: "cancelled", HELD: "held"} as const)[job.status as "QUEUED"] ?? "held";
   return {platform, status:job?.status==="QUEUED"&&view?.status==="DRAFT"?"held":status, job: summary, canPublish: enabled && !blocked, blockedReason: reason, blockedKind: reason ? kind : null, executionEnabled: enabled};
 }
 
@@ -147,14 +159,13 @@ export async function boardView(userId:string,id:string):Promise<ScheduleView> {
     return {id:row.id,day:t.day,position:t.position,localDate:t.localDate,localTime:t.localTime,scheduledAt:row.assignedAt.toISOString(),status:!row.episodeId?"SKIPPED":row.controlState==="cancelled"||s.status==="cancelled"?"CANCELLED":row.controlState==="paused"||s.status==="paused"?"PAUSED":s.status==="draft"?"PLANNED":"ACTIVE",creation:e?{id:e.id,title:e.title||e.book.title,owner:"",repo:e.book.title,format:e.format==="9:16"?"vertical":"landscape",hasPlatformCopy:!!e.igCaption,hasThumbnail:!!e.thumbnails}:null,jobs:slotJobs,issues:[],conflicts};
   });
   const times=rows.filter(r=>r.episodeId&&r.platform==="youtube"&&r.controlState!=="cancelled").map(r=>toTime(r,s));
-  const issues = s.status==="draft" ? checkSlots(times,{now:new Date(),timezone:s.timezone,windows:s.boardGrid?planWindows(s):[],endInclusive:s.endInclusive,minGapMinutes:30,minAheadMinutes:15}) : [];
+  const issues = s.status==="draft" ? checkSlots(times,{now:new Date(),timezone:s.timezone,windows:s.boardGrid?planWindows(s):[],endInclusive:s.endInclusive,minAheadMinutes:15}) : [];
   if(s.status==="draft"){
-    issues.push(...checkAgainst(times,foreign.filter(f=>f.platform==="youtube").map(f=>toTime(f,otherPlans.find(p=>p.id===f.scheduleId)!)),30));
     for(const cell of slots){cell.issues=issues.filter(i=>i.key===cell.id);const assigned=rows.find(r=>r.id===cell.id);if(assigned?.episodeId&&!cell.creation)cell.issues.push({key:cell.id,severity:"error",message:"The assigned video is no longer available. Choose another video or an empty slot."});else if(cell.creation)cell.issues.push(...ready.get(cell.creation.id)!.issues.map(i=>({key:cell.id,severity:"error" as const,message:i.message})));}
     const empty=slots.filter(t=>!t.creation).length;if(empty)issues.push({key:"schedule",severity:"warning",message:`${empty} slots have no video and will be skipped when this is activated.`});
     issues.push({key:"schedule",severity:"warning",message:s.youtubePrivacy==="public"?"YouTube visibility is Public: activating uploads each video ahead and schedules its future publication on YouTube.":`YouTube visibility is ${s.youtubePrivacy}: the worker uploads at each assigned time; it does not create a public native schedule.`});
   }
   const allJobs=slots.flatMap(t=>Object.values(t.jobs)).filter((j):j is JobView=>!!j);
   const present=async(p:string)=> (await fs.readdir(path.join(WORK_ROOT,"browser-profiles",p)).catch(()=>[])).length>0;
-  return {id:s.id,name:planName(s),timezone:s.timezone,status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,windows:planWindows(s),endInclusive:s.endInclusive,seed:s.seed,leadMinutes:20,instagramOffsetMinutes:s.instagramOffsetMinutes,youtubePrivacy:s.youtubePrivacy,youtubeChannel:expectedHandle("youtube",process.env),youtubeNative:s.youtubePrivacy==="public",minGapMinutes:30,missGraceMinutes:45,activatedAt:s.activatedAt?.toISOString()??null,slots,issues,candidates,unavailable,releasable:slots.flatMap(t=>t.conflicts).filter(c=>c.releasable).length,profiles:{youtube:await present("youtube"),instagram:await present("instagram")},counts:{completion:batchCompletion(slots),slots:slots.length,withVideo:slots.filter(t=>t.creation).length,jobs:allJobs.length,posted:allJobs.filter(j=>j.status==="POSTED").length,scheduledOnPlatform:allJobs.filter(j=>j.status==="PLATFORM_SCHEDULED").length,failed:allJobs.filter(j=>j.status==="FAILED").length,waiting:allJobs.filter(j=>j.status==="AWAITING_HUMAN").length},madeForKids:s.madeForKids,instagramEnabled:publishingEnabled("instagram"),workerEnabled:process.env.BOOKREEL_SCHEDULE_WORKER_ENABLED==="1",workflowVersion:s.workflowVersion};
+  return {id:s.id,name:planName(s),timezone:s.timezone,status:s.status.toUpperCase(),startDate:s.weekStart.toISOString().slice(0,10),days:s.days,windows:planWindows(s),endInclusive:s.endInclusive,seed:s.seed,leadMinutes:20,instagramOffsetMinutes:s.instagramOffsetMinutes,youtubePrivacy:s.youtubePrivacy,youtubeChannel:expectedHandle("youtube",process.env),youtubeNative:s.youtubePrivacy==="public",missGraceMinutes:45,activatedAt:s.activatedAt?.toISOString()??null,slots,issues,candidates,unavailable,releasable:slots.flatMap(t=>t.conflicts).filter(c=>c.releasable).length,profiles:{youtube:await present("youtube"),instagram:await present("instagram")},counts:{completion:batchCompletion(slots),slots:slots.length,withVideo:slots.filter(t=>t.creation).length,jobs:allJobs.length,posted:allJobs.filter(j=>j.status==="POSTED").length,scheduledOnPlatform:allJobs.filter(j=>j.status==="PLATFORM_SCHEDULED").length,failed:allJobs.filter(j=>j.status==="FAILED").length,waiting:allJobs.filter(j=>j.status==="AWAITING_HUMAN").length},madeForKids:s.madeForKids,instagramEnabled:publishingEnabled("instagram"),workerEnabled:process.env.BOOKREEL_SCHEDULE_WORKER_ENABLED==="1",workflowVersion:s.workflowVersion};
 }

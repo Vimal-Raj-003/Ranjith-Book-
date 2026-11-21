@@ -41,6 +41,18 @@ export interface JobView {
   platformPublishAt: string | null;
   /** True only when externalId, remoteDraftId, and sessionUrlEnc are all null. */
   preUpload?: boolean;
+  /** Transport mode ("api" | "browser"). */
+  mode?: string | null;
+  /** Raw live progress message emitted by the publisher while running. */
+  progress?: string | null;
+  /** Actual bytes acknowledged by the upload transport, when available. */
+  uploadedBytes?: number | null;
+  /** Actual total media size in bytes, when available. */
+  totalBytes?: number | null;
+  /** Exact 0..100 upload percentage derived from real upload progress, or null when unavailable. */
+  uploadPercent?: number | null;
+  /** Concise human-readable upload/scheduling stage, when active or queued. */
+  stage?: string | null;
 }
 
 export interface SlotConflict {
@@ -96,7 +108,6 @@ export interface ScheduleView {
   youtubeChannel: string;
   /** YouTube holds this schedule's times (the visibility is public), instead of RepoReel holding them. */
   youtubeNative: boolean;
-  minGapMinutes: number;
   missGraceMinutes: number;
   activatedAt: string | null;
   slots: SlotView[];
@@ -131,6 +142,14 @@ export interface JobSummary {
   /** For a native schedule the platform confirmed: its own word for the state, and when it will publish. */
   platformStatus: string | null;
   platformPublishAt: string | null;
+  confirmation?: "scheduled" | "posted" | null;
+  sourceStatus?: string | null;
+  preUpload?: boolean;
+  progress?: string | null;
+  uploadedBytes?: number | null;
+  totalBytes?: number | null;
+  uploadPercent?: number | null;
+  stage?: string | null;
 }
 
 export interface PlatformState {

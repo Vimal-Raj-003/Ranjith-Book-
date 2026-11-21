@@ -17,7 +17,7 @@ import {isSqliteLockError} from "../src/lib/publish/browser/run";
 import {STUDIO_REVIEW_TIMEOUT_MS} from "../src/lib/publish/browser/youtube-review";
 import {processScheduleQueue} from "../src/lib/schedule/worker";
 import {runSchedule} from "../src/lib/schedule/activate";
-import {addDays,todayIn,DEFAULT_TIMEZONE} from "../src/lib/schedule/reference-time";
+import {addDays,todayIn,DEFAULT_TIMEZONE,zonedInstant,localParts} from "../src/lib/schedule/reference-time";
 import {toggle,parseStored,schedulePlanFor,planFor,selectAll,prune,countLabel} from "../src/lib/schedule/video-selection";
 import {listEpisodes} from "../src/lib/episodes/list";
 import {readAttemptHistory} from "../src/lib/episodes/attempt-history";
@@ -103,16 +103,16 @@ test("an eleven-video batch settles Instagram then YouTube per video and never r
   } finally {if(previous===undefined)delete process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;else process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED=previous;}
 });
 
-for(const safe of [true,false])test(`batch recovery preserves the successful platform and ${safe?"continues after a pre-upload conflict":"stops an uncertain platform"}`,async()=>{
+test("batch recovery preserves the successful platform and stops an uncertain platform",async()=>{
   const f=await fixture(3),d=await draw(f,{youtubePrivacy:"public"}),p=publisher();
   await prisma.weeklySchedule.update({where:{id:d.id},data:{status:"active",workflowVersion:2}});
   const before=await prisma.scheduleSlot.findMany({where:{scheduleId:d.id},orderBy:{id:"asc"}});
   const ytSlot=before.find(s=>s.episodeId===f.ids[0]&&s.platform==="youtube")!;
   const yt=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:"youtube",mode:"browser",status:"SCHEDULED",externalId:"fixture-known",scheduledFor:ytSlot.assignedAt}});
-  const ig=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:"instagram",mode:"browser",status:"AWAITING_HUMAN",remoteDraftId:safe?null:"uncertain-upload",lastError:safe?"Another Instagram post is within 30 minutes of this time. Nothing was uploaded or rescheduled.":"The upload may already exist."}});
+  const ig=await prisma.publishJob.create({data:{episodeId:f.ids[0],platform:"instagram",mode:"browser",status:"AWAITING_HUMAN",remoteDraftId:"uncertain-upload",lastError:"The upload may already exist."}});
   await prisma.scheduleSlot.updateMany({where:{scheduleId:d.id,episodeId:f.ids[0]},data:{status:"failed"}});
   await runSchedule(d.id,{...p.options,automatic:true,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}});
-  assert.deepEqual(p.calls.map(c=>`${c.id}:${c.platform}`),f.ids.slice(1).flatMap(id=>safe?[`${id}:instagram`,`${id}:youtube`]:[`${id}:youtube`]));
+  assert.deepEqual(p.calls.map(c=>`${c.id}:${c.platform}`),f.ids.slice(1).map(id=>`${id}:youtube`));
   assert.deepEqual(await prisma.publishJob.findUnique({where:{id:yt.id}}),yt);
   assert.deepEqual(await prisma.publishJob.findUnique({where:{id:ig.id}}),ig);
   assert.deepEqual((await prisma.scheduleSlot.findMany({where:{scheduleId:d.id},orderBy:{id:"asc"}})).map(s=>[s.id,s.assignedAt]),before.map(s=>[s.id,s.assignedAt]));
@@ -556,4 +556,172 @@ test("activating a new schedule recovers unstarted CANCELLED jobs and non-critic
   const criticalJob=await prisma.publishJob.findUniqueOrThrow({where:{episodeId_platform:{episodeId:f2.ids[0],platform:"youtube"}}});
   assert.equal(criticalJob.status,"AWAITING_HUMAN");
   assert.match(criticalJob.lastError??"",/Simulated critical checkpoint database failure/);
+});
+
+test("user-defined IST publishing times are preserved exactly for 27-min, 5-min, same-time, cross-schedule, and midnight-straddling posts",async()=>{
+  const previous=process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;
+  process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED="1";
+  try {
+    const f=await fixture(6),p=publisher();
+    const options={...p.options,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}};
+    const d1=day(),d2=addDays(d1,1);
+
+    // Schedule A: 3 videos on d1 & across midnight into d2
+    // Slot 0: d1 14:00 IST
+    // Slot 1: d1 14:05 IST (5 minutes apart in same schedule)
+    // Slot 2: d1 22:09 IST (matches screenshot anchor; will pair 27 min & 0 min with Schedule B)
+    const planA=await createBoardPlan(f.userId,{startDate:d1,days:1,seed:11,creationIds:f.ids.slice(0,3),youtubePrivacy:"public",instagramOffsetMinutes:0});
+    let viewA=await boardView(f.userId,planA.id);
+    await editBoardSlot(f.userId,planA.id,viewA.slots[0].id,{localDate:d1,localTime:"14:00"});
+    await editBoardSlot(f.userId,planA.id,viewA.slots[1].id,{localDate:d1,localTime:"14:05"});
+    await editBoardSlot(f.userId,planA.id,viewA.slots[2].id,{localDate:d1,localTime:"22:09"});
+    viewA=await boardView(f.userId,planA.id);
+    assert.deepEqual(viewA.issues.filter(i=>i.severity==="error"),[]);
+    assert.deepEqual(viewA.slots.flatMap(s=>s.issues.filter(i=>i.severity==="error")),[]);
+
+    // Schedule B: 3 videos across different schedule, exact same time, 27 minutes apart, and across midnight
+    // Slot 0: d1 21:42 IST (27 minutes from Schedule A's 22:09 IST!)
+    // Slot 1: d1 21:42 IST (exact same time within Schedule B, and Slot 2 below is exact same time as Schedule A's 22:09!)
+    // Slot 2: d1 23:57 IST -> then we also test d2 00:02 IST across midnight in Schedule C
+    const planB=await createBoardPlan(f.userId,{startDate:d1,days:1,seed:22,creationIds:f.ids.slice(3,6),youtubePrivacy:"public",instagramOffsetMinutes:0});
+    let viewB=await boardView(f.userId,planB.id);
+    await editBoardSlot(f.userId,planB.id,viewB.slots[0].id,{localDate:d1,localTime:"21:42"});
+    await editBoardSlot(f.userId,planB.id,viewB.slots[1].id,{localDate:d1,localTime:"21:42"});
+    await editBoardSlot(f.userId,planB.id,viewB.slots[2].id,{localDate:d1,localTime:"22:09"});
+
+    viewB=await boardView(f.userId,planB.id);
+    assert.deepEqual(viewB.issues.filter(i=>i.severity==="error"),[],"no spacing or cross-schedule errors in draft view");
+    assert.deepEqual(viewB.slots.flatMap(s=>s.issues.filter(i=>i.severity==="error")),[],"no slot-level spacing errors");
+
+    // Activate both schedules: every job on YouTube and Instagram receives the exact user-entered IST timestamp
+    await boardAction(f.userId,planA.id,"activate",{},options);
+    await boardAction(f.userId,planB.id,"activate",{},options);
+    assert.equal(p.calls.length,12,"all 6 videos scheduled independently across YouTube and Instagram");
+
+    const expectedByEpisode=new Map<string,{date:string;time:string}>([
+      [f.ids[0],{date:d1,time:"14:00"}],
+      [f.ids[1],{date:d1,time:"14:05"}],
+      [f.ids[2],{date:d1,time:"22:09"}],
+      [f.ids[3],{date:d1,time:"21:42"}],
+      [f.ids[4],{date:d1,time:"21:42"}],
+      [f.ids[5],{date:d1,time:"22:09"}],
+    ]);
+
+    for(const [episodeId,want] of expectedByEpisode){
+      const exactInstant=zonedInstant(want.date,want.time,"Asia/Kolkata");
+      assert.deepEqual(localParts(exactInstant,"Asia/Kolkata"),want);
+      const dbSlots=await prisma.scheduleSlot.findMany({where:{episodeId}});
+      assert.equal(dbSlots.length,2);
+      for(const slot of dbSlots){
+        assert.equal(slot.assignedAt.toISOString(),exactInstant.toISOString(),"DB ScheduleSlot preserves exact IST instant");
+      }
+      const dbJobs=await prisma.publishJob.findMany({where:{episodeId}});
+      assert.equal(dbJobs.length,2);
+      for(const job of dbJobs){
+        assert.equal(job.status,"SCHEDULED");
+        assert.equal(job.scheduledFor?.toISOString(),exactInstant.toISOString(),"DB PublishJob.scheduledFor preserves exact IST instant");
+        assert.equal(new Date(JSON.parse(job.optionsJson!).scheduledAt).toISOString(),exactInstant.toISOString(),"PublishJob.optionsJson preserves exact IST instant");
+      }
+      const pubCalls=p.calls.filter(c=>c.id===episodeId);
+      assert.equal(pubCalls.length,2);
+      for(const call of pubCalls){
+        assert.equal(call.options.scheduledAt?.toISOString(),exactInstant.toISOString(),"Publisher receives exact unmodified IST instant");
+        assert.equal(call.options.timezone,"Asia/Kolkata");
+      }
+    }
+
+    // Verify midnight-straddling posts (e.g. 23:57 IST on d1 and 00:02 IST on d2 — 5 minutes apart across midnight)
+    // AND editing an active private schedule's slot to match another schedule's exact time without refusal
+    const fMidnight=await fixture(3),pMidnight=publisher();
+    const midnightOpts={...pMidnight.options,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"1",BOOKREEL_IG_NATIVE_SCHEDULE:"1"}};
+    const planMidnight=await createBoardPlan(fMidnight.userId,{startDate:d1,days:2,seed:33,creationIds:fMidnight.ids.slice(0,2),youtubePrivacy:"public",instagramOffsetMinutes:0});
+    let vMid=await boardView(fMidnight.userId,planMidnight.id);
+    // Clear auto-assigned slots and place on Day 1 Slot 3 (23:57) and Day 2 Slot 1 (00:02)
+    await editBoardSlot(fMidnight.userId,planMidnight.id,vMid.slots[0].id,{creationId:null});
+    await editBoardSlot(fMidnight.userId,planMidnight.id,vMid.slots[1].id,{creationId:null});
+    await editBoardSlot(fMidnight.userId,planMidnight.id,vMid.slots[2].id,{creationId:fMidnight.ids[0],localDate:d1,localTime:"23:57"});
+    await editBoardSlot(fMidnight.userId,planMidnight.id,vMid.slots[3].id,{creationId:fMidnight.ids[1],localDate:d2,localTime:"00:02"});
+    vMid=await boardView(fMidnight.userId,planMidnight.id);
+    assert.deepEqual(vMid.issues.filter(i=>i.severity==="error"),[],"5-minute gap across midnight has zero errors");
+    await boardAction(fMidnight.userId,planMidnight.id,"activate",{},midnightOpts);
+    assert.equal(pMidnight.calls.length,4);
+    assert.equal(pMidnight.calls.find(c=>c.id===fMidnight.ids[0]&&c.platform==="youtube")?.options.scheduledAt?.toISOString(),zonedInstant(d1,"23:57","Asia/Kolkata").toISOString());
+    assert.equal(pMidnight.calls.find(c=>c.id===fMidnight.ids[1]&&c.platform==="youtube")?.options.scheduledAt?.toISOString(),zonedInstant(d2,"00:02","Asia/Kolkata").toISOString());
+
+    // Rescheduling an unstarted active slot to the exact same time as another active schedule's post (d2 00:02 IST) succeeds
+    const planActiveEdit=await createBoardPlan(fMidnight.userId,{startDate:d2,days:1,seed:44,creationIds:[fMidnight.ids[2]],youtubePrivacy:"private",instagramOffsetMinutes:0});
+    await boardAction(fMidnight.userId,planActiveEdit.id,"activate",{},{...pMidnight.options,env:{BOOKREEL_INSTAGRAM_PUBLISH_ENABLED:"0"}});
+    const activeView=await boardView(fMidnight.userId,planActiveEdit.id);
+    await editBoardSlot(fMidnight.userId,planActiveEdit.id,activeView.slots[0].id,{localDate:d2,localTime:"00:02"});
+    const afterEdit=await boardView(fMidnight.userId,planActiveEdit.id);
+    assert.equal(afterEdit.slots[0].localDate,d2);
+    assert.equal(afterEdit.slots[0].localTime,"00:02");
+    assert.equal(afterEdit.slots[0].scheduledAt,zonedInstant(d2,"00:02","Asia/Kolkata").toISOString());
+  } finally {
+    if(previous===undefined)delete process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED;
+    else process.env.BOOKREEL_INSTAGRAM_PUBLISH_ENABLED=previous;
+  }
+});
+
+test("weekly page: post-upload receipt hold on one YouTube video never strands remaining queued YouTube videos", async () => {
+  const f = await fixture(3);
+  const calls: { id: string; platform: string }[] = [];
+  const makePublisher = (platform: never, options: BrowserPublishOptions): BrowserPublisher => {
+    const real = browserPublisherFor(platform, { browser: { deps: { locate: () => "fixture-browser" } } }) as BrowserPublisher;
+    return {
+      ...real,
+      publish: async (prepared) => {
+        calls.push({ id: prepared.episodeId, platform });
+        if (platform === "youtube" && prepared.episodeId === f.ids[0]) {
+          return {
+            status: "AWAITING_HUMAN",
+            externalId: "TOCJ6ACzUUE",
+            externalUrl: "https://youtu.be/TOCJ6ACzUUE",
+            remoteDraftId: "TOCJ6ACzUUE",
+            error: "Studio's scheduling receipt did not match the approved video ID, exact title, date and time.",
+          };
+        }
+        return {
+          status: "PUBLISHED",
+          externalId: `yt_${prepared.episodeId.slice(-8)}`,
+          externalUrl: "https://youtu.be/confirmed11",
+          confirmedAt: new Date(),
+          visibility: "scheduled",
+          scheduledFor: options.scheduledAt ?? undefined,
+        };
+      },
+    };
+  };
+  const opts = {
+    makePublisher: makePublisher as never,
+    waitForCompletion: true,
+    env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1", BOOKREEL_IG_NATIVE_SCHEDULE: "1" },
+  };
+  const plan = await draw(f, { youtubePrivacy: "public" });
+  await boardAction(f.userId, plan.id, "activate", {}, opts);
+
+  // All 3 Instagram slots AND all 3 YouTube slots attempted; slots 1 and 2 on YouTube are SCHEDULED (not stuck QUEUED!)
+  assert.equal(calls.filter((c) => c.platform === "instagram").length, 3);
+  assert.equal(calls.filter((c) => c.platform === "youtube").length, 3);
+
+  const ytJobs = await Promise.all(
+    f.ids.map((episodeId) => prisma.publishJob.findUniqueOrThrow({ where: { episodeId_platform: { episodeId, platform: "youtube" } } })),
+  );
+  assert.equal(ytJobs[0].status, "AWAITING_HUMAN");
+  assert.equal(ytJobs[0].externalId, "TOCJ6ACzUUE");
+  assert.equal(ytJobs[1].status, "SCHEDULED");
+  assert.equal(ytJobs[2].status, "SCHEDULED");
+
+  // retryBoardPlan reconciles the post-upload hold via read-only confirmation without re-uploading
+  const retried = await retryBoardPlan(f.userId, plan.id, {
+    ...opts,
+    verifyKnownSchedule: async (c) => c.remoteId === "TOCJ6ACzUUE",
+  });
+  assert.equal(retried.scheduled, 1);
+  assert.equal(calls.filter((c) => c.platform === "youtube").length, 3, "held video was confirmed read-only without a second upload");
+
+  const reconciled = await prisma.publishJob.findUniqueOrThrow({
+    where: { episodeId_platform: { episodeId: f.ids[0], platform: "youtube" } },
+  });
+  assert.equal(reconciled.status, "SCHEDULED");
 });

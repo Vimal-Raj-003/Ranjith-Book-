@@ -20,7 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { esc } from "../composition/escape";
 import type { BookTheme } from "../composition/theme-contract";
-import type { Scene, SceneIcon } from "./types";
+import type { CinePlateSpec, Scene, SceneIcon } from "./types";
 import { emphasizeWords } from "./emphasis";
 import { normalizeToken } from "../../ingest/align";
 import { alpha } from "../composition/themes/color";
@@ -45,7 +45,23 @@ export interface SceneAnim {
   s: number;
   /** Element index within the scene; -1 is the scene layer itself, -2 the scene's `[data-drift]` wrapper. */
   e: number;
-  k: "in" | "out" | "rise" | "pop" | "wipe" | "grow" | "draw" | "count" | "lottie" | "three" | "focus" | "cine" | "drift";
+  k:
+    | "in"
+    | "out"
+    | "rise"
+    | "reveal"
+    | "slide-x"
+    | "scale-soft"
+    | "pop"
+    | "wipe"
+    | "grow"
+    | "draw"
+    | "count"
+    | "lottie"
+    | "three"
+    | "focus"
+    | "cine"
+    | "drift";
   t: number;
   d: number;
   /** The from-value: pixels for `rise`, scale for `pop`, dash length for `draw`, the target number for `count`. */
@@ -65,6 +81,8 @@ export interface SceneAnim {
   bloom?: number;
   /** `cine` only: the opening hook, whose headline runs several lines, so the hero is framed lower and smaller under it. */
   hook?: boolean;
+  /** `cine` only: optional generated 9:16 visual plate + depth map for 2.5D parallax or local video. */
+  plate?: CinePlateSpec;
 }
 
 export interface RenderedScene {
@@ -125,6 +143,104 @@ function stagger(n: number, start: number, dur: number): number[] {
   return Array.from({ length: n }, (_, i) => start + i * step);
 }
 
+const SYNC_STOP = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have",
+  "he", "her", "his", "i", "in", "into", "is", "it", "its", "of", "on", "or", "she", "so",
+  "that", "the", "their", "them", "they", "this", "to", "was", "we", "were", "what", "when",
+  "which", "who", "will", "with", "you", "your", "not", "can", "do", "does", "our", "than",
+]);
+
+const SPOKEN_DIGIT_WORDS: Readonly<Record<string, string>> = {
+  zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5", six: "6", seven: "7",
+  eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12", thirteen: "13",
+  fourteen: "14", fifteen: "15", sixteen: "16", seventeen: "17", eighteen: "18",
+  nineteen: "19", twenty: "20", thirty: "30", forty: "40", fifty: "50", sixty: "60",
+  seventy: "70", eighty: "80", ninety: "90", hundred: "100", thousand: "1000", million: "1000000",
+  half: "50", double: "2", twice: "2",
+};
+
+function stemToken(w: string): string {
+  return w.replace(/(ing|ed|es|s)$/, "");
+}
+
+/**
+ * Exact spoken timestamp of a statistic's digits in `scene.words`, or `null` when
+ * the words slice does not utter those digits (leaving deterministic scene-start
+ * timing intact for synthetic fixtures).
+ */
+function spokenNumberTime(
+  digits: string,
+  words: { word: string; start: number }[] | undefined,
+  sceneStart: number,
+  sceneEnd: number,
+): number | null {
+  if (!digits || !words || words.length === 0) return null;
+  for (const w of words) {
+    const rawDigits = w.word.replace(/[^\d]/g, "");
+    const norm = normalizeToken(w.word);
+    if ((rawDigits && rawDigits === digits) || (norm && SPOKEN_DIGIT_WORDS[norm] === digits)) {
+      const latest = Math.max(sceneStart + 0.1, sceneEnd - 0.85);
+      return Math.max(sceneStart + 0.05, Math.min(latest, w.start));
+    }
+  }
+  return null;
+}
+
+/**
+ * Synchronize each item/phrase of a motion-graphics template to the exact instant
+ * its first content word is spoken in `scene.words`, advancing monotonically and
+ * falling back cleanly to `stagger(...)` whenever a phrase is not lexically matched.
+ */
+function syncPhrasesToWords(
+  phrases: string[],
+  words: { word: string; start: number }[] | undefined,
+  start: number,
+  dur: number,
+): number[] {
+  const n = phrases.length;
+  if (n <= 0) return [];
+  const base = stagger(n, start, dur);
+  if (!words || words.length === 0) return base;
+
+  const spoken = words.map((w) => ({
+    norm: normalizeToken(w.word),
+    stem: stemToken(normalizeToken(w.word)),
+    start: w.start,
+  }));
+  const minT = start;
+  const maxT = Math.max(start + 0.25, start + dur - 0.6);
+
+  let cursor = 0;
+  let matchedAny = false;
+  const rawTimes: (number | null)[] = phrases.map((phrase) => {
+    const content = phrase
+      .split(/\s+/)
+      .map(normalizeToken)
+      .filter((t) => t.length > 2 && !SYNC_STOP.has(t));
+    if (content.length === 0) return null;
+    for (let wi = cursor; wi < spoken.length; wi++) {
+      const sw = spoken[wi];
+      if (!sw.norm) continue;
+      if (content.some((ct) => sw.norm === ct || (ct.length >= 4 && sw.stem === stemToken(ct)))) {
+        cursor = wi + 1;
+        matchedAny = true;
+        return Math.max(minT, Math.min(maxT, sw.start));
+      }
+    }
+    return null;
+  });
+
+  if (!matchedAny) return base;
+
+  const out: number[] = [];
+  for (let k = 0; k < n; k++) {
+    const candidate = rawTimes[k] ?? (k === 0 ? base[0] : out[k - 1] + 0.28);
+    const prev = k > 0 ? out[k - 1] + 0.14 : minT;
+    out.push(Math.min(maxT, Math.max(prev, candidate)));
+  }
+  return out;
+}
+
 /** An icon as inline SVG. `currentColor` makes the theme's accent apply. */
 function iconSvg(icon: SceneIcon, size: number): string {
   return `<svg class="sc-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon.paths}</svg>`;
@@ -140,7 +256,7 @@ function fitSize(chars: number, max: number, min: number, per: number): number {
 function kineticText(scene: Scene, i: number, accent: string): RenderedScene {
   const words = scene.words ?? [];
   const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
-  const size = fitSize(chars, 96, 46, 0.26);
+  const size = fitSize(chars, 88, 44, 0.26);
   // "Important concepts" get visual weight, not every word — see emphasis.ts
   // for the categories and the spacing rule that keeps this occasional.
   const emphasis = emphasizeWords(words.map((w) => w.word));
@@ -165,33 +281,26 @@ function kineticText(scene: Scene, i: number, accent: string): RenderedScene {
   const iconEl = words.length;
   let iconMarkup = "";
   if (scene.icon) {
-    iconMarkup = `<div class="sc-kinetic-icon" data-el="${iconEl}">${iconSvg(scene.icon, 110)}</div>`;
+    iconMarkup = `<div class="sc-kinetic-icon" data-el="${iconEl}">${iconSvg(scene.icon, 104)}</div>`;
     anims.push({ s: i, e: iconEl, k: "in", t: scene.start, d: 0.4 });
   } else {
-    // No confident Tabler match for this scene's concept (icons.ts already
-    // tried, in validate.ts) — Phase 4's first advanced-visual accent: a
-    // small, hand-authored Lottie animation for the first emphasised word's
-    // CATEGORY, when one has been authored (lottie.ts). Most categories have
-    // none yet, so this is the ordinary path for most scenes, not a fallback
-    // being exercised — the actual fallback is the `null` case right below
-    // doing nothing at all, identical to today's behaviour.
     const firstHit = emphasis.find((h) => h);
     const clip = firstHit ? lottieFor(firstHit.category, accent) : null;
     if (clip) {
-      // The lone element carries its own permanent-visibility exemption
-      // (sceneCss) rather than a separate fade-in tween: two tweens on one
-      // element in one window is exactly what `overlappingAnims` refuses,
-      // and the clip's own first keyframe already starts fully invisible
-      // (opacity 0, scale 0) — the seek-safety rest state lives inside the
-      // Lottie data itself, not in this element's CSS.
       iconMarkup = `<div class="sc-kinetic-icon sc-lottie" data-el="${iconEl}"></div>`;
       anims.push({ s: i, e: iconEl, k: "lottie", t: scene.start, d: LOTTIE_DURATION_S, data: clip });
     }
   }
+  const ruleEl = words.length + 1;
+  const hasRule = words.length >= 4;
+  const ruleMarkup = hasRule ? `<div class="sc-kinetic-rule" data-el="${ruleEl}"></div>` : "";
+  if (hasRule) {
+    anims.push({ s: i, e: ruleEl, k: "wipe", t: scene.start + 0.04, d: 0.44 });
+  }
   // A slow push-in over the whole scene: type on a plain page is never a still.
   anims.push({ s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: DRIFT_SCALE });
   return {
-    markup: `<div class="sc-kinetic-wrap" data-drift>${iconMarkup}<div class="sc-kinetic" style="font-size:${size}px">${markup}</div></div>`,
+    markup: `<div class="sc-kinetic-wrap" data-drift>${iconMarkup}${ruleMarkup}<div class="sc-kinetic" style="font-size:${size}px">${markup}</div></div>`,
     anims,
   };
 }
@@ -220,7 +329,7 @@ function cinematic(scene: Scene, i: number): RenderedScene {
     const accent = new Set((cine.accentWords ?? []).map((w) => normalizeToken(w)).filter(Boolean));
     const emphasis = emphasizeWords(words.map((w) => w.word));
     const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
-    const size = fitSize(chars, 92, 56, 0.24);
+    const size = fitSize(chars, 76, 46, 0.26);
     const spans = words
       .map((w, k) => {
         const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
@@ -229,7 +338,7 @@ function cinematic(scene: Scene, i: number): RenderedScene {
       .join(" ");
     words.forEach((w, k) => {
       const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
-      anims.push(emph ? { s: i, e: 2 + k, k: "pop", t: w.start, d: 0.34, v: 0.5 } : { s: i, e: 2 + k, k: "rise", t: w.start, d: 0.28, v: 22 });
+      anims.push(emph ? { s: i, e: 2 + k, k: "pop", t: w.start, d: 0.32, v: 0.52 } : { s: i, e: 2 + k, k: "rise", t: w.start, d: 0.24, v: 20 });
     });
     text = `<div class="cine-hook" style="font-size:${size}px">${spans}</div>`;
   } else {
@@ -237,39 +346,64 @@ function cinematic(scene: Scene, i: number): RenderedScene {
     const letters = Array.from(key);
     const keyTokens = key.split(/\s+/).map(normalizeToken);
     const at = words.findIndex((w) => normalizeToken(w.word) === keyTokens[0]);
-    const earliest = scene.start + 0.2;
-    const latest = Math.max(earliest, scene.end - 1.3);
-    const keyStart = Math.min(latest, Math.max(earliest, at >= 0 ? words[at].start : scene.start + 0.7));
+    const earliest = scene.start + 0.16;
+    const latest = Math.max(earliest, scene.end - 1.15);
+    const keyStart = Math.min(latest, Math.max(earliest, at >= 0 ? words[at].start : scene.start + 0.6));
     const lead = cine.lead.trim();
+    const callout = (cine.plate?.callout ?? "").trim();
+    let calloutMarkup = "";
     let leadMarkup = "";
     let n = 2;
-    if (lead) {
+    if (callout) {
+      const calloutEl = n++;
+      calloutMarkup = `<div class="cine-callout" data-el="${calloutEl}">${esc(callout)}</div>`;
+      anims.push({ s: i, e: calloutEl, k: "reveal", t: earliest, d: 0.4, v: 14 });
+    }
+    if (lead && !cine.plate) {
       const first = normalizeToken(lead.split(/\s+/)[0] ?? "");
       const li = words.findIndex((w) => normalizeToken(w.word) === first);
-      const leadStart = Math.min(keyStart, Math.max(earliest, li >= 0 ? words[li].start : scene.start + 0.25));
+      const leadStart = Math.min(keyStart, Math.max(earliest, li >= 0 ? words[li].start : scene.start + 0.22));
       leadMarkup = `<div class="cine-lead" data-el="${n}">${esc(lead)}</div>`;
-      anims.push({ s: i, e: n, k: "focus", t: leadStart, d: 0.5, v: 18 });
+      anims.push({ s: i, e: n, k: "focus", t: leadStart, d: 0.44, v: 16 });
       n += 1;
     }
-    const size = Math.max(92, Math.min(236, Math.round(900 / (Math.max(4, letters.length) * 0.66))));
+    const size = Math.max(54, Math.min(136, Math.round(650 / (Math.max(5, letters.length) * 0.76))));
     let step = 0;
     const spans = letters
       .map((ch) => {
         if (ch === " ") return `<span class="cine-space"> </span>`;
         const el = n++;
-        anims.push({ s: i, e: el, k: "focus", t: keyStart + step * 0.05, d: 0.55, v: 34 });
+        anims.push({ s: i, e: el, k: "focus", t: keyStart + step * 0.032, d: 0.42, v: 22 });
         step += 1;
         return `<span class="cine-letter" data-el="${el}">${esc(ch)}</span>`;
       })
       .join("");
-    text = `<div class="cine-text">${leadMarkup}<div class="cine-key" style="font-size:${size}px">${spans}</div></div>`;
+    text = `<div class="cine-text">${calloutMarkup}${leadMarkup}<div class="cine-key" style="font-size:${size}px">${spans}</div></div>`;
   }
 
-  anims.push({ s: i, e: 0, k: "cine", t: scene.start, d: Math.max(0.5, scene.end - scene.start), hero: cine.hero, bloom: 1, ...(cine.hook ? { hook: true } : {}) });
-  const behind = TEXT_BEHIND.has(cine.hero) && !cine.hook;
+  anims.push({
+    s: i,
+    e: 0,
+    k: "cine",
+    t: scene.start,
+    d: Math.max(0.5, scene.end - scene.start),
+    hero: cine.hero,
+    bloom: 1,
+    ...(cine.hook ? { hook: true } : {}),
+    ...(cine.plate ? { plate: cine.plate } : {}),
+  });
+  const behind = TEXT_BEHIND.has(cine.hero) && !cine.hook && !cine.plate;
+  const plateMarkup = cine.plate
+    ? `<img class="cine-plate-src" data-plate-img="1" decoding="sync" loading="eager" src="${esc(cine.plate.imageSrc)}" alt="" />` +
+      `<img class="cine-plate-src" data-plate-depth="1" decoding="sync" loading="eager" src="${esc(cine.plate.depthSrc)}" alt="" />` +
+      (cine.plate.videoSrc
+        ? `<video class="cine-video" data-plate-video="1" src="${esc(cine.plate.videoSrc)}" muted playsinline preload="auto" data-start="${scene.start.toFixed(3)}" data-duration="${Math.max(0.5, scene.end - scene.start + SCENE_FADE).toFixed(3)}" data-track-index="${3 + (i % 4)}"></video>`
+        : "")
+    : "";
+  const scrimMarkup = cine.plate ? `<div class="cine-plate-scrim"></div>` : "";
   const canvases = `<canvas class="cine-canvas" data-el="0" width="${CINE_BUFFER.w}" height="${CINE_BUFFER.h}"></canvas><canvas class="cine-bloom" data-el="1" width="${CINE_BLOOM.w}" height="${CINE_BLOOM.h}"></canvas>`;
   return {
-    markup: `<div class="cine-fallback"></div>${behind ? text : ""}${canvases}${behind ? "" : text}`,
+    markup: `<div class="cine-fallback"></div>${plateMarkup}${behind ? text : ""}${canvases}${scrimMarkup}${behind ? "" : text}`,
     anims,
   };
 }
@@ -305,102 +439,111 @@ const THREE_SIZE = 200;
 function iconConcept(scene: Scene, i: number): RenderedScene {
   const icons = scene.icons ?? [];
   const labels = scene.items ?? [];
-  const size = icons.length === 1 ? 300 : icons.length === 2 ? 220 : 170;
-  const times = stagger(icons.length, scene.start, scene.end - scene.start);
-  // Element indices past the cells' own (0..icons.length-1) so the canvas's
-  // "three" tween never shares a key with its cell's "pop" tween —
-  // `overlappingAnims` keys purely on element index, and the two run for
-  // different, overlapping windows (the cell pops in once; the shape keeps
-  // turning for as long as the scene holds).
+  const size = icons.length === 1 ? 268 : icons.length === 2 ? 204 : 162;
+  const maxLabelLen = Math.max(8, ...labels.map((l) => l.length));
+  const labelSize = fitSize(maxLabelLen, 36, 24, 0.34);
+  const syncPhrases = labels.length === icons.length ? labels : icons.map((ic) => ic.query);
+  const times = syncPhrasesToWords(syncPhrases, scene.words, scene.start, scene.end - scene.start);
   const threeEl = (k: number) => icons.length + k;
-  // Only the cells whose icon has a shape of its own get a canvas. An icon that
-  // matches no shape group keeps its flat Tabler picture, which is specific to
-  // the concept, instead of having it covered by a generic solid — see
-  // `shapeForIcon`, where a real render showed three different concepts all
-  // painting the same blob.
   const shapes = icons.map((icon) => shapeForIcon(icon));
   const cells = icons
     .map(
       (icon, k) => `<div class="sc-cell" data-el="${k}">
         <div class="sc-icon-well" style="--sz:${size}px">
-          ${iconSvg(icon, Math.round(size * 0.56))}
+          ${iconSvg(icon, Math.round(size * 0.54))}
           ${shapes[k] ? `<canvas class="sc-three" data-el="${threeEl(k)}" width="${THREE_SIZE}" height="${THREE_SIZE}"></canvas>` : ""}
         </div>
-        ${labels[k] ? `<div class="sc-cell-label">${esc(labels[k])}</div>` : ""}
+        ${labels[k] ? `<div class="sc-cell-label" style="font-size:${labelSize}px">${esc(labels[k])}</div>` : ""}
       </div>`,
     )
     .join("");
-  const anims: SceneAnim[] = icons.map((_, k) => ({ s: i, e: k, k: "pop" as const, t: times[k], d: ENTER, v: 0.62 }));
-  // The optional Three.js treatment (three-shapes.ts), Phase 4's second
-  // advanced-visual module — a low-poly shape standing over the SAME flat
-  // icon rather than a separate slot, so a browser that cannot show it
-  // (no WebGL, the CDN failed, `window.THREE` never loaded) leaves exactly
-  // what renders today: the plain Tabler icon, already in the markup above,
-  // never conditional on this tween existing at all.
-  //
-  // This tween's OWN window is not the icon's brief pop-in: it runs from the
-  // icon's own arrival to the scene's end, so the shape keeps a slow, subtle
-  // turn for as long as it holds the frame, not just for its entrance.
+  const anims: SceneAnim[] = icons.map((_, k) => ({ s: i, e: k, k: "pop" as const, t: times[k], d: ENTER, v: 0.68 }));
   icons.forEach((_icon, k) => {
     const shape = shapes[k];
-    if (!shape) return; // no canvas was emitted for this cell
+    if (!shape) return;
     const start = times[k];
     const dur = Math.max(0.5, scene.end - start);
     anims.push({ s: i, e: threeEl(k), k: "three", t: start, d: dur, shape });
   });
+  const railEl = icons.length * 2;
+  const railMarkup =
+    icons.length > 1
+      ? `<div class="sc-icons-rail" data-el="${railEl}" style="top:${Math.round(size * 0.5)}px"></div>`
+      : "";
+  if (icons.length > 1) {
+    anims.push({ s: i, e: railEl, k: "wipe", t: Math.max(scene.start, times[0] + 0.08), d: Math.min(0.65, Math.max(0.3, times[times.length - 1] - times[0] + 0.25)) });
+  }
   return {
-    markup: `<div class="sc-icons sc-cols-${icons.length}">${cells}</div>`,
+    markup: `<div class="sc-icons-wrap">${railMarkup}<div class="sc-icons sc-cols-${icons.length}">${cells}</div></div>`,
     anims,
   };
 }
 
 function comparison(scene: Scene, i: number): RenderedScene {
   const icons = scene.icons ?? [];
-  const times = stagger(3, scene.start, scene.end - scene.start);
-  const side = (label: string, icon: SceneIcon | undefined, el: number) =>
-    `<div class="sc-side" data-el="${el}">
-      ${icon ? `<div class="sc-side-icon">${iconSvg(icon, 130)}</div>` : ""}
-      <div class="sc-side-label">${esc(label)}</div>
+  const left = scene.left ?? "";
+  const right = scene.right ?? "";
+  const dur = Math.max(0.6, scene.end - scene.start);
+  const sideTimes = syncPhrasesToWords([left, right], scene.words, scene.start + 0.06, dur);
+  const leftT = Math.min(scene.start + 0.35, sideTimes[0] ?? scene.start + 0.06);
+  const rightT = Math.min(leftT + 0.44, Math.max(leftT + 0.22, sideTimes[1] ?? leftT + 0.32));
+  const vsT = leftT + (rightT - leftT) * 0.5;
+  const labelSize = fitSize(Math.max(left.length, right.length), 38, 25, 0.36);
+
+  const side = (label: string, icon: SceneIcon | undefined, el: number, variant: "a" | "b") =>
+    `<div class="sc-side sc-side-${variant}" data-el="${el}">
+      <div class="sc-side-bar sc-side-bar-${variant}"></div>
+      ${icon ? `<div class="sc-side-icon">${iconSvg(icon, 108)}</div>` : ""}
+      <div class="sc-side-label" style="font-size:${labelSize}px">${esc(label)}</div>
     </div>`;
   return {
     markup: `<div class="sc-compare">
-      ${side(scene.left ?? "", icons[0], 0)}
-      <div class="sc-vs" data-el="1">vs</div>
-      ${side(scene.right ?? "", icons[1], 2)}
+      ${side(left, icons[0], 0, "a")}
+      <div class="sc-vs-badge" data-el="1"><span class="sc-vs">vs</span></div>
+      ${side(right, icons[1], 2, "b")}
     </div>`,
     anims: [
-      { s: i, e: 0, k: "rise", t: times[0], d: ENTER, v: 34 },
-      { s: i, e: 1, k: "pop", t: times[1], d: 0.36, v: 0.5 },
-      { s: i, e: 2, k: "rise", t: times[2], d: ENTER, v: 34 },
+      { s: i, e: 0, k: "slide-x", t: leftT, d: ENTER, v: -28 },
+      { s: i, e: 1, k: "pop", t: vsT, d: 0.36, v: 0.58 },
+      { s: i, e: 2, k: "slide-x", t: rightT, d: ENTER, v: 28 },
     ],
   };
 }
 
 function steps(scene: Scene, i: number): RenderedScene {
   const items = scene.steps ?? [];
-  const times = stagger(items.length, scene.start, scene.end - scene.start);
+  const dur = Math.max(0.6, scene.end - scene.start);
+  const times = syncPhrasesToWords(items, scene.words, scene.start + 0.08, dur);
+  const maxLen = Math.max(10, ...items.map((s) => s.length));
+  const textSize = fitSize(maxLen, 38, 26, 0.26);
+  const headingText = (scene.concept ?? "")
+    .replace(/\s+\b(?:icons?|pictures?|visuals?|illustrations?|graphics?|cards?|diagrams?|scenes?)\s*$/i, "")
+    .trim();
+  const headingSize = fitSize(headingText.length, 30, 22, 0.2);
+  const chevronSvg = `<svg class="sc-step-chevron" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>`;
   const rows = items
     .map(
       (s, k) => `<div class="sc-step" data-el="${k}">
         <div class="sc-step-n">${k + 1}</div>
-        <div class="sc-step-t">${esc(s)}</div>
+        <div class="sc-step-t" style="font-size:${textSize}px">${esc(s)}</div>
+        ${k + 1 < items.length ? chevronSvg : ""}
       </div>`,
     )
     .join("");
   const headingEl = items.length;
   const connectorEl = items.length + 1;
-  // The same "a line joins the points" idea `timeline`'s axis already draws,
-  // scaled to run behind the step numbers instead of down the whole card —
-  // a diagram connector, so a process reads as one thing with stages, not a
-  // stack of unrelated cards.
   const connector = items.length > 1 ? `<div class="sc-step-connector" data-el="${connectorEl}"></div>` : "";
+  const connectorDur =
+    items.length > 1
+      ? Math.max(0.45, Math.min(1.4, (times[times.length - 1] ?? scene.start + 0.6) - scene.start + 0.25))
+      : 0.5;
   return {
-    markup: `<div class="sc-steps">${connector}${scene.concept ? `<div class="sc-heading" data-el="${headingEl}">${esc(scene.concept)}</div>` : ""}${rows}</div>`,
+    markup: `<div class="sc-steps">${headingText ? `<div class="sc-heading" data-el="${headingEl}" style="font-size:${headingSize}px">${esc(headingText)}</div>` : ""}<div class="sc-steps-track">${connector}${rows}</div></div>`,
     anims: [
-      ...items.map((_, k) => ({ s: i, e: k, k: "rise" as const, t: times[k], d: ENTER, v: 30 })),
-      ...(scene.concept ? [{ s: i, e: headingEl, k: "in" as const, t: scene.start, d: 0.36 }] : []),
+      ...items.map((_, k) => ({ s: i, e: k, k: "reveal" as const, t: times[k], d: 0.46, v: 24 })),
+      ...(headingText ? [{ s: i, e: headingEl, k: "reveal" as const, t: scene.start, d: 0.36, v: 14 }] : []),
       ...(items.length > 1
-        ? [{ s: i, e: connectorEl, k: "grow" as const, t: scene.start + 0.1, d: Math.min(1.2, (scene.end - scene.start) * 0.5) }]
+        ? [{ s: i, e: connectorEl, k: "grow" as const, t: Math.max(scene.start, times[0] - 0.04), d: connectorDur }]
         : []),
     ],
   };
@@ -408,76 +551,124 @@ function steps(scene: Scene, i: number): RenderedScene {
 
 function timeline(scene: Scene, i: number): RenderedScene {
   const items = scene.steps ?? [];
-  const times = stagger(items.length, scene.start + 0.25, scene.end - scene.start);
+  const dur = Math.max(0.6, scene.end - scene.start);
+  const times = syncPhrasesToWords(items, scene.words, scene.start + 0.16, dur);
+  const maxLen = Math.max(10, ...items.map((s) => s.length));
+  const labelSize = fitSize(maxLen, 38, 26, 0.28);
   const rows = items
     .map(
       (s, k) => `<div class="sc-tl-row" data-el="${k}">
         <div class="sc-tl-dot"></div>
-        <div class="sc-tl-label">${esc(s)}</div>
+        <div class="sc-tl-card">
+          <div class="sc-tl-step-chip" aria-hidden="true">0${k + 1}</div>
+          <div class="sc-tl-label" style="font-size:${labelSize}px">${esc(s)}</div>
+        </div>
       </div>`,
     )
     .join("");
   const axisEl = items.length;
+  const axisDur = Math.max(0.5, Math.min(1.4, (times[times.length - 1] ?? scene.start + 0.7) - scene.start + 0.25));
   return {
     markup: `<div class="sc-timeline">
       <div class="sc-tl-axis" data-el="${axisEl}"></div>
       ${rows}
     </div>`,
     anims: [
-      { s: i, e: axisEl, k: "grow", t: scene.start, d: Math.min(1.1, (scene.end - scene.start) * 0.4) },
-      ...items.map((_, k) => ({ s: i, e: k, k: "rise" as const, t: times[k], d: 0.44, v: 22 })),
+      { s: i, e: axisEl, k: "grow", t: scene.start, d: axisDur },
+      ...items.map((_, k) => ({ s: i, e: k, k: "slide-x" as const, t: times[k], d: 0.44, v: 24 })),
     ],
   };
 }
 
 /** The curve's box inside the scene, and the path length used for the draw. */
-const CURVE = { w: 760, h: 380 };
+const CURVE = { w: 660, h: 320 };
+
+function smoothCurvePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  for (let k = 0; k < points.length - 1; k++) {
+    const p0 = points[Math.max(0, k - 1)];
+    const p1 = points[k];
+    const p2 = points[k + 1];
+    const p3 = points[Math.min(points.length - 1, k + 2)];
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = Math.max(0, Math.min(CURVE.h, p1.y + (p2.y - p0.y) / 6));
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = Math.max(0, Math.min(CURVE.h, p2.y - (p3.y - p1.y) / 6));
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
 
 function growthCurve(scene: Scene, i: number): RenderedScene {
   const pts = scene.curve?.points ?? [];
   const max = Math.max(1, ...pts);
-  const coords = pts.map((v, k) => {
-    const x = (CURVE.w * k) / Math.max(1, pts.length - 1);
-    const y = CURVE.h - (v / max) * CURVE.h;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  // A generous over-estimate of the polyline's length: the dash offset only
-  // has to be at least the path length for the draw to start fully hidden.
-  const dash = Math.round(CURVE.w + CURVE.h * 2);
-  const drawEnd = scene.start + 0.15 + Math.min(1.8, (scene.end - scene.start) * 0.6);
-  // The same line, closed down to the baseline — a chart reads as a chart
-  // once the area under it has weight, not just a stroke. Revealed after the
-  // line finishes drawing, so it never appears ahead of the line itself.
-  const fillPoints = `0,${CURVE.h} ${coords.join(" ")} ${CURVE.w},${CURVE.h}`;
-  // Three quiet gridlines. Static — a chart's grid does not animate in real
-  // life either, and everything that draws attention here should be the data.
-  const grid = [0.25, 0.5, 0.75]
-    .map((f) => `<line class="sc-grid" x1="0" y1="${(CURVE.h * f).toFixed(1)}" x2="${CURVE.w}" y2="${(CURVE.h * f).toFixed(1)}" />`)
+  const xy = pts.map((v, k) => ({
+    x: (CURVE.w * k) / Math.max(1, pts.length - 1),
+    y: CURVE.h - (v / max) * (CURVE.h - 18) - 6,
+  }));
+  const linePath = smoothCurvePath(xy);
+  const areaPath = xy.length
+    ? `${linePath} L ${CURVE.w.toFixed(1)} ${CURVE.h.toFixed(1)} L 0 ${CURVE.h.toFixed(1)} Z`
+    : "";
+  const dash = Math.round(CURVE.w + CURVE.h * 2.2);
+  const dur = Math.max(0.8, scene.end - scene.start);
+  const label = (scene.curve?.label ?? "").trim();
+  const syncedLabel = label ? syncPhrasesToWords([label], scene.words, scene.start, dur)[0] : scene.start;
+  const drawStart = Math.max(scene.start + 0.12, Math.min(scene.start + 0.45, syncedLabel));
+  const drawDur = Math.min(1.85, Math.max(0.65, dur * 0.56));
+  const drawEnd = Math.min(Math.max(drawStart + 0.4, scene.end - 0.35), drawStart + drawDur);
+  const labelSize = fitSize(label.length, 32, 22, 0.24);
+
+  const hGrid = [0.25, 0.5, 0.75]
+    .map((f) => `<line class="sc-grid" x1="0" y1="${(CURVE.h * f).toFixed(1)}" x2="${CURVE.w}" y2="${(CURVE.h * f).toFixed(1)}" stroke-dasharray="6 8" />`)
     .join("");
+  const vGrid = [0.25, 0.5, 0.75]
+    .map((f) => `<line class="sc-grid" x1="${(CURVE.w * f).toFixed(1)}" y1="0" x2="${(CURVE.w * f).toFixed(1)}" y2="${CURVE.h}" stroke-dasharray="6 8" />`)
+    .join("");
+
+  const midNodes: { markup: string; anim: SceneAnim }[] = [];
+  for (let k = 1; k < xy.length - 1; k++) {
+    if (xy.length > 5 && k % 2 !== 0) continue;
+    const elIdx = 4 + midNodes.length;
+    const frac = k / Math.max(1, xy.length - 1);
+    const nodeT = drawStart + (drawEnd - drawStart) * frac;
+    midNodes.push({
+      markup: `<circle class="sc-curve-node" data-el="${elIdx}" cx="${xy[k].x.toFixed(1)}" cy="${xy[k].y.toFixed(1)}" r="7.5" />`,
+      anim: { s: i, e: elIdx, k: "pop", t: nodeT, d: 0.3, v: 0.3 },
+    });
+  }
+  const head = xy[xy.length - 1] ?? { x: CURVE.w, y: 0 };
+
   return {
     markup: `<div class="sc-curve">
-      ${scene.curve?.label ? `<div class="sc-curve-label" data-el="2">${esc(scene.curve.label)}</div>` : ""}
-      <svg viewBox="0 0 ${CURVE.w} ${CURVE.h}" width="${CURVE.w}" height="${CURVE.h}" fill="none" aria-hidden="true">
+      ${label ? `<div class="sc-curve-label" data-el="2" style="font-size:${labelSize}px">${esc(label)}</div>` : ""}
+      <svg class="sc-curve-svg" viewBox="-16 -18 ${CURVE.w + 32} ${CURVE.h + 34}" width="${CURVE.w + 32}" height="${CURVE.h + 34}" fill="none" aria-hidden="true">
         <defs>
           <linearGradient id="sc-curve-fill-${i}" x1="0" y1="0" x2="0" y2="1">
             <stop class="sc-curve-fill-top" offset="0%" />
             <stop class="sc-curve-fill-bottom" offset="100%" />
           </linearGradient>
         </defs>
-        ${grid}
+        ${hGrid}
+        ${vGrid}
+        <line class="sc-axis" x1="0" y1="0" x2="0" y2="${CURVE.h}" />
         <line class="sc-axis" x1="0" y1="${CURVE.h}" x2="${CURVE.w}" y2="${CURVE.h}" />
-        <polygon class="sc-curve-fill" data-el="3" fill="url(#sc-curve-fill-${i})" points="${fillPoints}" />
-        <polyline class="sc-curve-line" data-el="0" points="${coords.join(" ")}"
-                  stroke-linecap="round" stroke-linejoin="round"
-                  style="stroke-dasharray:${dash};stroke-dashoffset:${dash}" />
-        <circle class="sc-curve-head" data-el="1" cx="${CURVE.w}" cy="${(CURVE.h - (pts[pts.length - 1] / max) * CURVE.h).toFixed(1)}" r="12" />
+        <path class="sc-curve-fill" data-el="3" fill="url(#sc-curve-fill-${i})" d="${areaPath}" />
+        <path class="sc-curve-line" data-el="0" d="${linePath}"
+              stroke-linecap="round" stroke-linejoin="round"
+              style="stroke-dasharray:${dash};stroke-dashoffset:${dash}" />
+        ${midNodes.map((n) => n.markup).join("")}
+        <circle class="sc-curve-head" data-el="1" cx="${head.x.toFixed(1)}" cy="${head.y.toFixed(1)}" r="12" />
       </svg>
     </div>`,
     anims: [
-      { s: i, e: 0, k: "draw", t: scene.start + 0.15, d: drawEnd - (scene.start + 0.15), v: dash },
-      { s: i, e: 1, k: "pop", t: drawEnd, d: 0.4, v: 0.2 },
-      { s: i, e: 3, k: "in", t: drawEnd, d: 0.6 },
-      ...(scene.curve?.label ? [{ s: i, e: 2, k: "in" as const, t: scene.start, d: 0.4 }] : []),
+      { s: i, e: 0, k: "draw", t: drawStart, d: Math.max(0.2, drawEnd - drawStart), v: dash },
+      { s: i, e: 1, k: "pop", t: drawEnd, d: 0.38, v: 0.25 },
+      { s: i, e: 3, k: "in", t: Math.max(drawStart + 0.2, drawEnd), d: 0.55 },
+      ...midNodes.map((n) => n.anim),
+      ...(label ? [{ s: i, e: 2, k: "reveal" as const, t: scene.start, d: 0.4, v: 14 }] : []),
     ],
   };
 }
@@ -501,35 +692,46 @@ export function counted(value: string): { prefix: string; digits: string; suffix
 function stat(scene: Scene, i: number): RenderedScene {
   const value = scene.stat?.value ?? "";
   const label = scene.stat?.label ?? "";
-  const size = fitSize(value.length, 300, 120, 14);
+  const size = fitSize(value.length, 240, 112, 12);
+  const labelSize = fitSize(label.length, 42, 28, 0.34);
   const count = counted(value);
-  // The counted digits are a SEPARATE element (data-el 3) from the value
-  // wrapper (data-el 0) that pops in, not the same one: `overlappingAnims`
-  // refuses two tweens on one element in the same window, and `pop`'s scale
-  // and `count`'s digit-by-digit text both run across the value's own
-  // arrival. `.sc-stat-count` is exempted from the generic hidden rest state
-  // (see sceneCss) because its visibility is the PARENT's — `pop` — not its
-  // own; count never touches opacity, only textContent.
+  const rawDigits = count ? count.digits.replace(/,/g, "") : value.replace(/[^\d]/g, "");
+  const spokenT = spokenNumberTime(rawDigits, scene.words, scene.start, scene.end);
+  const countStart = spokenT !== null ? spokenT : scene.start + 0.1;
+  const valueStart = spokenT !== null ? Math.max(scene.start, spokenT - 0.16) : scene.start;
+  const ruleStart = Math.min(Math.max(scene.start + 0.2, scene.end - 0.6), valueStart + 0.24);
+  const labelStart =
+    label && spokenT !== null
+      ? Math.min(Math.max(scene.start + 0.3, scene.end - 0.55), countStart + 0.28)
+      : scene.start + 0.42;
+
+  const fillShare =
+    count && count.suffix === "%" && count.n > 0 && count.n <= 100
+      ? Math.max(12, Math.min(100, count.n))
+      : 100;
+
   const valueMarkup = count
     ? `<span class="sc-stat-count" data-el="3">${esc(count.prefix)}0${esc(count.suffix)}</span>`
     : esc(value);
   return {
     markup: `<div class="sc-stat">
-      <div class="sc-stat-value" data-el="0" style="font-size:${size}px">${valueMarkup}</div>
-      ${label ? `<div class="sc-stat-label" data-el="1">${esc(label)}</div>` : ""}
-      <div class="sc-stat-rule" data-el="2"></div>
+      <div class="sc-stat-card">
+        <div class="sc-stat-value" data-el="0" style="font-size:${size}px">${valueMarkup}</div>
+        <div class="sc-stat-track"><div class="sc-stat-rule" data-el="2" style="width:${fillShare}%"></div></div>
+        ${label ? `<div class="sc-stat-label" data-el="1" style="font-size:${labelSize}px">${esc(label)}</div>` : ""}
+      </div>
     </div>`,
     anims: [
-      { s: i, e: 0, k: "pop", t: scene.start, d: 0.52, v: 0.66 },
-      { s: i, e: 2, k: "wipe", t: scene.start + 0.3, d: 0.5 },
-      ...(label ? [{ s: i, e: 1, k: "rise" as const, t: scene.start + 0.42, d: ENTER, v: 22 }] : []),
+      { s: i, e: 0, k: "pop", t: valueStart, d: 0.48, v: 0.72 },
+      { s: i, e: 2, k: "wipe", t: ruleStart, d: 0.52 },
+      ...(label ? [{ s: i, e: 1, k: "reveal" as const, t: labelStart, d: 0.46, v: 20 }] : []),
       ...(count
         ? [
             {
               s: i,
               e: 3,
               k: "count" as const,
-              t: scene.start + 0.1,
+              t: countStart,
               d: Math.min(1.1, Math.max(0.5, count.digits.length * 0.2)),
               v: count.n,
               prefix: count.prefix,
@@ -557,6 +759,24 @@ const ENTRANCES: { k: "in" | "rise" | "pop"; v?: number }[] = [{ k: "in" }, { k:
 
 export function entranceFor(index: number): { k: "in" | "rise" | "pop"; v?: number } {
   return ENTRANCES[index % ENTRANCES.length];
+}
+
+function transitionEntrance(
+  scene: Scene,
+  index: number,
+): { k: "in" | "rise" | "pop" | "reveal" | "slide-x" | "scale-soft"; v?: number } {
+  switch (scene.transitionIn) {
+    case "dissolve":
+      return { k: "in" };
+    case "depth-push":
+      return { k: "scale-soft", v: 0.94 };
+    case "pan-slide":
+      return { k: "slide-x", v: index % 2 === 0 ? 28 : -28 };
+    case "rise-wipe":
+      return { k: "reveal", v: 34 };
+    default:
+      return entranceFor(index);
+  }
 }
 
 /**
@@ -593,7 +813,7 @@ export function renderScene(scene: Scene, rect: SceneRect, accent: string): Rend
   // The opening hook owns frame zero: its layer RESTS visible (CSS, `sc-first`)
   // and has only the exit — the same shape the old hook card had.
   const first = cine && scene.cine?.hook === true;
-  const entrance = cine ? { k: "in" as const, v: undefined } : entranceFor(i);
+  const entrance = cine ? { k: "in" as const, v: undefined } : transitionEntrance(scene, i);
   const layerAnims: SceneAnim[] = [
     ...(first ? [] : [{ s: i, e: -1, k: entrance.k, t: scene.start, d: SCENE_FADE, v: entrance.v } as SceneAnim]),
     // The exit begins where the scene ENDS, not SCENE_FADE before it, so that it
@@ -610,9 +830,13 @@ export function renderScene(scene: Scene, rect: SceneRect, accent: string): Rend
     { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end), d: SCENE_FADE },
   ];
   const r = cine ? FULL_FRAME : rect;
+  const bgPlateMarkup =
+    !cine && scene.bgImageSrc
+      ? `<div class="sc-bg-plate" style="left:${-r.x}px;top:${-r.y}px;width:1080px;height:1920px"><img src="${esc(scene.bgImageSrc)}" alt="" /><div class="sc-bg-scrim"></div></div>`
+      : "";
 
   return {
-    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${body.markup}</div>`,
+    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${bgPlateMarkup}${body.markup}</div>`,
     anims: [...layerAnims, ...body.anims],
   };
 }
@@ -666,7 +890,10 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc { position:absolute; opacity:0; visibility:hidden; pointer-events:none;
         display:flex; align-items:center; justify-content:center;
         font-family: Inter, system-ui, sans-serif; color:${p.hookInk}; }
-  .sc > * { width:100%; }
+  .sc > * { width:100%; position:relative; }
+  .sc > .sc-bg-plate { position:absolute; pointer-events:none; overflow:hidden; }
+  .sc-bg-plate img { display:block; width:100%; height:100%; object-fit:cover; filter:blur(15px) saturate(1.26) contrast(1.08); transform:scale(1.08); opacity:0.78; }
+  .sc-bg-scrim { position:absolute; inset:0; background:radial-gradient(95% 78% at 50% 45%, ${alpha(p.backdropDeep, light ? 0.44 : 0.48)} 0%, ${alpha(p.backdropDeep, light ? 0.78 : 0.82)} 100%); }
   .sc [data-el] { opacity:0; visibility:hidden; }
 
   /* The content-aware glow: one element, one colour tween per scene, sitting
@@ -678,154 +905,126 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-icon { color:${p.accent}; display:block; }
 
   /* kinetic text — the narration itself, word by word on the real audio */
-  .sc-kinetic-wrap { display:flex; flex-direction:column; align-items:center; gap:28px; }
-  .sc-kinetic { text-align:center; font-weight:800; line-height:1.18; letter-spacing:-0.5px;
-                padding:0 18px; }
-  .sc-word { display:inline-block; margin:0 0.16em 0.1em 0; }
-  /* The optional accent icon (validate.ts). Quiet — its job is to let the eye
-     place the concept a beat before the words do, not to compete with them. */
-  .sc-kinetic-icon { opacity:0.85; }
+  .sc-kinetic-wrap { display:flex; flex-direction:column; align-items:center; gap:24px; max-width:810px; margin:0 auto; }
+  .sc-kinetic-rule { width:96px; height:5px; border-radius:3px; background:${p.accent};
+                     transform:scaleX(0); transform-origin:center center; }
+  .sc-kinetic { text-align:center; font-weight:800; line-height:1.2; letter-spacing:-0.6px;
+                padding:0 16px; }
+  .sc-word { display:inline-block; margin:0 0.16em 0.12em 0; }
+  .sc-kinetic-icon { opacity:0.88; }
   .sc-kinetic-icon .sc-icon { color:${p.accent}; }
-  /* The optional Lottie accent (lottie.ts), Phase 4's first advanced-visual
-     module — the SAME slot the Tabler icon above uses, never both at once.
-     Exempted from the generic hidden rest state below: nothing here ever
-     tweens this element's own opacity — the "lottie" anim kind only drives
-     playback (goToAndStop), never autoAlpha — so its rest state IS its
-     final state, and the reveal comes from the clip's own first keyframe
-     (opacity 0, scale 0) instead.
-     width/height are load-bearing, not decoration: unlike the Tabler <svg>
-     above (which carries its own width/height attributes), lottie-web sizes
-     the <svg> it injects from its CONTAINER's box — an unsized container
-     renders it at 0×0, present in the DOM (a real element count) and
-     completely invisible on screen. 110px matches the Tabler icon variant's
-     own iconSvg(icon, 110) so the two accents read as the same size. */
-  .sc [data-el].sc-lottie { opacity:0.85; visibility:visible; width:110px; height:110px; }
-  /* An emphasised word (emphasis.ts): bigger and in the accent colour, the
-     same "this is the loud one" treatment a stat's own number gets, so the
-     same eye that reads a stat as important reads this word the same way.
-     font-size, not transform:scale — its entrance is a "pop" (render.ts),
-     and GSAP writes the WHOLE transform property when it tweens one, which
-     would silently erase a scale set here the moment the tween starts. */
-  .sc-word-emph { color:${p.accent}; font-size:1.18em; }
+  .sc [data-el].sc-lottie { opacity:0.88; visibility:visible; width:104px; height:104px; }
+  .sc-word-emph { color:${p.accent}; font-size:1.15em; padding:0 0.08em; border-radius:8px;
+                  background:linear-gradient(180deg, transparent 68%, ${alpha(p.accent, light ? 0.16 : 0.22)} 68%); }
 
   /* quote — the book's own words */
-  .sc-quote { text-align:center; padding:0 26px; }
-  .sc-quote-mark { font-size:190px; line-height:0.6; color:${p.accent}; font-family:Georgia, serif; }
-  .sc-quote-text { margin:34px 0 0; font-weight:600; line-height:1.3; font-family:Georgia, "Times New Roman", serif;
+  .sc-quote { text-align:center; padding:0 28px; max-width:810px; margin:0 auto; }
+  .sc-quote-mark { font-size:176px; line-height:0.6; color:${p.accent}; font-family:Georgia, serif; }
+  .sc-quote-text { margin:32px 0 0; font-weight:600; line-height:1.32; font-family:Georgia, "Times New Roman", serif;
                    font-style:italic; }
 
-  /* icon concept — one to three pictures with their labels */
-  .sc-icons { display:flex; align-items:center; justify-content:center; gap:58px; }
-  .sc-cell { display:flex; flex-direction:column; align-items:center; gap:26px; flex:1 1 0; }
-  /* position:relative so the optional Three.js canvas (below) can sit exactly
-     over the flat icon it may replace, rather than in normal flow beside it. */
-  .sc-icon-well { position:relative; width:var(--sz); height:var(--sz); border-radius:40px;
+  /* icon concept — modular infographic diagram with optional Three.js accents */
+  .sc-icons-wrap { position:relative; max-width:810px; margin:0 auto; }
+  .sc-icons-rail { position:absolute; left:14%; right:14%; height:4px; border-radius:2px;
+                   background:${alpha(p.accent, 0.38)}; transform:scaleX(0); transform-origin:left center; }
+  .sc-icons { position:relative; display:flex; align-items:flex-start; justify-content:center; gap:32px; }
+  .sc-cell { display:flex; flex-direction:column; align-items:center; gap:22px; flex:1 1 0; min-width:0; }
+  .sc-icon-well { position:relative; width:var(--sz); height:var(--sz); border-radius:36px;
                   display:flex; align-items:center; justify-content:center;
-                  background:${p.cardFace}; box-shadow:0 30px 70px -28px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
-  .sc-cell-label { font-size:40px; font-weight:800; text-align:center; line-height:1.18; max-width:300px; }
-  /* The optional Three.js accent (three-shapes.ts), Phase 4's second
-     advanced-visual module. It sits OVER the flat Tabler icon already in the
-     well, not beside it — CSS alone decides nothing here: the canvas starts
-     at the generic hidden rest state every [data-el] gets (opacity:0), and
-     ONLY the runtime script's own successful WebGL init ever makes it
-     visible, once, at composition load — never a GSAP tween, and never
-     conditional on the scene's own timing. A browser that cannot run it
-     (no WebGL, the CDN failed) simply never flips that switch, and the icon
-     underneath — already fully rendered, already positioned — is the whole
-     of what shows. object-fit is irrelevant here (a canvas has no
-     intrinsic-vs-box mismatch the way an img does): the internal buffer
-     (THREE_SIZE, render.ts) and the CSS box both read as one square. */
+                  background:${p.cardFace};
+                  box-shadow:0 28px 68px -28px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}, inset 0 1px 0 ${alpha(p.accent, 0.16)}; }
+  .sc-cell-label { font-size:34px; font-weight:800; text-align:center; line-height:1.2; max-width:236px;
+                   color:${ink}; overflow-wrap:break-word; }
   .sc [data-el].sc-three { position:absolute; inset:22%; width:56%; height:56%; }
 
-  /* comparison — two sides */
-  .sc-compare { display:flex; align-items:center; justify-content:center; gap:30px; }
-  /* Text on a card face picks its ink from the FACE, not from a fixed role.
-     Inheriting the scene layer's light ink painted cream on cream on the light
-     themes (measured: the comparison panels came out blank), and the fix for
-     that — hard-coding paper ink — then painted near-black on near-black
-     everywhere the face is dark. Measured on a real render afterwards:
-     .sc-step-t and .sc-side-label resolved to 1.01:1 contrast in terminal,
-     spotlight and blueprint, which is not "low contrast", it is invisible, and
-     a whole steps scene rendered as numbered chips beside empty boxes.
-     The card face is a pale sheet in two themes and a near-black pane in three,
-     so no single palette role can read on it; asking which it is here is the
-     only answer that holds for a theme nobody has written yet. */
-  .sc-side { flex:1 1 0; display:flex; flex-direction:column; align-items:center; gap:26px;
-             padding:46px 22px; border-radius:34px; background:${p.cardFace};
-             box-shadow:0 30px 70px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
-  .sc-side-label { font-size:44px; font-weight:800; text-align:center; line-height:1.18; color:${cardInk}; }
-  .sc-vs { font-size:34px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
-           color:${p.accent}; flex:0 0 auto; }
+  /* comparison — balanced documentary contrast with visual hierarchy */
+  .sc-compare { display:flex; align-items:stretch; justify-content:center; gap:20px; max-width:810px; margin:0 auto; }
+  .sc-side { position:relative; flex:1 1 0; min-width:0; display:flex; flex-direction:column;
+             align-items:center; justify-content:center; gap:22px;
+             padding:44px 24px 38px; border-radius:32px; background:${p.cardFace}; overflow:hidden;
+             box-shadow:0 28px 66px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+  .sc-side-b { box-shadow:0 32px 74px -28px ${p.cardShadow}, 0 0 0 2px ${alpha(p.accent, 0.68)}; }
+  .sc-side-bar { position:absolute; left:24px; right:24px; top:0; height:6px; border-radius:0 0 6px 6px; }
+  .sc-side-bar-a { background:${alpha(p.bylineInk, 0.35)}; }
+  .sc-side-bar-b { background:${p.accent}; }
+  .sc-side-a .sc-icon { color:${p.bylineInk}; }
+  .sc-side-b .sc-icon { color:${p.accent}; }
+  .sc-side-label { font-size:36px; font-weight:800; text-align:center; line-height:1.22; color:${cardInk};
+                   max-width:100%; overflow-wrap:break-word; }
+  .sc-vs-badge { flex:0 0 auto; align-self:center; width:66px; height:66px; border-radius:50%;
+                 display:flex; align-items:center; justify-content:center;
+                 background:${alpha(p.accent, light ? 0.14 : 0.2)};
+                 box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.55)}; }
+  .sc-vs { font-size:24px; font-weight:900; letter-spacing:2px; text-transform:uppercase;
+           color:${p.accent}; }
 
-  /* steps — an ordered short list */
-  .sc-steps { position:relative; display:flex; flex-direction:column; gap:26px; padding:0 20px; }
-  .sc-heading { font-size:34px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
-                color:${p.accent}; text-align:center; margin-bottom:8px; }
-  .sc-step { display:flex; align-items:center; gap:30px; padding:30px 34px; border-radius:28px;
-             background:${p.cardFace}; box-shadow:0 22px 54px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
-  .sc-step-n { flex:0 0 auto; width:76px; height:76px; border-radius:24px; background:${p.accent};
-               color:${p.ctaFace}; font-size:40px; font-weight:800;
+  /* steps — connected process diagram */
+  .sc-steps { display:flex; flex-direction:column; gap:20px; max-width:790px; margin:0 auto; }
+  .sc-steps-track { position:relative; display:flex; flex-direction:column; gap:22px; }
+  .sc-heading { font-size:28px; font-weight:800; letter-spacing:2.4px; text-transform:uppercase;
+                color:${p.accent}; text-align:center; margin-bottom:6px; }
+  .sc-step { position:relative; display:flex; align-items:center; gap:26px; padding:24px 28px; border-radius:26px;
+             background:${p.cardFace};
+             box-shadow:0 22px 54px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+  .sc-step-n { flex:0 0 auto; width:68px; height:68px; border-radius:20px; background:${p.accent};
+               color:${p.ctaFace}; font-size:34px; font-weight:800; font-variant-numeric:tabular-nums;
                display:flex; align-items:center; justify-content:center; }
-  .sc-step-t { font-size:42px; font-weight:700; line-height:1.2; color:${cardInk}; }
-  /* A diagram connector joining the step numbers, the same idea as the
-     timeline's own axis (below) but scoped to this list. It only shows in the
-     gaps between the opaque step cards, which reads as a line running behind
-     the process rather than through it. */
-  .sc-step-connector { position:absolute; left:92px; top:76px; bottom:76px; width:5px; border-radius:3px;
-                        background:${p.accent}; opacity:0.5; transform:scaleY(0); transform-origin:top center; }
+  .sc-step-t { flex:1 1 auto; min-width:0; font-size:36px; font-weight:700; line-height:1.22;
+               color:${cardInk}; overflow-wrap:break-word; }
+  .sc-step-chevron { flex:0 0 auto; color:${alpha(p.accent, 0.72)}; }
+  .sc-step-connector { position:absolute; left:60px; top:56px; bottom:56px; width:5px; border-radius:3px;
+                       background:${p.accent}; opacity:0.55; transform:scaleY(0); transform-origin:top center; }
 
-  /* timeline — points in order down the frame */
-  .sc-timeline { position:relative; padding-left:86px; display:flex; flex-direction:column; gap:54px; }
-  .sc-tl-axis { position:absolute; left:32px; top:12px; bottom:12px; width:5px; border-radius:3px;
+  /* timeline — chronological / sequential milestone cards */
+  .sc-timeline { position:relative; max-width:790px; margin:0 auto; padding-left:78px;
+                 display:flex; flex-direction:column; gap:26px; }
+  .sc-tl-axis { position:absolute; left:28px; top:20px; bottom:20px; width:4px; border-radius:2px;
                 background:${p.accent}; transform:scaleY(0); transform-origin:top center; }
-  /* position:relative is load-bearing, not tidiness. The dot below is
-     absolutely positioned, and it used to resolve against .sc-timeline —
-     correct until the row's own entrance tween ran. A transformed element
-     becomes the containing block for its absolutely positioned descendants,
-     so the moment GSAP wrote a transform here (and it leaves the identity
-     matrix(1,0,0,1,0,0) behind even after the tween settles, so this is
-     permanent, not a flicker) every dot re-resolved its left against THIS box
-     instead — 86px further right, the timeline's own padding-left — and
-     landed on top of the second letter of its label. Measured in a real
-     episode and reproduced in the fixture: dot x=80 while transform was
-     "none", x=166 for every frame after. Pinning the containing block here
-     makes the dot's position independent of whether anything is animating,
-     which is the only version of this that cannot come back. */
-  .sc-tl-row { position:relative; display:flex; align-items:center; gap:30px; }
-  /* Measured from the row, which starts at the timeline's content edge, so
-     -66px puts the dot back at 20px from the timeline — centred on the axis
-     (left:32 + half of its 5px width = 34.5; dot 20 + half of 29 = 34.5). */
-  .sc-tl-dot { position:absolute; left:-66px; top:50%; margin-top:-14.5px;
-               width:29px; height:29px; border-radius:50%;
-               background:${p.accent}; box-shadow:0 0 0 10px ${p.hookScrim}; }
-  .sc-tl-label { font-size:44px; font-weight:700; line-height:1.2; }
+  .sc-tl-row { position:relative; display:flex; align-items:center; }
+  .sc-tl-dot { position:absolute; left:-61px; top:50%; margin-top:-11px;
+               width:22px; height:22px; border-radius:50%;
+               background:${p.accent};
+               box-shadow:0 0 0 6px ${alpha(p.backdropDeep, light ? 0.2 : 0.75)}, 0 0 0 9px ${alpha(p.accent, 0.36)}; }
+  .sc-tl-card { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:20px;
+                padding:22px 28px; border-radius:24px; background:${p.cardFace};
+                box-shadow:0 20px 50px -28px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+  .sc-tl-step-chip { flex:0 0 auto; padding:6px 12px; border-radius:10px;
+                     background:${alpha(p.accent, light ? 0.14 : 0.2)}; color:${p.accent};
+                     font-size:22px; font-weight:800; letter-spacing:1.2px; font-variant-numeric:tabular-nums; }
+  .sc-tl-label { flex:1 1 auto; min-width:0; font-size:36px; font-weight:700; line-height:1.22;
+                 color:${cardInk}; overflow-wrap:break-word; }
 
-  /* growth curve — a picture of compounding, never a plot of invented data */
-  .sc-curve { display:flex; flex-direction:column; align-items:center; gap:36px; }
-  .sc-curve-label { font-size:36px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
-                    color:${p.accent}; text-align:center; }
-  .sc-curve-line { stroke:${p.accent}; stroke-width:12; }
-  .sc-curve-head { fill:${p.accent}; }
-  .sc-axis { stroke:${p.bylineInk}; stroke-width:3; opacity:0.5; }
-  /* Quiet gridlines and the filled area under the line — a chart reads as a
-     chart once it has these, not just a stroke on a blank field. Both static
-     or revealed with a plain fade (see growthCurve), never their own draw:
-     the LINE is the thing being drawn, everything else is its context. */
-  .sc-grid { stroke:${p.bylineInk}; stroke-width:2; opacity:0.18; }
-  .sc-curve-fill-top { stop-color:${p.accent}; stop-opacity:0.32; }
-  .sc-curve-fill-bottom { stop-color:${p.accent}; stop-opacity:0; }
+  /* growth curve — framed documentary trajectory chart */
+  .sc-curve { display:flex; flex-direction:column; align-items:center; gap:28px;
+              max-width:790px; margin:0 auto; padding:40px 40px 36px; border-radius:34px;
+              background:${p.cardFace};
+              box-shadow:0 30px 72px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+  .sc-curve-label { font-size:30px; font-weight:800; letter-spacing:2.2px; text-transform:uppercase;
+                    color:${p.accent}; text-align:center; max-width:100%; overflow-wrap:break-word; }
+  .sc-curve-svg { display:block; max-width:100%; height:auto; overflow:visible; }
+  .sc-curve-line { stroke:${p.accent}; stroke-width:9; }
+  .sc-curve-node { fill:${p.cardFace}; stroke:${p.accent}; stroke-width:5; }
+  .sc-curve-head { fill:${p.accent}; stroke:${p.cardFace}; stroke-width:4; }
+  .sc-axis { stroke:${alpha(cardInk, 0.28)}; stroke-width:2.5; }
+  .sc-grid { stroke:${alpha(cardInk, 0.14)}; stroke-width:1.5; }
+  .sc-curve-fill-top { stop-color:${p.accent}; stop-opacity:0.34; }
+  .sc-curve-fill-bottom { stop-color:${p.accent}; stop-opacity:0.02; }
 
-  /* stat — one number the page actually states */
-  .sc-stat { text-align:center; }
-  .sc-stat-value { font-weight:800; line-height:1; letter-spacing:-4px; color:${p.accent}; }
-  /* The counted digits (render.ts's counted()) are a CHILD of .sc-stat-value,
-     not the element the "pop" entrance itself scales — see the comment in
-     stat(). Its visibility is entirely its parent's: unlike every other
-     [data-el], count never touches opacity, so it must not rest hidden. */
-  .sc [data-el].sc-stat-count { opacity:1; visibility:visible; }
-  .sc-stat-rule { width:${Math.round(rect.w * 0.42)}px; height:8px; border-radius:4px; margin:40px auto 0;
+  /* stat — documentary figure card with tabular counter & precision bar */
+  .sc-stat { text-align:center; max-width:780px; margin:0 auto; }
+  .sc-stat-card { padding:54px 48px 48px; border-radius:36px; background:${p.cardFace};
+                  box-shadow:0 32px 78px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+  .sc-stat-value { font-weight:900; line-height:0.98; letter-spacing:-4px; color:${p.accent};
+                   font-variant-numeric:tabular-nums; }
+  .sc [data-el].sc-stat-count { opacity:1; visibility:visible; font-variant-numeric:tabular-nums; }
+  .sc-stat-track { width:${Math.round(rect.w * 0.5)}px; max-width:100%; height:10px; border-radius:999px;
+                   margin:34px auto 0; background:${alpha(cardInk, 0.14)}; overflow:hidden; }
+  .sc-stat-rule { height:100%; border-radius:999px;
                   background:${p.accent}; transform:scaleX(0); transform-origin:left center; }
-  .sc-stat-label { margin-top:36px; font-size:46px; font-weight:700; line-height:1.24; }
+  .sc-stat-label { margin-top:30px; font-size:40px; font-weight:700; line-height:1.24;
+                   color:${cardInk}; overflow-wrap:break-word; }
+  .sc-icon-label::first-letter, .sc-side-label::first-letter, .sc-step-t::first-letter,
+  .sc-tl-label::first-letter, .sc-stat-label::first-letter { text-transform:uppercase; }
 
   /* cinematic — one 3D hero with cinematic type, full frame (cine-runtime.js) */
   .sc.sc-cine { display:block; }
@@ -833,23 +1032,30 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   /* The opening hook rests visible: it owns frame zero, like the hook card did. */
   .sc.sc-first { opacity:1; visibility:visible; }
   .cine-canvas, .cine-bloom { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; }
+  .cine-canvas { filter:contrast(1.1) saturate(1.24) brightness(1.06); }
   .cine-bloom { mix-blend-mode:${light ? "multiply" : "screen"}; }
-  /* What shows when WebGL does not: a plain glow under the type, never a blank.
-     The runtime hides it once the hero is drawing. */
+  .cine-plate-src { position:absolute; left:0; top:0; width:1px; height:1px; opacity:0; pointer-events:none; }
+  .cine-video { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; object-fit:cover; filter:contrast(1.08) saturate(1.18) brightness(1.04); }
+  .cine-plate-scrim { position:absolute; inset:0; pointer-events:none;
+                      background: linear-gradient(180deg, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.6 : 0.62)} 0%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.02 : 0.03)} 34%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.03 : 0.05)} 66%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.74 : 0.76)} 100%); }
   .cine-fallback { position:absolute; left:140px; top:640px; width:800px; height:800px; border-radius:50%;
                    background: radial-gradient(circle, ${alpha(p.accent, 0.4)} 0%, ${alpha(p.accent, 0.14)} 46%, transparent 70%);
                    box-shadow: inset 0 0 0 3px ${alpha(p.accent, 0.35)}, 0 0 0 80px ${alpha(p.accent, 0.06)}; }
-  .cine-text { position:absolute; left:0; right:0; top:300px; text-align:center; padding:0 40px; font-family: Inter, system-ui, sans-serif; }
-  .cine-lead { display:block; font-size:46px; font-weight:600; line-height:1.2; letter-spacing:1px;
-               color:${ink}; margin-bottom:10px; ${light ? "" : `text-shadow:0 4px 26px ${alpha(p.backdropDeep, 0.8)};`} }
+  .cine-text { position:absolute; left:130px; right:130px; top:264px; text-align:center; font-family: Inter, system-ui, sans-serif; }
+  .cine-callout { display:inline-block; margin-bottom:18px; padding:10px 24px; border-radius:999px;
+                  font-size:26px; font-weight:800; letter-spacing:2.2px; text-transform:uppercase;
+                  color:${key}; background:${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.82 : 0.68)};
+                  box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.48)}; }
+  .cine-lead { display:block; font-size:40px; font-weight:600; line-height:1.22; letter-spacing:0.8px;
+               color:${ink}; margin-bottom:12px; ${light ? `text-shadow:0 2px 20px ${alpha(p.cardFace, 0.94)};` : `text-shadow:0 4px 26px ${alpha(p.backdropDeep, 0.85)};`} }
   .cine-key { font-weight:900; text-transform:uppercase; line-height:0.98; letter-spacing:-2px; color:${key};
-              white-space:nowrap; ${light ? `text-shadow:0 10px 30px ${alpha(p.accent, 0.18)};` : `text-shadow:0 0 44px ${alpha(p.accent, 0.55)}, 0 6px 30px ${alpha(p.backdropDeep, 0.7)};`} }
+              max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; ${light ? `text-shadow:0 2px 24px ${alpha(p.cardFace, 0.92)}, 0 8px 26px ${alpha(p.accent, 0.18)};` : `text-shadow:0 0 42px ${alpha(p.accent, 0.52)}, 0 6px 28px ${alpha(p.backdropDeep, 0.75)};`} }
   .cine-letter { display:inline-block; }
   .cine-space { display:inline-block; width:0.3em; }
-  .cine-hook { position:absolute; left:64px; right:64px; top:292px; text-align:center; font-weight:800; line-height:1.14;
+  .cine-hook { position:absolute; left:130px; right:130px; top:252px; text-align:center; font-weight:800; line-height:1.15;
                letter-spacing:-0.5px; font-family: Inter, system-ui, sans-serif; color:${ink};
-               ${light ? "" : `text-shadow:0 4px 32px ${alpha(p.backdropDeep, 0.85)};`} }
-  .cine-hook .sc-word-emph { color:${key}; ${light ? "" : `text-shadow:0 0 36px ${alpha(p.accent, 0.5)};`} }
+               ${light ? `text-shadow:0 2px 24px ${alpha(p.cardFace, 0.95)}, 0 0 10px ${alpha(p.cardFace, 0.9)};` : `text-shadow:0 4px 32px ${alpha(p.backdropDeep, 0.88)};`} }
+  .cine-hook .sc-word-emph { color:${key}; background:none; padding:0; ${light ? "" : `text-shadow:0 0 36px ${alpha(p.accent, 0.5)};`} }
 `;
 }
 

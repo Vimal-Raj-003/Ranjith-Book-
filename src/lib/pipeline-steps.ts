@@ -24,6 +24,7 @@ export const EPISODE_STEPS = [
   "Recording the voiceover",
   "Timing the captions",
   "Planning the scenes",
+  "Generating cinematic visuals",
   "Building the composition",
   "Checking the composition",
   "Rendering the video",

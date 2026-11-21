@@ -6,6 +6,7 @@ import { reapStaleRuns } from "@/lib/reap";
 import { canSee } from "@/lib/episodes/visibility";
 import { parseThumbnails } from "@/lib/thumbnails/store";
 import { posterFields, publicThumbs, voiceFields } from "@/lib/episode-view";
+import { parseVisualManifest, publicSceneVisuals } from "@/lib/video/visual-engine";
 
 /** `hashtags` is stored as a JSON string[]; a malformed or legacy row must not
  *  break the poll this rides in on, so it degrades to an empty list. */
@@ -83,6 +84,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       description: episode.description,
       hashtags: parseTags(episode.hashtags),
       thumbnails: publicThumbs(parseThumbnails(episode)),
+      visualEngine: episode.visualEngine,
+      sceneVisuals: publicSceneVisuals(parseVisualManifest(episode.visualManifest)),
       ...posterFields(episode),
       // What actually narrated it, stamped by the voice step. Null for an
       // episode from before it was recorded, and for one still being made.

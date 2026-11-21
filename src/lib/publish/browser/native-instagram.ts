@@ -47,7 +47,6 @@ export async function scheduleInstagram(
     return result(preflight.item);
   }
   if (preflight.kind === "blocked") {
-    if (preflight.safeToContinue) return {status:"FAILED",error:preflight.reason};
     throw new NeedsHuman("unconfirmed", preflight.reason);
   }
   if (!prepared.poster) throw new NeedsHuman("ui", "The selected Instagram thumbnail is unavailable. Select a thumbnail before retrying; nothing was uploaded.");

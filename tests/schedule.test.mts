@@ -1057,17 +1057,26 @@ test("the schedule strings are whole sentences and say what Activate does", () =
   assert.equal(c.timezoneValue, "Asia/Kolkata");
 });
 
-test("activation rejects posts too close within one plan and across active plans", async () => {
-  const s = await seed(2); seeds.push(s);
+test("activation allows posts less than 30 minutes apart and at the exact same time within one plan and across active plans while preserving exact times", async () => {
+  const s = await seed(5); seeds.push(s);
   const mock = recorder();
-  const close = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["09:00", "09:10"] })));
-  await assert.rejects(activateSchedule(s.ownerId, close.id, { makePublisher: mock.makePublisher, waitForCompletion: true }), /at least 30/);
-  assert.equal(mock.calls.length, 0);
-  const first = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["09:00"], videoIds: [s.episodes[0]] })));
-  await activateSchedule(s.ownerId, first.id, { makePublisher: mock.makePublisher, waitForCompletion: true });
-  const second = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["09:15"], videoIds: [s.episodes[1]] })));
-  await rejects(activateSchedule(s.ownerId, second.id, { makePublisher: mock.makePublisher, waitForCompletion: true }), "schedule_conflict", 409);
-  assert.equal(await prisma.publishJob.count({ where: { episodeId: s.episodes[1] } }), 0, "conflicting activation rolls back job creation");
+  const close = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["09:00", "09:05"], videoIds: [s.episodes[0], s.episodes[1]] })));
+  await activateSchedule(s.ownerId, close.id, { makePublisher: mock.makePublisher, waitForCompletion: true });
+  assert.equal(mock.calls.length, 2);
+  assert.equal(mock.calls[0].options.scheduledAt?.toISOString(), close.slots[0].assignedAt);
+  assert.equal(mock.calls[1].options.scheduledAt?.toISOString(), close.slots[1].assignedAt);
+
+  const gap27AndSame = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["09:00", "09:32"], videoIds: [s.episodes[2], s.episodes[3]] })));
+  await activateSchedule(s.ownerId, gap27AndSame.id, { makePublisher: mock.makePublisher, waitForCompletion: true });
+  assert.equal(mock.calls.length, 4);
+  assert.equal(mock.calls[2].options.scheduledAt?.toISOString(), gap27AndSame.slots[0].assignedAt);
+  assert.equal(mock.calls[3].options.scheduledAt?.toISOString(), gap27AndSame.slots[1].assignedAt);
+
+  // Legitimate duplicate-video reservation protection across active/paused schedules remains intact.
+  const reservedPlan = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["10:00"], videoIds: [s.episodes[4]] })));
+  await prisma.weeklySchedule.update({ where: { id: reservedPlan.id }, data: { status: "paused", workflowVersion: 2 } });
+  const duplicateVideo = must(await saveDraft(s.ownerId, draftBody(s, { days: 1, timeSlots: ["11:00"], videoIds: [s.episodes[4]] })));
+  await rejects(activateSchedule(s.ownerId, duplicateVideo.id, { makePublisher: mock.makePublisher, waitForCompletion: true }), "schedule_duplicate", 409);
 });
 
 test("a duplicate disabled Instagram reservation never blocks the YouTube lane", async () => {

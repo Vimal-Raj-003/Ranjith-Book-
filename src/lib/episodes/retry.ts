@@ -109,6 +109,20 @@ export async function prepareEpisodeRetry(episodeId: string): Promise<RetryOutco
     const steps = await tx.stepRun.findMany({ where: { episodeId }, orderBy: { position: "asc" } });
     await archiveGenerationEvidence(episodeId, { episode, steps, reason: "before-retry" });
     await tx.usedIdea.deleteMany({ where: { bookId: episode.bookId, ideaKey: episode.ideaKey ?? episode.id } });
+    if (episode.hook) {
+      const doneWithSameHook = await tx.episode.findFirst({
+        where: {
+          bookId: episode.bookId,
+          id: { not: episode.id },
+          status: "DONE",
+          hook: episode.hook,
+        },
+        select: { id: true },
+      });
+      if (!doneWithSameHook) {
+        await tx.usedHook.deleteMany({ where: { bookId: episode.bookId, hook: episode.hook } });
+      }
+    }
 
     // The attempt that failed is history: clear its rail now, so the card does not
     // show it under "Queued" while this waits behind other renders.

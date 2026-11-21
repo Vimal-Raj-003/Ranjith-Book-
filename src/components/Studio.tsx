@@ -15,6 +15,7 @@ import { strings, type GeminiModelId, type GenerationEngineId } from "@/lib/stri
 import EngineSelectorModal, { type EngineSnapshot } from "./EngineSelectorModal";
 import FreeBooks from "./FreeBooks";
 import BooksView from "./BooksView";
+import ScheduleReminderTopBar from "./ScheduleReminderControl";
 import type { EpisodeState, EpisodeSummary, View } from "./types";
 import { groupVideoAttempts, videoIdentity } from "@/lib/episodes/attempt-groups";
 
@@ -85,10 +86,11 @@ export default function Studio({
   );
   const skippedRef = useRef(false);
 
-  const loadEngineSnapshot = useCallback(async (openIfUnchosen = false) => {
+  const loadEngineSnapshot = useCallback(async (openIfUnchosen = false, forceRefresh = false) => {
     setEngineLoading(true);
     try {
-      const res = await fetch("/api/settings/engine", { cache: "no-store" });
+      const url = forceRefresh ? "/api/settings/engine?refresh=1" : "/api/settings/engine";
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return null;
       const snap = (await res.json()) as EngineSnapshot;
       setEngineSnapshot(snap);
@@ -249,6 +251,7 @@ export default function Studio({
               while the previous pane is still painted measures the old tree
               and reports an overflow that does not exist. */}
           <div className="work-measure flex flex-col gap-3" data-pane={view}>
+            <ScheduleReminderTopBar />
             {view === "studio" && (
               <>
                 {/* One line, not four. What the studio is FOR is a sentence
@@ -342,7 +345,7 @@ export default function Studio({
             engineSnapshot={engineSnapshot}
             onOpenEngineModal={() => setEngineModalOpen(true)}
             onSelectEngine={handleSelectEngine}
-            onRecheckEngine={() => loadEngineSnapshot(false)}
+            onRecheckEngine={() => loadEngineSnapshot(false, true)}
           />
         </aside>
       </div>
@@ -354,7 +357,7 @@ export default function Studio({
         onSelectEngine={handleSelectEngine}
         onSaveApiKey={handleSaveApiKey}
         onRecheck={async () => {
-          await loadEngineSnapshot(false);
+          await loadEngineSnapshot(false, true);
         }}
         onSkip={handleSkipEngineModal}
         onClose={() => setEngineModalOpen(false)}

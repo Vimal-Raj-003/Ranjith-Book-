@@ -33,3 +33,40 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json(errorBody(err), { status: errorStatus(err) });
   }
 }
+
+const VALID_RIGHTS = new Set(["public-domain", "in-copyright", "own-work"]);
+
+/**
+ * Updates editable book-level properties (such as `rightsStatus` after upload)
+ * for the book linked to this PDF upload.
+ */
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id } = await ctx.params;
+    const body = (await req.json().catch(() => null)) as { rightsStatus?: unknown } | null;
+    const rightsStatus = typeof body?.rightsStatus === "string" ? body.rightsStatus.trim() : "";
+    if (!VALID_RIGHTS.has(rightsStatus)) {
+      return NextResponse.json(
+        { error: `"${rightsStatus}" is not a valid rights status.`, code: "bad_request" },
+        { status: 400 },
+      );
+    }
+
+    const upload = await prisma.upload.findUnique({
+      where: { id },
+      select: { id: true, kind: true, userId: true, bookId: true },
+    });
+    if (!upload || upload.kind !== "pdf" || (upload.userId && upload.userId !== user.id)) {
+      return NextResponse.json({ error: "Not found", code: "not_found" }, { status: 404 });
+    }
+
+    await prisma.book.update({
+      where: { id: upload.bookId },
+      data: { rightsStatus },
+    });
+    return NextResponse.json({ ok: true, rightsStatus });
+  } catch (err) {
+    return NextResponse.json(errorBody(err), { status: errorStatus(err) });
+  }
+}

@@ -5,12 +5,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastHost, useToast } from "../Toast";
 import GeneratedVideos from "./GeneratedVideos";
 import { ScheduleDatePicker, ScheduleTimePicker } from "./SchedulePickers";
+import UploadProgressBar from "./UploadProgressBar";
+import {
+  ReminderTopButton,
+  ScheduleReminderAlertBanner,
+  useScheduleReminderController,
+} from "../ScheduleReminderControl";
 import { DEFAULT_WINDOWS } from "@/lib/schedule/plan";
 import { DEFAULT_TIMEZONE, addDays, todayIn, zoneLabel } from "@/lib/schedule/reference-time";
 import { jobTiming } from "@/lib/schedule/job-timing";
 import { batchCompletion, confirmedOutcome, videoCompletion } from "@/lib/schedule/board-completion";
 import { errorPreview } from "@/lib/schedule/board-retry";
 import { scheduleRetryCandidate } from "@/lib/schedule/board-retry";
+import { deriveUploadProgress, type UploadProgressReading } from "@/lib/schedule/upload-progress";
 import { CONFLICT_WORDS, STORAGE_KEY, parseStored } from "@/lib/schedule/video-selection";
 import type { Candidate, JobView, ScheduleView, SlotView } from "@/lib/schedule/board-types";
 
@@ -122,7 +129,13 @@ function dayAndClock(iso: string, timezone: string): string {
 }
 
 /** What one platform's job says about itself, in words. */
-function jobWords(job: JobView | null, slot: SlotView, platform: string, timezone: string): { label: string; tone: string; detail: string } {
+function jobWords(
+  job: JobView | null,
+  slot: SlotView,
+  platform: string,
+  timezone: string,
+  reading: UploadProgressReading | null,
+): { label: string; tone: string; detail: string } {
   if (!job) return { label: slot.status === "SKIPPED" ? "Skipped" : "Not armed", tone: "var(--mute-2)", detail: "" };
   if (["PLATFORM_SCHEDULED", "POSTED"].includes(job.status) && !confirmedOutcome(job)) {
     return { label: "Confirmation needed", tone: "var(--amber)", detail: "The saved platform receipt is missing or does not match the assigned publication time." };
@@ -150,7 +163,13 @@ function jobWords(job: JobView | null, slot: SlotView, platform: string, timezon
     };
   }
   if (job.status === "SCHEDULED") return { label: job.nativeSchedule ? "Queued" : "Scheduled", tone: "var(--amber)", detail: "" };
-  if (job.status === "PUBLISHING") return { label: job.nativeSchedule ? "Scheduling" : "Publishing", tone: "var(--amber)", detail: job.error ?? "" };
+  if (job.status === "PUBLISHING") {
+    return {
+      label: reading?.activeLabel ?? (job.nativeSchedule ? "Scheduling" : "Publishing"),
+      tone: "var(--amber)",
+      detail: "",
+    };
+  }
   if (job.status === "AWAITING_HUMAN") return { label: "Needs you", tone: "var(--amber)", detail: "" };
   if (job.status === "FAILED") return { label: "Failed", tone: "var(--rose)", detail: "" };
   return { label: "Cancelled", tone: "var(--mute-2)", detail: "" };
@@ -214,16 +233,32 @@ function JobCell({
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const retryInFlight = useRef(false);
-  const w = !enabled && (!job || job.status === "SCHEDULED") ? {label:"Disabled",tone:"var(--mute-2)",detail:"Instagram execution is disabled; YouTube proceeds independently."} : jobWords(job, slot, platform, timezone);
+  const outcome = confirmedOutcome(job);
+  const reading = job
+    ? deriveUploadProgress({
+        status: job.status,
+        sourceStatus: job.sourceStatus,
+        confirmation: outcome,
+        uploadedBytes: job.uploadedBytes,
+        totalBytes: job.totalBytes,
+        progressText: job.progress ?? (job.status === "PUBLISHING" ? job.error : null),
+        nativeSchedule: job.nativeSchedule,
+        preUpload: job.preUpload,
+      })
+    : null;
+  const w = !enabled && (!job || job.status === "SCHEDULED")
+    ? { label: "Disabled", tone: "var(--mute-2)", detail: "Instagram execution is disabled; YouTube proceeds independently." }
+    : jobWords(job, slot, platform, timezone, reading);
   const timing = job ? jobTiming(job, platform, timezone) : "";
   const videoCompleted = !!slot.creation && videoCompletion(slot.jobs).kind === "completed";
-  const note = !videoCompleted && job?.error && job.status !== "PUBLISHING" ? job.error : "";
+  const note = !videoCompleted && outcome !== "scheduled" && job?.error && job.status !== "PUBLISHING" ? job.error : "";
   const hideCalendarId = platform === "Instagram" && /Instagram calendar item\b/i.test(note);
-  const alreadyDone = !!job && (job.status === "PLATFORM_SCHEDULED" || job.status === "POSTED" || !!job.platformPublishAt);
+  const alreadyDone = !!job && (outcome !== null || !!job.platformPublishAt);
   const canRetry = enabled && retryAllowed && slot.status === "ACTIVE" && !!job && scheduleRetryCandidate(job);
+  const showProgress = enabled && !!job && !!reading && slot.status !== "PLANNED" && slot.status !== "SKIPPED";
 
   return (
-    <div className="min-w-[150px] flex-1" data-job={job?.id} data-platform={platform.toLowerCase()} data-job-status={job?.status ?? "NONE"}>
+    <div className="min-w-[165px] flex-1" data-job={job?.id} data-platform={platform.toLowerCase()} data-job-status={job?.status ?? "NONE"}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={`${mono} text-[11px]`} style={{ color: "var(--mute)" }}>{platform}</span>
         <Chip label={w.label} tone={w.tone} />
@@ -239,40 +274,25 @@ function JobCell({
         </div>
       )}
       {w.detail && <div className={`mt-0.5 ${mono} text-[10.5px]`} style={{ color: "var(--mute-2)" }}>{w.detail}</div>}
+
+      {showProgress && reading && (
+        <UploadProgressBar
+          platform={platform}
+          reading={reading}
+          showStage={!videoCompleted && outcome === null && (job.status === "PUBLISHING" || job.status === "SCHEDULED")}
+        />
+      )}
+
       {note && !hideCalendarId && (
-        <div className={`mt-0.5 truncate ${mono} text-[10.5px]`} style={{ color: job?.status === "POSTED" ? "var(--mute-2)" : "var(--rose)" }} data-job-note>
+        <div className={`mt-1 truncate ${mono} text-[10.5px]`} style={{ color: job?.status === "POSTED" ? "var(--mute-2)" : "var(--rose)" }} data-job-note>
           {errorPreview(note, 70)}
         </div>
       )}
-      {!videoCompleted && (note || job) && (
-        <div className="mt-1 flex flex-wrap items-center gap-2">
-          {note && (
+      {!videoCompleted && note && (
+        <div className="mt-0.5">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className={`${mono} text-[10.5px] underline underline-offset-4`} style={{ color: "var(--mute-2)" }}>
             {open ? "Hide" : "Details"}
           </button>
-          )}
-          {job && (
-            <button
-              type="button"
-              disabled={busy || retrying || !canRetry}
-              aria-busy={retrying}
-              data-platform-retry={job.id}
-              onClick={async () => {
-                if (!canRetry || retryInFlight.current) return;
-                retryInFlight.current = true;
-                setRetrying(true);
-                try { await onRetry(job.id); }
-                finally { retryInFlight.current = false; setRetrying(false); }
-              }}
-              className={`rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`}
-              style={{ borderColor: "var(--line)", color: "var(--ink)" }}
-              title={alreadyDone ? `${platform} already has this post scheduled or published. No retry is needed.`
-                : canRetry ? `Retry only this ${platform} job at its original publication time, using the existing upload and duplicate checks.`
-                : "Retry becomes available for a failed or recovered job in an active schedule. Processing and approval-held jobs are left alone."}
-            >
-              {retrying ? "Retrying…" : "Retry"}
-            </button>
-          )}
         </div>
       )}
       {note && open && (
@@ -283,17 +303,41 @@ function JobCell({
           {note}
         </pre>
       )}
-      {job && job.status === "AWAITING_HUMAN" && (
-        <button
-          type="button"
-          disabled={busy || !enabled}
-          onClick={() => onConfirm(job.id)}
-          className={`mt-1 rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`}
-          style={{ borderColor: "var(--line)", color: "var(--ink)" }}
-          title={job.nativeSchedule ? "Only after you have checked YouTube Studio and it lists the video as scheduled for this time" : "Only after you have checked the platform and it is published"}
-        >
-          {job.nativeSchedule ? "It is scheduled" : "I published it"}
-        </button>
+      {!videoCompleted && job && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2" data-platform-actions={platform.toLowerCase()}>
+          <button
+            type="button"
+            disabled={busy || retrying || !canRetry}
+            aria-busy={retrying}
+            data-platform-retry={job.id}
+            onClick={async () => {
+              if (!canRetry || retryInFlight.current) return;
+              retryInFlight.current = true;
+              setRetrying(true);
+              try { await onRetry(job.id); }
+              finally { retryInFlight.current = false; setRetrying(false); }
+            }}
+            className={`rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`}
+            style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+            title={alreadyDone ? `${platform} already has this post scheduled or published. No retry is needed.`
+              : canRetry ? `Retry only this ${platform} job at its original publication time, using the existing upload and duplicate checks.`
+              : "Retry becomes available for a failed or recovered job in an active schedule. Processing and approval-held jobs are left alone."}
+          >
+            {retrying ? "Retrying…" : "Retry"}
+          </button>
+          {job.status === "AWAITING_HUMAN" && (
+            <button
+              type="button"
+              disabled={busy || !enabled}
+              onClick={() => onConfirm(job.id)}
+              className={`rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`}
+              style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+              title={job.nativeSchedule ? "Only after you have checked YouTube Studio and it lists the video as scheduled for this time" : "Only after you have checked the platform and it is published"}
+            >
+              {job.nativeSchedule ? "It is scheduled" : "I published it"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -629,6 +673,7 @@ export function NewSchedule({ busy, onCreate }: { busy: boolean; onCreate: (body
 
 function Board() {
   const toast = useToast();
+  const reminder = useScheduleReminderController();
   const [list, setList] = useState<ListedSchedule[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const selectedRef = useRef<string | null>(null);
@@ -750,6 +795,7 @@ function Board() {
   const refresh = async () => {
     await loadList();
     if (selected) await loadView(selected);
+    await reminder.refresh();
   };
 
   function clearSelection() {
@@ -887,10 +933,29 @@ function Board() {
             in {zoneLabel(DEFAULT_TIMEZONE)} ({DEFAULT_TIMEZONE}). Read the draft, edit what you like, then activate it.
           </p>
         </div>
-        <Link href="/" className={`${mono} text-[12px] underline underline-offset-4`} style={{ color: "var(--mute-2)" }}>
-          Back to the studio
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <ReminderTopButton
+            status={reminder.status}
+            saving={reminder.saving}
+            onToggleEnabled={(next) => void reminder.setEnabled(next)}
+            showScheduleLink={false}
+          />
+          <Link href="/" className={`${mono} text-[12px] underline underline-offset-4`} style={{ color: "var(--mute-2)" }}>
+            Back to the studio
+          </Link>
+        </div>
       </header>
+
+      {reminder.status?.activeAlert && (
+        <div className="mb-5">
+          <ScheduleReminderAlertBanner
+            status={reminder.status}
+            saving={reminder.saving}
+            onDismiss={() => void reminder.dismissToday()}
+            showScheduleLink={false}
+          />
+        </div>
+      )}
 
       {loadError && <section className="slab mb-4 p-4" role="alert">{loadError} <button type="button" className="underline" onClick={()=>{void loadList();if(selected)void loadView(selected);}}>Try again</button></section>}
       {/* ---- which schedule */}
@@ -1068,7 +1133,6 @@ function Board() {
                   : `Private and unlisted videos wait for their assigned time before uploading. The background worker must be enabled to start them unattended.`}
               </div>
               <div>Instagram: {!view.instagramEnabled && "disabled · configured "}{view.instagramOffsetMinutes === 0 ? "with YouTube" : `${view.instagramOffsetMinutes} min after`}</div>
-              <div>posts at least {view.minGapMinutes} min apart</div>
               <div>a post is held, not run late, after {view.missGraceMinutes} min</div>
               <div>browser profiles used before: YouTube {view.profiles.youtube ? "yes" : "NO"}, Instagram {view.profiles.instagram ? "yes" : "NO"}</div>
               <div>seed {view.seed}{view.endInclusive ? " · end minute allowed" : ""}</div>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSetting, setSetting } from "@/lib/db";
 import { requireUser } from "@/lib/auth/session";
 import { errorBody, errorStatus } from "@/lib/errors";
+import { clearScheduleReminderDismissal } from "@/lib/schedule/reminder";
 import {
   SETTING_FALLBACKS,
   SETTING_KEYS,
@@ -58,7 +59,7 @@ function bad(error: string, code: string, key?: string) {
 
 export async function PUT(req: Request) {
   try {
-    await requireUser();
+    const user = await requireUser();
     const body: unknown = await req.json().catch(() => null);
 
     // An array is an object to `typeof`, and `Object.keys` of one yields its
@@ -99,6 +100,9 @@ export async function PUT(req: Request) {
     for (const [key, validated] of accepted) {
       await setSetting(key, validated);
       if (key === "cliProvider") await setSetting("engineChosen", "1");
+      if (key === "scheduleReminder" && validated === "on") {
+        await clearScheduleReminderDismissal(user.id);
+      }
     }
     // Echo what was stored (the normalised form, not the raw input), so a
     // caller sees "-22" even if it sent -22. A theme-only PUT still answers

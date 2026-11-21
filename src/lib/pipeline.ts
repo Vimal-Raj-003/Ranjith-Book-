@@ -1,5 +1,4 @@
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs/promises";
 import sharp from "sharp";
 import { prisma, getSetting } from "./db";
@@ -31,11 +30,16 @@ import type { RightsStatus } from "./content/quotation";
 import { synthesizeVoiceover } from "./media/tts";
 import { voiceFields } from "./episode-view";
 import { generateMusicBed } from "./media/ffmpeg";
+import { generateCinematicScoreWav } from "./media/cinematic-score";
+import { generateSfxTrack } from "./media/sfx-synth";
 import { readMusicSettings, bedStyle } from "./settings/music";
 import { toSrt } from "./media/captions";
 import { timeNarration, serializeTiming } from "./media/narration-timing";
 import { sweepForBeat, timedSweepForBeat, cameraTrack, type SweepStep } from "./video/sweep";
 import { planScenes, describePlan, type ScenePlan } from "./video/scenes";
+import { generateEpisodeVisuals } from "./video/visual-engine";
+import { DEFAULT_VISUAL_ENGINE, isHybridVisualEngine } from "./video/visual-engine/types";
+import { enforceFreeRenderMode } from "./video/visual-engine/cost-guard";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { bookThemeById, isBookThemeId } from "./video/composition/themes";
@@ -117,8 +121,11 @@ async function contentProvider(): Promise<CliProvider> {
  */
 async function renderWorkers(): Promise<number | undefined> {
   const setting = Number(await getSetting("renderWorkers"));
-  if (Number.isInteger(setting) && setting >= 1 && setting <= 8) return setting;
-  return os.cpus().length >= 16 ? 8 : undefined;
+  if (Number.isInteger(setting) && setting >= 1 && setting <= 4) return setting;
+  // Default to 1 worker so every frame streams sequentially from one identical
+  // Chromium session — eliminating multi-worker probeSession vs worker[1..N]
+  // compositing/WebGL discrepancies that cause periodic frame blinking.
+  return 1;
 }
 
 async function cliModel(): Promise<string | undefined> {
@@ -718,6 +725,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       words,
       pageWords,
       hasPage: (page) => pages.some((p) => p.pageIndex === page),
+      pageWidthFor: (page) => pages.find((p) => p.pageIndex === page)?.width ?? null,
       cropFor: (page, startWord, endWord) => {
         const lines = linesByPage.get(page);
         if (!lines) return null;
@@ -1093,16 +1101,25 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     // falls back to `MOOD_TO_STYLE` otherwise, and no theme that has rendered a
     // video names one.
     const musicJob = readMusicSettings(getSetting)
-      .then((music) =>
-        generateMusicBed(compositionDuration, musicPath, {
-          style: bedStyle(music.mood, themeMusicStyle(theme, MOOD_TO_STYLE[theme.mood])),
+      .then((music) => {
+        const chosenStyle = bedStyle(music.mood, themeMusicStyle(theme, MOOD_TO_STYLE[theme.mood]));
+        if (music.intensity === 0) {
+          return generateMusicBed(compositionDuration, musicPath, {
+            style: chosenStyle,
+            voicePath: voice.audioPath,
+            voiceOffsetSec: AUDIO_OFFSET,
+            intensity: 0,
+            level: music.level,
+            duck: music.duck,
+          });
+        }
+        return generateCinematicScoreWav(compositionDuration, musicPath, {
+          style: chosenStyle,
           voicePath: voice.audioPath,
           voiceOffsetSec: AUDIO_OFFSET,
-          intensity: music.intensity,
-          level: music.level,
-          duck: music.duck,
-        }),
-      )
+          targetMeanDb: Math.max(-23, Math.min(-16, music.level + 2.5)),
+        });
+      })
       .then(
         () => true,
         async (err: unknown) => {
@@ -1123,9 +1140,59 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     if (scenePlan.notes.length) await appendNotes(episodeId, scenePlan.notes);
     await appendNotes(episodeId, [describePlan(scenePlan)]);
 
-    const hasMusic = await musicJob;
+    // --- Intelligent Hybrid Cinematic Visual System (post-grounding, $0 local) --
+    // Default engine is `hybrid-cinematic`: classifies each scene into its best
+    // visual treatment (`hybrid-cinematic`, `documentary`, `3d-animation`, or
+    // `motion-graphics`), builds a structured pre-generation visual plan, generates
+    // 9:16 plates locally via ComfyUI (or resumes from SHA-256 disk cache), builds
+    // 2.5D depth-parallax maps, and routes conceptual/data scenes to Three.js 3D
+    // heroes and grounded motion graphics. Never runs during speculative attempts.
+    await startStep(EPISODE_STEPS[7]); // Generating cinematic visuals
+    throwIfCancelled();
+    const configuredVisualEngine = (await getSetting("visualEngine")) ?? DEFAULT_VISUAL_ENGINE;
+    const visualOut = await callContext.run({ ...callCtx, step: EPISODE_STEPS[7] }, () =>
+      generateEpisodeVisuals({
+        episodeId,
+        bookTitle: episode.book.title,
+        author: episode.book.authorVerified ? episode.book.author : null,
+        archetype: episode.book.archetype,
+        pkg,
+        scenes: scenePlan.scenes,
+        theme,
+        pageWords,
+        engine: configuredVisualEngine,
+        previousManifestJson: episode.visualManifest,
+        onPartialManifest: async (partial) => {
+          await prisma.episode
+            .update({
+              where: { id: episodeId },
+              data: {
+                visualEngine: partial.engine,
+                visualManifest: JSON.stringify(partial),
+              },
+            })
+            .catch(() => {});
+        },
+      }),
+    );
+    if (visualOut.notes.length) await appendNotes(episodeId, visualOut.notes);
 
-    await startStep(EPISODE_STEPS[7]); // Building the composition
+    const hasMusic = await musicJob;
+    const sfxPath = path.join(workDir, "sfx.wav");
+    const hasSfx = await generateSfxTrack({
+      durationSec: compositionDuration,
+      audioOffsetSec: AUDIO_OFFSET,
+      scenes: visualOut.scenes,
+      outPath: sfxPath,
+    }).then(
+      ({ cues }) => cues.length > 0,
+      async (err: unknown) => {
+        await appendNotes(episodeId, [`SFX track generation failed (${message(err)}) — rendering without SFX.`]);
+        return false;
+      },
+    );
+
+    await startStep(EPISODE_STEPS[8]); // Building the composition
     const html = buildComposition({
       pkg,
       beats: timedBeats,
@@ -1143,6 +1210,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       theme,
       totalDuration: voice.totalDuration,
       music: hasMusic,
+      sfx: hasSfx,
+      viralCaptions: true,
       bookTitle: episode.book.title,
       // The byline shows a name ONLY when the four-link verification chain
       // established one. `authorVerified` is that chain's verdict; an
@@ -1152,7 +1221,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       author: episode.book.authorVerified ? episode.book.author : null,
       // Null unless the operator typed one. No link, no purchase card.
       bookLink: episode.book.bookLink,
-      scenes: scenePlan.scenes,
+      scenes: visualOut.scenes,
     });
 
     await prisma.episode.update({
@@ -1163,7 +1232,9 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         srt: toSrt(captions, AUDIO_OFFSET),
         wordTimings: serializeTiming(timing),
         timingSource: timing.source,
-        scenePlan: JSON.stringify(scenePlan.scenes),
+        scenePlan: JSON.stringify(visualOut.scenes),
+        visualEngine: visualOut.engine,
+        visualManifest: JSON.stringify(visualOut.manifest),
         durationSec: voice.totalDuration,
         audioPath: voice.audioPath,
         // What narrated THIS video, from the recording itself rather than the
@@ -1238,9 +1309,11 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       indexHtml: html,
       audioSource: voice.audioPath,
       musicSource: hasMusic ? musicPath : null,
+      sfxSource: hasSfx ? sfxPath : null,
       assets: [
         ...compPages.map((p) => ({ from: p.from, to: p.to })),
         ...[...hiByPageIndex.values()].map((f) => ({ from: f, to: path.basename(f) })),
+        ...visualOut.projectAssets,
       ],
     });
     await prisma.episode.update({ where: { id: episodeId }, data: { projectPath: projectDir } });
@@ -1250,13 +1323,14 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     // only reads the project (the folder is identical before and after), so it
     // runs alongside the render rather than ahead of it; its notes are
     // recorded once the render is done.
-    await startStep(EPISODE_STEPS[8]); // Checking the composition
+    await startStep(EPISODE_STEPS[9]); // Checking the composition
     const checking = checkProject(projectDir);
     checking.catch(() => {}); // a render that fails first must not leave this unhandled
 
-    await startStep(EPISODE_STEPS[9]); // Rendering the video
+    await startStep(EPISODE_STEPS[10]); // Rendering the video
     const quality = ((await getSetting("renderQuality")) as "draft" | "high" | null) ?? "draft";
-    const mode = ((await getSetting("renderMode")) as "local" | "cloud" | null) ?? "local";
+    const rawMode = ((await getSetting("renderMode")) as "local" | "cloud" | null) ?? "local";
+    const mode = isHybridVisualEngine(visualOut.engine) ? enforceFreeRenderMode(rawMode) : rawMode;
     const outputAbs = path.join(RENDER_DIR, `${episodeId}.mp4`);
     const recordCheck = async () => {
       const check = await checking;
@@ -1307,6 +1381,24 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
   } catch (err) {
     await attempt.settle();
     await releaseIdea(episode.bookId, episode.ideaKey ?? episode.id);
+    if (pkg?.hook) {
+      const doneWithSameHook = await prisma.episode
+        .findFirst({
+          where: {
+            bookId: episode.bookId,
+            id: { not: episodeId },
+            status: "DONE",
+            hook: pkg.hook,
+          },
+          select: { id: true },
+        })
+        .catch(() => null);
+      if (!doneWithSameHook) {
+        await prisma.usedHook
+          .deleteMany({ where: { bookId: episode.bookId, hook: pkg.hook } })
+          .catch(() => {});
+      }
+    }
     await fail(err);
     throw err;
   }

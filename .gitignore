@@ -22,4 +22,11 @@ output vid/
 .seek.log
 .dev-3013.log
 .dev-3013.prev.log
+.dev-*.log
+.verify-tests.log
+*.db.bak*
+*.db.raw-bak*
+New folder/
+.claude/
+.kilo/
 .playwright-mcp/

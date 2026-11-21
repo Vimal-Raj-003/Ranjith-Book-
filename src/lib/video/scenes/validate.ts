@@ -171,6 +171,8 @@ export interface ValidateContext {
    * scenes layer deliberately does not import the composition's geometry.
    */
   cardHeightInColumnPx?: number;
+  /** Optional page width in column pixels for horizontal shot-fit safety. */
+  pageWidthFor?: (page: number) => number | null;
 }
 
 /**
@@ -223,25 +225,60 @@ function runIndex(hay: string[], needle: string[]): number {
 
 const KEYWORD_MAX_CHARS = 18;
 
+const WEAK_KEYWORDS = new Set([
+  "yourself",
+  "myself",
+  "itself",
+  "himself",
+  "herself",
+  "themselves",
+  "ourselves",
+  "something",
+  "anything",
+  "everything",
+  "nothing",
+  "someone",
+  "everyone",
+  "anyone",
+  "because",
+  "without",
+  "through",
+  "between",
+  "around",
+  "before",
+  "another",
+  "whether",
+  "however",
+  "already",
+  "instead",
+]);
+
 /**
  * The words to set large. The director's own pick is used only if it really is a
  * run of words the narrator says (so type on screen can never claim anything the
  * voice did not); otherwise the first emphasised word, otherwise the longest
- * ordinary word, so a cinematic scene always has something worth setting large.
+ * content word (skipping weak pronouns/fillers when a stronger word exists), so
+ * a cinematic scene always has something worth setting large.
  */
 export function pickKeyword(asked: string | undefined, words: { word: string }[]): string {
   const spoken = words.map((w) => normalizeToken(w.word));
   const want = tokens(asked ?? "");
   if (want.length > 0 && want.length <= 2 && runIndex(spoken, want) >= 0) {
     const shown = want.join(" ");
-    if (shown.length <= KEYWORD_MAX_CHARS) return shown;
+    const isSingleWeak = want.length === 1 && WEAK_KEYWORDS.has(want[0]);
+    if (shown.length <= KEYWORD_MAX_CHARS && !isSingleWeak) return shown;
   }
   const emph = emphasizeWords(words.map((w) => w.word));
-  const hit = emph.findIndex((e) => e !== null);
+  const hit = emph.findIndex((e, idx) => e !== null && !WEAK_KEYWORDS.has(spoken[idx] ?? ""));
   if (hit >= 0 && spoken[hit]) return spoken[hit];
-  let best = "";
-  for (const w of spoken) if (w.length > best.length && !STOP.has(w) && w.length <= KEYWORD_MAX_CHARS) best = w;
-  return best || spoken[0] || "";
+  let bestStrong = "";
+  let bestAny = "";
+  for (const w of spoken) {
+    if (STOP.has(w) || w.length > KEYWORD_MAX_CHARS) continue;
+    if (w.length > bestAny.length) bestAny = w;
+    if (!WEAK_KEYWORDS.has(w) && w.length > bestStrong.length) bestStrong = w;
+  }
+  return bestStrong || bestAny || spoken[0] || "";
 }
 
 /**
@@ -284,13 +321,16 @@ async function resolveScene(
   const hay = haystacksFor(spec, ctx);
   const concept = (spec.concept ?? "").trim();
 
+  const sourceEndWord =
+    first.sourcePage === last.sourcePage ? Math.max(first.endWord, last.endWord) : first.endWord;
+
   const base = {
     index,
     start: first.start,
     end: last.end,
     sentences: Array.from({ length: spec.to - spec.from + 1 }, (_, k) => spec.from + k),
     beatIndex: first.beatIndex,
-    source: { pageIndex: first.sourcePage, startWord: first.startWord, endWord: first.endWord },
+    source: { pageIndex: first.sourcePage, startWord: first.startWord, endWord: sourceEndWord },
     reason: (spec.reason ?? "").trim(),
     concept,
     // The director's world for this stretch of narration, kept only if it is one of ours. Whatever
@@ -323,7 +363,7 @@ async function resolveScene(
 
     case "book-crop": {
       if (!ctx.hasPage(first.sourcePage)) return kinetic("the page image is missing");
-      const box = ctx.cropFor(first.sourcePage, first.startWord, first.endWord);
+      const box = ctx.cropFor(first.sourcePage, first.startWord, sourceEndWord);
       if (!box) {
         return {
           scene: withKind("book-page", {}),
@@ -351,7 +391,8 @@ async function resolveScene(
         return kinetic("the number is not in the narration or the page");
       }
       const label = (spec.label ?? concept).trim();
-      return { scene: withKind("stat", { stat: { value, label: groundedIn(label, hay) ? label : "" } }) };
+      const words = sentenceWords(spec.from, spec.to, ctx);
+      return { scene: withKind("stat", { words, stat: { value, label: groundedIn(label, hay) ? label : "" } }) };
     }
 
     case "comparison": {
@@ -368,7 +409,8 @@ async function resolveScene(
           icons.push(icon);
         }
       }
-      return { scene: withKind("comparison", { left, right, icons: icons.length === 2 ? icons : [] }) };
+      const words = sentenceWords(spec.from, spec.to, ctx);
+      return { scene: withKind("comparison", { words, left, right, icons: icons.length === 2 ? icons : [] }) };
     }
 
     case "steps":
@@ -377,16 +419,18 @@ async function resolveScene(
       if (steps.length < 2) return kinetic(`a ${spec.kind} scene needs at least two entries`);
       const ungrounded = steps.filter((s) => !groundedIn(s, hay));
       if (ungrounded.length) return kinetic(`the ${spec.kind} entries are not in what is said`);
-      return { scene: withKind(spec.kind, { steps }) };
+      const words = sentenceWords(spec.from, spec.to, ctx);
+      return { scene: withKind(spec.kind, { words, steps }) };
     }
 
     case "growth-curve": {
       const label = (spec.label ?? concept).trim();
       if (!groundedIn(label, hay)) return kinetic("the curve's label is not in what is said");
+      const words = sentenceWords(spec.from, spec.to, ctx);
       // A fixed accelerating shape: this is a picture of compounding, never a
       // plot of data the book did not give.
       return {
-        scene: withKind("growth-curve", { curve: { points: [4, 8, 14, 24, 40, 64, 96], label } }),
+        scene: withKind("growth-curve", { words, curve: { points: [4, 8, 14, 24, 40, 64, 96], label } }),
       };
     }
 
@@ -413,11 +457,12 @@ async function resolveScene(
         }
       }
       if (!icons.length) return kinetic("no icon means what this scene is about");
+      const words = sentenceWords(spec.from, spec.to, ctx);
       // Only real labels are PAINTED. `concept` is a description of a picture
       // ("a barrier blocking a path") written to be matched against icon tags;
       // on screen it reads as a stage direction, so a scene that gave no
       // labels shows the icon alone.
-      return { scene: withKind("icon-concept", { icons, items: items.slice(0, icons.length) }) };
+      return { scene: withKind("icon-concept", { words, icons, items: items.slice(0, icons.length) }) };
     }
 
     case "cinematic": {
@@ -466,12 +511,27 @@ function toCinematic(s: Scene, ctx: ValidateContext, hero: HeroId, hook?: boolea
  * card can show at that scale would have its own words cropped out of frame,
  * which is the opposite of what a close shot is for, so it steps back.
  */
-export function shotFor(want: ShotSize, cited: { y0: number; y1: number } | null, cardHeightInColumnPx: number): ShotSize {
+export function shotFor(
+  want: ShotSize,
+  cited: { y0: number; y1: number; x0?: number; x1?: number } | null,
+  cardHeightInColumnPx: number,
+  cardWidthInColumnPx?: number,
+): ShotSize {
   if (!cited) return want === "close" ? "medium" : want;
   const height = Math.max(1, cited.y1 - cited.y0);
+  const hasWidthCheck =
+    typeof cardWidthInColumnPx === "number" &&
+    Number.isFinite(cardWidthInColumnPx) &&
+    cardWidthInColumnPx > 0 &&
+    typeof cited.x0 === "number" &&
+    typeof cited.x1 === "number";
+  const paddedWidth = hasWidthCheck ? Math.max(1, cited.x1! - cited.x0!) * 1.12 : 0;
   const order: ShotSize[] = ["close", "medium", "wide"];
   for (const shot of order.slice(order.indexOf(want))) {
-    if (height <= cardHeightInColumnPx / SHOT_SCALE[shot]) return shot;
+    const scale = SHOT_SCALE[shot];
+    const fitsVert = height <= cardHeightInColumnPx / scale;
+    const fitsHoriz = !hasWidthCheck || shot === "wide" || paddedWidth <= cardWidthInColumnPx! / scale;
+    if (fitsVert && fitsHoriz) return shot;
   }
   return "wide";
 }
@@ -493,19 +553,21 @@ export function shotFor(want: ShotSize, cited: { y0: number; y1: number } | null
  */
 export function assignShots(
   scenes: Scene[],
-  citedFor: (s: Scene) => { y0: number; y1: number } | null,
+  citedFor: (s: Scene) => { y0: number; y1: number; x0?: number; x1?: number } | null,
   cardHeightInColumnPx: number,
   notes?: string[],
+  pageWidthFor?: (s: Scene) => number | null,
 ): void {
   let previous: ShotSize | null = null;
   scenes.forEach((scene, i) => {
     if (!PAGE_KINDS.includes(scene.kind)) return;
     const cited = citedFor(scene);
+    const pageWidth = pageWidthFor?.(scene) ?? undefined;
     const want: ShotSize = previous === null ? "wide" : previous === "close" ? "medium" : "close";
-    let shot = shotFor(want, cited, cardHeightInColumnPx);
+    let shot = shotFor(want, cited, cardHeightInColumnPx, pageWidth);
     if (shot === previous) {
       const next: ShotSize = shot === "close" ? "medium" : shot === "medium" ? "wide" : "medium";
-      if (shotFor(next, cited, cardHeightInColumnPx) === next) {
+      if (shotFor(next, cited, cardHeightInColumnPx, pageWidth) === next) {
         shot = next;
       } else {
         notes?.push(`Scene ${i + 1}: kept a repeated ${shot} shot because its cited block is too tall to frame at ${next} without cropping the words.`);
@@ -691,10 +753,11 @@ export async function validateScenes(
     scenes,
     (s) => {
       const box = ctx.cropFor(s.source.pageIndex, s.source.startWord, s.source.endWord);
-      return box ? { y0: box.y0, y1: box.y1 } : null;
+      return box ? { x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 } : null;
     },
     ctx.cardHeightInColumnPx ?? DEFAULT_CARD_HEIGHT_IN_COLUMN_PX,
     notes,
+    ctx.pageWidthFor ? (s) => ctx.pageWidthFor!(s.source.pageIndex) : undefined,
   );
 
   return { scenes: scenes.map((s, i) => ({ ...s, index: i })), notes, used };

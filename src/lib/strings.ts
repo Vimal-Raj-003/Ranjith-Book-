@@ -977,6 +977,27 @@ export const strings = {
     duckLabel: "Ducking",
     hint: "Applies to your next run. The bed is synthesized here for every video, so it carries no licence and cannot be claimed. The level is the bed's mean level before ducking.",
   },
+  reminderPanel: {
+    heading: "Reminder",
+    button: "Reminder",
+    summary: (enabled: boolean) => `Reminder · ${enabled ? "On" : "Off"}`,
+    summaryUnknown: "Reminder",
+    toggleLabel: "Schedule reminder",
+    on: "On",
+    off: "Off",
+    hint: "Monitors your active video schedule and reminds you on your last scheduled day whenever no videos are scheduled for the following day.",
+    disabledNote: "Reminders are turned off. Turn Reminder On to get notified on your last scheduled day.",
+    noScheduleNote: "No upcoming scheduled videos yet. Once you schedule videos, BookReel will remind you on the last scheduled day.",
+    scheduledUpTo: (lastDate: string, nextDate: string) =>
+      `Videos scheduled up to ${lastDate}. Reminder will trigger on ${lastDate} if no videos are scheduled for ${nextDate}.`,
+    pastScheduleNote: (lastDate: string) =>
+      `Last scheduled video was on ${lastDate}. No upcoming videos are currently scheduled.`,
+    dueTitle: (followingDate: string) => `Schedule videos for ${followingDate}`,
+    dueMessage: (lastDate: string, followingDate: string) =>
+      `Your videos are scheduled up to ${lastDate}, and no videos are scheduled for ${followingDate}. Upload and schedule videos for tomorrow so your queue stays uninterrupted.`,
+    openSchedule: "Schedule videos",
+    dismissToday: "Dismiss for today",
+  },
   thumbnails: {
     heading: "Thumbnails",
     summary: (n: number) => (n === 0 ? "Thumbnails" : n === 1 ? "Thumbnails · 1" : `Thumbnails · ${n}`),
@@ -1077,6 +1098,8 @@ export const strings = {
     deselectAll: "Deselect all",
     selectLabel: (title: string) => `Select “${title}” for a video`,
     selectError: "Could not save that selection. Try again.",
+    rightsSaved: "Book rights status saved.",
+    rightsError: "Could not update the book's rights status.",
     hookLabel: "Opening line",
     whyLabel: "Why it works",
     whyItMatters: "Why it matters",
@@ -1238,6 +1261,21 @@ export const strings = {
     saveKeyButton: "Save key",
     clearKeyButton: "Remove saved key",
     keySavedNote: "API key saved on this server.",
+  },
+  visualsPanel: {
+    summary: (count: number) => (count > 0 ? `Hybrid visuals (${count})` : "Hybrid visuals · Auto"),
+    activeHint: "Intelligent Hybrid Cinematic engine active by default (Documentary, 3D, Motion Graphics & 2.5D AI plates · $0 local).",
+    emptyRunning: "Scene plans and visuals appear automatically after the script passes grounding.",
+    emptyIdle: "Select or generate an episode to inspect per-scene visual treatments and previews.",
+    modeVideo: "Local Video",
+    modeHybrid: "Hybrid 2.5D",
+    modeDocumentary: "Documentary",
+    mode3d: "3D Animation",
+    modeMotion: "Motion GFX",
+    mode25d: "ComfyUI 2.5D",
+    modeProcedural: "Procedural 3D",
+    cached: "Cached",
+    sceneLabel: (n: number) => `Scene ${n}`,
   },
 } as const;
 

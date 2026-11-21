@@ -27,7 +27,7 @@ import type { PublishRequest } from "@/lib/publish/contract";
 import { publishingEnabled } from "@/lib/publish/execution";
 import { connectionFor as youtubeConnection } from "@/lib/publish/youtube/accounts";
 import { publicConfig as youtubeConfig } from "@/lib/publish/youtube/config";
-import { validateWindows, checkSlots, checkAgainst, type SlotTime, type TimeWindow } from "./plan";
+import { validateWindows, checkSlots, type SlotTime, type TimeWindow } from "./plan";
 import { localParts } from "./reference-time";
 import { MIN_SCHEDULE_LEAD_MS } from "@/lib/publish/browser/engine";
 import { recoverInterruptedBrowserJobs } from "@/lib/publish/browser/recover";
@@ -437,9 +437,6 @@ export async function activateSchedule(userId: string, scheduleId: string, optio
   }
   if (problems.length > 0) throw badBody(`${joinProblems(problems)} Nothing was sent.`);
 
-  // RepoReel's default preparation lead (20 minutes) plus its 10-minute gap.
-  // Native jobs upload ahead; these checks still preserve the intended cadence.
-  const minGapMinutes = 30;
   const countPerDay = Math.max(1, JSON.parse(schedule.timeSlots).length);
   const asTime = (slot: { id: string; assignedAt: Date; position: number }): SlotTime => {
     const local = localParts(slot.assignedAt, schedule.timezone);
@@ -448,7 +445,7 @@ export async function activateSchedule(userId: string, scheduleId: string, optio
   const enabledTimes = (platform: string) => slots.filter(slot => slot.platform === platform && snapshots.has(slot.id) && !isSettledSlot(slot.status)).map(asTime);
   for (const platform of platforms) {
     if (!publishingEnabled(platform, options.env ?? process.env)) continue;
-    const issues = checkSlots(enabledTimes(platform), { now: new Date(now), timezone: schedule.timezone, windows: [], endInclusive: false, minGapMinutes, minAheadMinutes: platform === "instagram" ? 20 : 15 });
+    const issues = checkSlots(enabledTimes(platform), { now: new Date(now), timezone: schedule.timezone, windows: [], endInclusive: false, minAheadMinutes: platform === "instagram" ? 20 : 15 });
     const errors = issues.filter(issue => issue.severity === "error");
     if (errors.length) throw badBody(`${errors.map(issue => issue.message).join(" ")} Nothing was sent.`);
   }
@@ -486,12 +483,6 @@ export async function activateSchedule(userId: string, scheduleId: string, optio
       }
       await tx.scheduleSlot.update({ where: { id: slot.id }, data: { payloadJson: frozen, publishJobId: job.id,
         ...(!publishingEnabled(slot.platform as SchedulePlatform, options.env ?? process.env) ? { note: "Instagram execution is disabled; YouTube proceeds independently." } : {}) } });
-    }
-    for (const platform of platforms) {
-      if (!publishingEnabled(platform, options.env ?? process.env)) continue;
-      const foreign = await tx.scheduleSlot.findMany({ where: { scheduleId: { in: otherPlans.map(plan => plan.id) }, platform, controlState:{not:"cancelled"}, status: { notIn: ["skipped"] } }, select: { id: true, assignedAt: true, position: true } });
-      const conflicts = checkAgainst(enabledTimes(platform), foreign.map(asTime), minGapMinutes);
-      if (conflicts.length) throw new AppError("schedule_conflict", conflicts.map(issue => issue.message).join(" "), 409);
     }
     return tx.weeklySchedule.update({ where: { id: schedule.id }, data: { status: "active", workflowVersion: 2, activatedAt: schedule.activatedAt ?? new Date(now) } });
   }, { timeout: 30_000 });

@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import UploadProgressBar from "./UploadProgressBar";
 import { errorPreview } from "@/lib/schedule/board-retry";
+import { deriveUploadProgress } from "@/lib/schedule/upload-progress";
 import { countLabel, deselectAll, parseStored, planFor, prune, schedulePlanFor, selectAll, STORAGE_KEY, toggle } from "@/lib/schedule/video-selection";
 import type { BulkItem, BulkResult } from "@/lib/schedule/board-types";
 import type { GeneratedVideo, PlatformState, PlatformStatus, VideoPage } from "@/lib/schedule/board-types";
@@ -24,7 +26,7 @@ import type { Platform } from "@/lib/schedule/board-types";
 
 const mono = "font-mono";
 const PAGE_SIZE = 12;
-const POLL_MS = 3000;
+const POLL_MS = 1500;
 const FIELD = { background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" } as const;
 
 const PLATFORMS: Platform[] = ["youtube", "instagram"];
@@ -119,18 +121,76 @@ function PlatformLine({
   onJob: (jobId: string, action: "retry" | "cancel" | "confirm" | "remove") => void;
 }) {
   const [open, setOpen] = useState(false);
-  const word = state.status === "scheduled-on-platform" ? { ...STATUS[state.status], label: `Scheduled on ${NAME[platform]}` } : STATUS[state.status];
   const job = state.job;
-  const progress = state.status === "publishing" ? job?.error : null;
+  const scheduledConfirmed =
+    state.status === "scheduled-on-platform" &&
+    (job?.confirmation !== undefined ? job.confirmation === "scheduled" : true);
+  const postedConfirmed =
+    state.status === "published" &&
+    (job?.confirmation !== undefined ? job.confirmation === "posted" : true);
+  const reading =
+    job && state.status !== "none" && state.status !== "disabled"
+      ? deriveUploadProgress({
+          status:
+            state.status === "publishing"
+              ? "PUBLISHING"
+              : state.status === "scheduled-on-platform"
+                ? "PLATFORM_SCHEDULED"
+                : state.status === "published"
+                  ? "POSTED"
+                  : state.status === "queued"
+                    ? "SCHEDULED"
+                    : state.status === "failed"
+                      ? "FAILED"
+                      : state.status === "needs-you"
+                        ? "AWAITING_HUMAN"
+                        : state.status === "held"
+                          ? "DRAFT"
+                          : "CANCELLED",
+          sourceStatus: job.sourceStatus,
+          confirmation:
+            job.confirmation !== undefined
+              ? job.confirmation
+              : state.status === "scheduled-on-platform"
+                ? "scheduled"
+                : state.status === "published"
+                  ? "posted"
+                  : null,
+          uploadedBytes: job.uploadedBytes,
+          totalBytes: job.totalBytes,
+          progressText: state.status === "publishing" ? (job.progress ?? job.error) : null,
+          nativeSchedule: job.nativeSchedule,
+          preUpload: job.preUpload,
+        })
+      : null;
+
+  const word =
+    state.status === "scheduled-on-platform"
+      ? scheduledConfirmed
+        ? { ...STATUS[state.status], label: `Scheduled on ${NAME[platform]}` }
+        : { label: "Confirmation needed", tone: "var(--amber)" }
+      : state.status === "published" && !postedConfirmed
+        ? { label: "Confirmation needed", tone: "var(--amber)" }
+        : state.status === "publishing"
+          ? { label: reading?.activeLabel ?? (job?.nativeSchedule ? "Scheduling" : "Publishing"), tone: "var(--amber)" }
+          : STATUS[state.status];
+
+  const progress = state.status === "publishing" ? (job?.progress ?? job?.error) : null;
   // Everything but progress is something to read: why it failed, or a note that came with the post.
-  const note = job?.error && state.status !== "publishing" && state.status !== "queued" ? job.error : "";
+  const note =
+    job?.error &&
+    state.status !== "publishing" &&
+    state.status !== "queued" &&
+    !scheduledConfirmed
+      ? job.error
+      : "";
 
   return (
     <div className="min-w-0" data-platform={platform} data-platform-status={state.status} data-job={job?.id}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={`${mono} text-[11px]`} style={{ color: "var(--mute)" }}>{NAME[platform]}</span>
         <Chip label={word.label} tone={word.tone} />
-        {job?.remoteUrl && state.status === "published" && (
+        {job?.remoteUrl && (postedConfirmed || scheduledConfirmed) && (
           <a href={job.remoteUrl} target="_blank" rel="noreferrer" className={`${mono} text-[11px] underline underline-offset-4`} style={{ color: "var(--cyan)" }}>
             open
           </a>
@@ -142,12 +202,7 @@ function PlatformLine({
           Waiting for its turn: {NAME[platform]} posts one video at a time.
         </div>
       )}
-      {progress && (
-        <div className={`mt-0.5 ${mono} text-[10.5px]`} style={{ color: "var(--amber)" }} data-progress>
-          {progress}
-        </div>
-      )}
-      {state.status === "published" && job?.postedAt && (
+      {state.status === "published" && postedConfirmed && job?.postedAt && (
         <div className={`mt-0.5 ${mono} text-[10.5px]`} style={{ color: "var(--mute-2)" }}>
           confirmed by {NAME[platform]} · {stamp(job.postedAt)}
         </div>
@@ -157,16 +212,29 @@ function PlatformLine({
           {job.nativeSchedule ? "will be scheduled for" : "goes out"} {stamp((job.publishAt ?? job.scheduledAt)!)}
         </div>
       )}
-      {state.status === "scheduled-on-platform" && job && (
+      {state.status === "scheduled-on-platform" && scheduledConfirmed && job && (job.platformPublishAt ?? job.publishAt ?? job.scheduledAt) && (
         <div className={`mt-0.5 ${mono} text-[10.5px]`} style={{ color: "var(--mute-2)" }} data-platform-scheduled>
           {NAME[platform]} confirmed{job.platformStatus ? ` (${job.platformStatus})` : ""} · goes public {stamp((job.platformPublishAt ?? job.publishAt ?? job.scheduledAt)!)}
+        </div>
+      )}
+
+      {reading && (
+        <UploadProgressBar
+          platform={NAME[platform]}
+          reading={reading}
+          showStage={state.status === "publishing" || state.status === "queued"}
+        />
+      )}
+      {progress && (
+        <div className={`mt-0.5 truncate ${mono} text-[10px]`} style={{ color: "var(--mute-2)" }} data-progress title={progress}>
+          {progress}
         </div>
       )}
 
       {note && (
         <>
           <div
-            className={`mt-0.5 truncate ${mono} text-[10.5px]`}
+            className={`mt-1 truncate ${mono} text-[10.5px]`}
             style={{ color: state.status === "published" ? "var(--mute-2)" : state.status === "failed" || state.status === "needs-you" ? "var(--rose)" : "var(--mute)" }}
             data-job-note
           >
@@ -187,8 +255,8 @@ function PlatformLine({
       )}
 
       {job && (
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {state.status === "failed" && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {state.status === "failed" && job.preUpload !== false && (
             <button type="button" disabled={busy || state.executionEnabled === false} onClick={() => onJob(job.id, "retry")} className={`rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`} style={ghost} title="Try this post again. It is checked against duplicates first.">
               Retry
             </button>
@@ -198,7 +266,7 @@ function PlatformLine({
               {job.nativeSchedule ? "It is scheduled" : "I published it"}
             </button>
           )}
-          {state.status === "scheduled-on-platform" && (
+          {state.status === "scheduled-on-platform" && scheduledConfirmed && (
             <button type="button" disabled={busy || state.executionEnabled === false} onClick={() => onJob(job.id, "remove")} className={`rounded-md border px-2 py-0.5 ${mono} text-[11px] disabled:opacity-40`} style={ghost} title="Cancelling here does not unschedule it. Use this only after you have deleted the scheduled video on the platform.">
               I deleted it there
             </button>

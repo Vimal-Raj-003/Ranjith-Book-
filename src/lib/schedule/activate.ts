@@ -18,7 +18,6 @@ import type { Fetcher } from "@/lib/publish/youtube/oauth";
 import { DEFAULT_TIMEZONE, formatInZone } from "./time";
 import { isSettledSlot, type SlotStatus } from "./view";
 import { holdMissedQueueItem } from "./reconcile";
-import { isPreUploadSpacingConflict } from "@/lib/publish/browser/instagram-calendar";
 
 export interface RunScheduleOptions {
   /** Limit an explicit action to selected cells of an already active plan. */
@@ -104,6 +103,24 @@ export function alreadyThere(job: JobFacts | null, assignedAt: Date, timeZone: s
   return null;
 }
 
+const SYSTEMIC_HOLD_ERROR =
+  /sign in|signed out|security|challenge|captcha|2-step|two-step|verify your|upload limit|daily upload limit|does not match BookReel's configured channel/i;
+
+/**
+ * True when an `AWAITING_HUMAN` job already uploaded its video and recorded a valid
+ * 11-character platform ID, and its hold reason is per-video (such as post-submit
+ * receipt/time verification) rather than a systemic account/auth/quota block.
+ * That individual video remains safely held without duplicate upload while independent
+ * queued videos behind it continue.
+ */
+export function isPerVideoPostUploadHold(
+  job: { status: string; externalId?: string | null; lastError?: string | null } | null | undefined,
+): boolean {
+  if (!job || job.status !== "AWAITING_HUMAN") return false;
+  if (!job.externalId || !/^[\w-]{11}$/.test(job.externalId)) return false;
+  return !SYSTEMIC_HOLD_ERROR.test(job.lastError ?? "");
+}
+
 /**
  * What a job that the runner asked for (or is waiting on) says about its slot.
  * Only SCHEDULED at the slot's own time is `scheduled`: that status is written by
@@ -128,7 +145,11 @@ export function slotOutcome(job: JobFacts | null, assignedAt: Date, timeZone: st
     case "UPLOADING":
       return { status: "scheduling", note: null, stop: false };
     case "AWAITING_HUMAN":
-      return { status: "failed", note: lastError || "The browser window stopped for you. Check YouTube.", stop: true };
+      return {
+        status: "failed",
+        note: lastError || "The browser window stopped for you. Check YouTube.",
+        stop: !isPerVideoPostUploadHold(job),
+      };
     case "REQUIRES_CONNECTION":
       return { status: "failed", note: lastError || "The YouTube browser route is not available.", stop: true };
     default:
@@ -260,9 +281,7 @@ async function runSlots(scheduleId: string, options: RunScheduleOptions): Promis
         await setSlot(slot.id,{status:outcome.status,note:outcome.note,publishJobId:job.id});
         continue;
       }
-      // Do not retry this conflicted slot or change its time. The platform
-      // explicitly refused it before upload, so later videos are safe to try.
-      if (isPreUploadSpacingConflict(job)) continue;
+      if (isPerVideoPostUploadHold(job)) continue;
       const retryReady = job?.mode === "api" && (job.status === "QUEUED" || (job.retryAt && job.retryAt <= new Date()));
       if (!retryReady) { stopped.add(platform); continue; }
     }

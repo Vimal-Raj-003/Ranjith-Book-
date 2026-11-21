@@ -411,6 +411,14 @@ model Episode {
   /// was grounded in (see lib/video/scenes). Null for an episode rendered
   /// before scenes existed, which is not invalid, only plainer.
   scenePlan   String?
+  /// Which visual engine produced this episode's scenes (`hybrid-cinematic`
+  /// by default for all newly generated videos, legacy `cinematic-auto`, or `procedural`).
+  /// Nullable so all existing episodes are preserved unchanged.
+  visualEngine   String?
+  /// JSON EpisodeVisualManifest — per-scene generated image/depth/video paths,
+  /// ComfyUI diagnostics, visual bible, and reference style briefs. Nullable so
+  /// existing rows require no backfill.
+  visualManifest String?
   captions    String? // JSON CaptionLine[]
   srt         String?
   /// JSON {source, model, perBeat, words[{w,s,e,b,i,src}]} — when each script

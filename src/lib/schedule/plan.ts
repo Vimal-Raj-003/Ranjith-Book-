@@ -204,8 +204,6 @@ export interface CheckOptions {
   timezone: string;
   windows: TimeWindow[];
   endInclusive: boolean;
-  /** Slots closer together than this are refused: one platform's window does one job at a time. */
-  minGapMinutes: number;
   /** A time less than this far ahead cannot be prepared for, and is refused. */
   minAheadMinutes?: number;
 }
@@ -249,34 +247,19 @@ export function checkSlots(slots: SlotTime[], opts: CheckOptions): Issue[] {
   }
 
   const usable = slots.filter((s) => isValidDate(s.localDate) && isValidTime(s.localTime));
-  const byTime = [...usable].sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime() || a.key.localeCompare(b.key));
 
-  for (let i = 1; i < byTime.length; i++) {
-    const before = byTime[i - 1];
-    const after = byTime[i];
-    const gap = (after.scheduledAt.getTime() - before.scheduledAt.getTime()) / 60_000;
-    if (gap === 0) {
-      issues.push({ key: after.key, severity: "error", message: `Same moment as another post (${after.localDate} ${after.localTime}).` });
-    } else if (gap < opts.minGapMinutes) {
-      issues.push({
-        key: after.key,
-        severity: "error",
-        message: `Only ${Math.round(gap)} minute${Math.round(gap) === 1 ? "" : "s"} after the post before it; at least ${opts.minGapMinutes} are needed so the browser can finish one before starting the next.`,
-      });
-    }
-  }
-
-  // The order of a day's slots is the order of their numbers.
+  // The order of a day's slots is the order of their numbers (equal times are allowed).
   const days = new Map<string, SlotTime[]>();
   for (const s of usable) {
-    const list = days.get(s.localDate) ?? [];
+    const dayKey = `${s.day}:${s.localDate}`;
+    const list = days.get(dayKey) ?? [];
     list.push(s);
-    days.set(s.localDate, list);
+    days.set(dayKey, list);
   }
   for (const list of days.values()) {
     const byPosition = [...list].sort((a, b) => a.position - b.position);
     for (let i = 1; i < byPosition.length; i++) {
-      if (byPosition[i].scheduledAt.getTime() <= byPosition[i - 1].scheduledAt.getTime()) {
+      if (byPosition[i].scheduledAt.getTime() < byPosition[i - 1].scheduledAt.getTime()) {
         issues.push({
           key: byPosition[i].key,
           severity: "error",
@@ -323,28 +306,6 @@ export function jobTimes(
 }
 
 /**
- * Posts that sit too close to ones in OTHER schedules. One channel, one Instagram
- * account: two schedules do not get a platform window each.
- */
-export function checkAgainst(own: SlotTime[], foreign: SlotTime[], minGapMinutes: number, where = "in another schedule"): Issue[] {
-  const issues: Issue[] = [];
-  for (const s of own) {
-    for (const f of foreign) {
-      const gap = Math.abs(s.scheduledAt.getTime() - f.scheduledAt.getTime()) / 60_000;
-      if (gap < minGapMinutes) {
-        issues.push({
-          key: s.key,
-          severity: "error",
-          message: `Only ${Math.round(gap)} minute${Math.round(gap) === 1 ? "" : "s"} from a post ${where} (${f.localDate} ${f.localTime}); at least ${minGapMinutes} are needed.`,
-        });
-        break;
-      }
-    }
-  }
-  return issues;
-}
-
-/**
  * Whether one post, moved, still comes in its day's order against the others of that day.
  *
  * Findings from `checkSlots` land on whichever post is later in time, which is the
@@ -354,11 +315,11 @@ export function checkAgainst(own: SlotTime[], foreign: SlotTime[], minGapMinutes
 export function checkOrder(own: SlotTime, mates: SlotTime[]): Issue[] {
   const issues: Issue[] = [];
   for (const m of mates) {
-    if (m.localDate !== own.localDate || m.position === own.position) continue;
-    if (m.position < own.position && m.scheduledAt.getTime() >= own.scheduledAt.getTime()) {
+    if (m.day !== own.day || m.localDate !== own.localDate || m.position === own.position) continue;
+    if (m.position < own.position && m.scheduledAt.getTime() > own.scheduledAt.getTime()) {
       issues.push({ key: own.key, severity: "error", message: `Slot ${own.position} has to come after slot ${m.position} on the same day (${m.localTime}).` });
     }
-    if (m.position > own.position && m.scheduledAt.getTime() <= own.scheduledAt.getTime()) {
+    if (m.position > own.position && m.scheduledAt.getTime() < own.scheduledAt.getTime()) {
       issues.push({ key: own.key, severity: "error", message: `Slot ${own.position} has to come before slot ${m.position} on the same day (${m.localTime}).` });
     }
   }

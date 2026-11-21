@@ -15,6 +15,7 @@ import { isThemeSetting, THEME_SETTING_AUTO } from "../video/composition/themes"
 import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../media/pocket-tts";
 import { MOODS } from "../media/moods";
 import { DEFAULT_GEMINI_MODEL_ID, GEMINI_MODELS } from "../strings";
+import { DEFAULT_VISUAL_ENGINE, VISUAL_ENGINES } from "../video/visual-engine/types";
 import { getSetting } from "../db";
 
 /**
@@ -28,7 +29,7 @@ import { getSetting } from "../db";
 export const SETTING_KEYS = [
   "theme", "voiceId", "voiceProvider",
   "musicMood", "musicIntensity", "musicLevel", "musicDuck",
-  "cliProvider", "geminiModel",
+  "cliProvider", "geminiModel", "visualEngine", "scheduleReminder",
 ] as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[number];
@@ -49,6 +50,8 @@ export const SETTING_FALLBACKS: Record<SettingKey, string> = {
   musicDuck: "normal",
   cliProvider: "claude-cli",
   geminiModel: DEFAULT_GEMINI_MODEL_ID,
+  visualEngine: DEFAULT_VISUAL_ENGINE,
+  scheduleReminder: "off",
 };
 
 const VOICE_IDS = POCKET_VOICES.map((v) => v.id);
@@ -180,5 +183,9 @@ export function validateSetting(
       return oneOf(value, ["claude-cli", "codex-cli", "gemini"]);
     case "geminiModel":
       return oneOf(value, GEMINI_MODEL_IDS);
+    case "visualEngine":
+      return oneOf(value, [...VISUAL_ENGINES]);
+    case "scheduleReminder":
+      return oneOf(value, ["on", "off"]);
   }
 }

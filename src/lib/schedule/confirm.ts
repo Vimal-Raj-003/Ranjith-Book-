@@ -13,7 +13,11 @@ export interface KnownSchedule {
 }
 export type ScheduleVerifier = (job: KnownSchedule) => Promise<boolean>;
 
-export async function verifyKnown(job: KnownSchedule, env: EnvLike): Promise<boolean> {
+export async function verifyKnown(
+  job: KnownSchedule,
+  env: EnvLike,
+  options: { closeLeftOpenWindow?: boolean } = {},
+): Promise<boolean> {
   if (job.mode === "api") {
     const timedFetch: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(30_000) });
     if ((await verifyChannelIdentity(job.userId, env, timedFetch)).verdict !== "match") return false;
@@ -24,8 +28,8 @@ export async function verifyKnown(job: KnownSchedule, env: EnvLike): Promise<boo
     const item = body.items?.find(item => item.id === job.remoteId);
     return item?.snippet?.title === job.title && judgeApiSchedule({ privacyStatus: item?.status?.privacyStatus, publishAt: item?.status?.publishAt }, job.at).confirmed;
   }
-  // A person or an active job owns these windows. Leave them exactly as they are.
-  if (isPlatformBusy("youtube") || hasLeftOpenWindow("youtube")) return false;
+  // Background sweeps leave an operator's left-open window untouched; explicit confirmation may reuse the profile cleanly.
+  if (isPlatformBusy("youtube") || (!options.closeLeftOpenWindow && hasLeftOpenWindow("youtube"))) return false;
   const result = await runInSession("youtube", { env, jobTimeoutMs: 120_000 }, async session => {
     try {
       await session.page.goto(YT.studio, { waitUntil: "domcontentloaded", timeout: 30_000 });

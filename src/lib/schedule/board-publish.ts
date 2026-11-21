@@ -36,7 +36,7 @@ export async function jobAction(userId:string,id:string,action:string,body:Recor
     const title=json<{title?:string}>(j.metadata,{}).title;
     if(!title)refuse("The saved upload title is missing; confirmation cannot be matched safely.",409);
     const candidate={userId,mode:j.mode??"browser",remoteId:remoteId!,title:title!,at:at!};
-    const ok=await (options.verifyKnownSchedule??(c=>verifyKnown(c,options.env??process.env)))(candidate);
+    const ok=await (options.verifyKnownSchedule??(c=>verifyKnown(c,options.env??process.env,{closeLeftOpenWindow:true})))(candidate);
     if(!ok)refuse("The platform did not confirm this video's exact scheduled time. Its status remains unchanged.",409);
     const changed=await prisma.publishJob.updateMany({where:{id,updatedAt:j.updatedAt},data:{status:"SCHEDULED",externalId:remoteId!,externalUrl:`https://youtu.be/${remoteId}`,scheduledFor:at!,publishedAt:null,lastError:null}});
     if(changed.count&&slot)await prisma.scheduleSlot.update({where:{id:slot.id},data:{status:"scheduled",note:"Confirmed by a read-only platform check."}});
@@ -63,18 +63,50 @@ export async function jobAction(userId:string,id:string,action:string,body:Recor
 
 export async function retryBoardPlan(userId:string,id:string,options:RunScheduleOptions={}) {
   const plan=await ownedPlan(userId,id);if(plan.status!=="active")refuse("Only an active schedule can retry failed posts.",409);
-  const slots=await prisma.scheduleSlot.findMany({where:{scheduleId:id,controlState:"active",publishJobId:{not:null}}});
+  const slots=await prisma.scheduleSlot.findMany({where:{scheduleId:id,controlState:"active",publishJobId:{not:null}},orderBy:[{position:"asc"},{platform:"asc"}]});
   const issues:{key:string;severity:"error";message:string}[]=[];let started=0,scheduled=0,failed=0,awaitingReview=0,skipped=0;
+  const queuedByPlatform=new Map<Platform,number[]>();
   for(const slot of slots){
+    const platform=slot.platform as Platform;
     const job=await prisma.publishJob.findUnique({where:{id:slot.publishJobId!}});
-    if(!job||!publishingEnabled(slot.platform as Platform,options.env??process.env)){skipped++;continue;}
+    if(!job||!publishingEnabled(platform,options.env??process.env)){skipped++;continue;}
     const isPreUpload=!job.externalId&&!job.remoteDraftId&&!job.sessionUrlEnc;
     if(!isPreUpload){
+      const remoteId=job.externalId??job.remoteDraftId;
+      if(platform==="youtube"&&job.status==="AWAITING_HUMAN"&&remoteId&&/^[\w-]{11}$/.test(remoteId)&&(!options.makePublisher||Boolean(options.verifyKnownSchedule))){
+        try{
+          const res=await jobAction(userId,job.id,"confirm",{},options);
+          if((res as {confirmed?:boolean;alreadyConfirmed?:boolean}).confirmed||(res as {alreadyConfirmed?:boolean}).alreadyConfirmed){scheduled++;continue;}
+        }catch{/* Still unconfirmed on YouTube; keep in awaitingReview without re-uploading. */}
+      }
       if(["AWAITING_HUMAN","CANCELLED","FAILED"].includes(job.status)){awaitingReview++;continue;}
+      skipped++;continue;
+    }
+    if(job.status==="QUEUED"){
+      const native=platform==="instagram"||plan.youtubePrivacy==="public";
+      if(native&&slot.status==="pending"){
+        const list=queuedByPlatform.get(platform)??[];
+        if(!list.includes(slot.position))list.push(slot.position);
+        queuedByPlatform.set(platform,list);
+        started++;
+        continue;
+      }
       skipped++;continue;
     }
     if(!["FAILED","REQUIRES_CONNECTION","CANCELLED","AWAITING_HUMAN"].includes(job.status)){skipped++;continue;}
     try{await jobAction(userId,job.id,"retry",{},options);started++;if(options.makePublisher){const after=await prisma.publishJob.findUnique({where:{id:job.id}});if(after?.status==="SCHEDULED")scheduled++;else if(after?.status==="AWAITING_HUMAN")awaitingReview++;else if(after?.status==="FAILED")failed++;}}catch(e){failed++;issues.push({key:"schedule",severity:"error",message:e instanceof Error?e.message:"Retry failed."});}
+  }
+  for(const [platform,positions] of queuedByPlatform){
+    const work=runSchedule(plan.id,{...options,platform,onlyPositions:positions});
+    if(options.makePublisher){
+      await work;
+      for(const pos of positions){
+        const slot=slots.find(s=>s.platform===platform&&s.position===pos);
+        if(!slot?.publishJobId)continue;
+        const after=await prisma.publishJob.findUnique({where:{id:slot.publishJobId}});
+        if(after?.status==="SCHEDULED")scheduled++;else if(after?.status==="AWAITING_HUMAN")awaitingReview++;else if(after?.status==="FAILED")failed++;
+      }
+    }else void work;
   }
   return {started,scheduled,failed,awaitingReview,skipped,issues};
 }

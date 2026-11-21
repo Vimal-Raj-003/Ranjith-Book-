@@ -67,6 +67,7 @@ export function analysisView(
   return {
     id: upload.id,
     bookTitle: upload.book.title,
+    rightsStatus: (upload.book.rightsStatus as AnalysisView["rightsStatus"]) ?? "in-copyright",
     status: upload.status,
     step: upload.step,
     error: upload.error,
