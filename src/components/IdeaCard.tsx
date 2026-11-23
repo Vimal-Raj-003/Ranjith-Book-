@@ -1,8 +1,10 @@
 "use client";
 
-import { strings } from "@/lib/strings";
+import { AUTO_REEL_MODEL_OPTION, REEL_MODELS, strings } from "@/lib/strings";
 import type { IdeaView } from "./types";
 import { Badge, Disclosure, StatusBadge } from "./ui";
+
+const ACTIVE_VIDEO_STATUSES = new Set(["QUEUED", "RUNNING", "DONE"]);
 
 function pageList(pages: IdeaView["sourcePages"]): string {
   return pages.map((p) => strings.books.pageRef(p.number, p.label)).join(", ");
@@ -18,12 +20,21 @@ export default function IdeaCard({
   idea,
   onToggle,
   busy,
+  reelModelValue = "",
+  onChangeReelModel,
+  onMakeVideo,
+  makingVideo = false,
 }: {
   idea: IdeaView;
   onToggle: (selected: boolean) => void;
   busy: boolean;
+  reelModelValue?: string;
+  onChangeReelModel?: (nextModel: string) => void;
+  onMakeVideo?: () => void;
+  makingVideo?: boolean;
 }) {
   const preview = idea.sourcePages.find((p) => p.pageId);
+  const hasActiveOrDoneVideo = Boolean(idea.episode && ACTIVE_VIDEO_STATUSES.has(idea.episode.status));
 
   return (
     <article
@@ -79,6 +90,38 @@ export default function IdeaCard({
         <p className="font-mono text-[11px]" style={{ color: "var(--mute-2)" }}>
           {pageList(idea.sourcePages)}
         </p>
+
+        {onChangeReelModel && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <select
+              aria-label={strings.books.perIdeaModelLabel(idea.title)}
+              value={reelModelValue}
+              disabled={busy || makingVideo || hasActiveOrDoneVideo}
+              onChange={(e) => onChangeReelModel(e.target.value)}
+              className="rounded-lg border px-2.5 py-1 text-[12px] font-mono disabled:opacity-50"
+              style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
+            >
+              <option value="">{strings.books.perIdeaModelInherit}</option>
+              <option value={AUTO_REEL_MODEL_OPTION.id}>{AUTO_REEL_MODEL_OPTION.label}</option>
+              {REEL_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            {onMakeVideo && !hasActiveOrDoneVideo && (
+              <button
+                type="button"
+                onClick={onMakeVideo}
+                disabled={busy || makingVideo}
+                className="rounded-lg border px-2.5 py-1 text-[12px] font-semibold disabled:opacity-50"
+                style={{ borderColor: "var(--cyan)", color: "var(--cyan)" }}
+              >
+                {makingVideo ? strings.books.generating : strings.books.makeOneVideo}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex min-w-0 flex-col gap-2">

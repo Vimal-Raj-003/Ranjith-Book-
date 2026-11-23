@@ -313,6 +313,47 @@ test("a clicked suggestion must remain committed after focus leaves the location
   } finally { await page.close(); }
 });
 
+test("Polymer dropdown hidden via aria-hidden and a re-rendered first click both commit Chennai, Tamil Nadu", async () => {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+  try {
+    await page.setContent(`<body>
+      <div class="form-row">
+        <div class="label">Video location</div>
+        <input aria-label="Video location" />
+      </div>
+      <div id="places-wrap"><div id="places"></div></div>
+      <script>
+        let clicks = 0;
+        const wrap = document.querySelector("#places-wrap");
+        const places = document.querySelector("#places");
+        const render = () => {
+          places.innerHTML = '<tp-yt-paper-item data-opt="Chennai Tamil Nadu"><tp-yt-paper-item-body>Chennai Tamil Nadu</tp-yt-paper-item-body></tp-yt-paper-item>';
+          places.querySelector("tp-yt-paper-item").addEventListener("click", () => {
+            clicks += 1;
+            if (clicks === 1) {
+              // Simulate a late Places XHR re-rendering the open dropdown right on the first click.
+              render();
+              return;
+            }
+            document.body.setAttribute("data-taken", "Chennai");
+            document.querySelector('input[aria-label="Video location"]').value = "Chennai";
+            // Simulate Polymer hiding the iron-dropdown via aria-hidden without removing DOM nodes.
+            wrap.setAttribute("aria-hidden", "true");
+            wrap.style.visibility = "hidden";
+          });
+        };
+        document.querySelector('input[aria-label="Video location"]').addEventListener("input", () => render());
+      </script>
+    </body>`);
+    const { lines, log } = recorder();
+    assert.equal(await setVideoLocation(page, "Chennai, Tamil Nadu", log), true, lines.join(" | "));
+    assert.equal(await page.locator("body").getAttribute("data-taken"), "Chennai");
+    assert.ok(lines.some((l) => /re-selected "Chennai Tamil Nadu"/.test(l)), lines.join(" | "));
+  } finally {
+    await page.close();
+  }
+});
+
 test("tags replace existing chips, verify exact values, and do not duplicate on draft recovery", async () => {
   const page = await browser.newPage();
   try {

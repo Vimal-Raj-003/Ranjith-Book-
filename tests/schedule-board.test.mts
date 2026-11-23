@@ -725,3 +725,50 @@ test("weekly page: post-upload receipt hold on one YouTube video never strands r
   });
   assert.equal(reconciled.status, "SCHEDULED");
 });
+
+test("weekly page: per-video Studio draft hold (remoteDraftId only, externalId null) continues remaining queued YouTube videos", async () => {
+  const f = await fixture(2);
+  const ytCalls: string[] = [];
+  const makePublisher = (platform: never, options: BrowserPublishOptions): BrowserPublisher => {
+    const real = browserPublisherFor(platform, { browser: { deps: { locate: () => "fixture-browser" } } }) as BrowserPublisher;
+    return {
+      ...real,
+      publish: async (prepared, hooks) => {
+        if (platform === "youtube") {
+          ytCalls.push(prepared.episodeId);
+          if (prepared.episodeId === f.ids[0]) {
+            await hooks?.onCheckpoint?.("pNDh6ZZhhB0");
+            return {
+              status: "AWAITING_HUMAN",
+              error: "YouTube Studio did something unexpected (Studio Details settings could not be verified: Video location: exact Chennai, Tamil Nadu autocomplete selection. Review the saved draft; no final publishing button was pressed.). Nothing was published (an unfinished draft may be left in Studio).",
+            };
+          }
+        }
+        return {
+          status: "PUBLISHED",
+          externalId: `yt_${prepared.episodeId.slice(-8)}`,
+          externalUrl: "https://youtu.be/confirmed11",
+          confirmedAt: new Date(),
+          visibility: "scheduled",
+          scheduledFor: options.scheduledAt ?? undefined,
+        };
+      },
+    };
+  };
+  const opts = {
+    makePublisher: makePublisher as never,
+    waitForCompletion: true,
+    env: { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "0" },
+  };
+  const plan = await draw(f, { youtubePrivacy: "public" });
+  await boardAction(f.userId, plan.id, "activate", {}, opts);
+
+  assert.deepEqual(ytCalls, f.ids, "second YouTube video must not be stranded when first holds on a per-video Studio draft");
+  const [firstJob, secondJob] = await Promise.all(
+    f.ids.map((episodeId) => prisma.publishJob.findUniqueOrThrow({ where: { episodeId_platform: { episodeId, platform: "youtube" } } })),
+  );
+  assert.equal(firstJob.status, "AWAITING_HUMAN");
+  assert.equal(firstJob.externalId, null);
+  assert.equal(firstJob.remoteDraftId, "pNDh6ZZhhB0");
+  assert.equal(secondJob.status, "SCHEDULED");
+});

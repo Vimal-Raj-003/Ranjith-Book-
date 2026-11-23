@@ -53,11 +53,13 @@ import { judgeIdentity } from "../connect";
 import { expectedHandle } from "../identity";
 import type { Page } from "playwright-core";
 import { youtubeScheduleControls, type YouTubeScheduleControls } from "./native-controls";
+import { ensureUploadDuration, formatPaceDuration, nextUploadDurationMs, pacedFillField, pacedWait } from "./pacing";
 import { studioUrlFor, watchUrlFor } from "../youtube/config";
 import { uploadTags, youTubePublisher } from "../youtube/publisher";
 import { reviewStudioVideo, STUDIO_REVIEW_TIMEOUT_MS, type StudioReview } from "./youtube-review";
 import type { EnvLike } from "../youtube/secrets";
 import {
+  MIN_SCHEDULE_LEAD_MS,
   NeedsHuman,
   assertNoWall,
   browserOptionProblems,
@@ -364,7 +366,19 @@ export function browserYouTubePublisher(ctx: BrowserYouTubeContext = {}): Browse
           return finishStop("youtube", isNeedsHuman(error) ? error : new NeedsHuman("ui", `Audience/tag review failed: ${error instanceof Error ? error.message : String(error)}. No browser was opened and no file was selected. Review the failure before retrying.`), false);
         }
       }
-      return runInSession(platform, deps, (session) => youtubeFlow(session, prepared, options, hooks, env, deps.youtubeSchedule ?? youtubeScheduleControls, review, preflight));
+      return runInSession(platform, deps, (session) =>
+        youtubeFlow(
+          session,
+          prepared,
+          options,
+          hooks,
+          env,
+          deps.youtubeSchedule ?? youtubeScheduleControls,
+          review,
+          preflight,
+          Boolean(ctx.deps?.launch || ctx.deps?.clock || ctx.deps?.youtubeSchedule),
+        ),
+      );
     },
   };
 }
@@ -372,16 +386,27 @@ export function browserYouTubePublisher(ctx: BrowserYouTubeContext = {}): Browse
 // ----------------------------------------------------------------- the flow
 
 /** Wait for Studio to be a working, signed-in app -- or stop, touching nothing, if it is a wall. */
-async function settleSignedIn(session: BrowserSession): Promise<void> {
+async function settleSignedIn(session: BrowserSession, reloadUrl?: string): Promise<void> {
   const selectors = { appShell: YT.appShell, dialog: YT.dialog };
-  const verdict = await waitUntil(
+  let verdict = await waitUntil(
     session.clock,
     async () => {
       const v = judgePage("youtube", await snapshotOf(session.page, selectors));
       return v.kind === "unknown" ? null : v;
     },
-    { timeoutMs: 45_000, pollMs: 1_000 },
+    { timeoutMs: 60_000, pollMs: 1_000 },
   );
+  if (!verdict && reloadUrl) {
+    await session.page.goto(reloadUrl, { waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
+    verdict = await waitUntil(
+      session.clock,
+      async () => {
+        const v = judgePage("youtube", await snapshotOf(session.page, selectors));
+        return v.kind === "unknown" ? null : v;
+      },
+      { timeoutMs: 60_000, pollMs: 1_000 },
+    );
+  }
   if (!verdict) {
     throw new NeedsHuman(
       "ui",
@@ -483,20 +508,49 @@ async function readAriaChecked(session: BrowserSession, selector: string): Promi
 
 async function setAudience(session: BrowserSession, madeForKids: boolean): Promise<void> {
   const choice = madeForKids ? YT.kidsYes : YT.kidsNo;
-  await clickOn(session, choice, madeForKids ? "the \"made for kids\" option" : "the \"not made for kids\" option");
+  const opposite = madeForKids ? YT.kidsNo : YT.kidsYes;
+  if ((await readAriaChecked(session, choice)) && !(await readAriaChecked(session, opposite))) {
+    return;
+  }
+  try {
+    await clickOn(session, choice, madeForKids ? "the \"made for kids\" option" : "the \"not made for kids\" option");
+  } catch (err) {
+    await session.page.keyboard.press("Escape").catch(() => {});
+    await session.clock.sleep(400);
+    if (!((await readAriaChecked(session, choice)) && !(await readAriaChecked(session, opposite)))) {
+      await clickOn(session, choice, madeForKids ? "the \"made for kids\" option" : "the \"not made for kids\" option");
+    } else {
+      void err;
+    }
+  }
   if (!(await readAriaChecked(session, choice))) {
     throw new NeedsHuman("mismatch", "The audience (made for kids) choice did not take on the page. Nothing was published.");
   }
 }
 
-async function setTags(session: BrowserSession, tags: string[]): Promise<void> {
+async function setTags(
+  session: BrowserSession,
+  tags: string[],
+  env: EnvLike = process.env,
+  hasTestSeam = false,
+  targetMs = 0,
+): Promise<void> {
   if (tags.length === 0) return;
   if (!(await isShown(session.page, YT.tagsInput)) && (await isShown(session.page, YT.showMore))) {
     await session.page.locator(YT.showMore).first().click({ timeout: 15_000 });
+    await pacedWait(session.clock, 2_000, env, hasTestSeam, targetMs);
   }
   for (const tag of tags) {
-    await fillIn(session, YT.tagsInput, "the tags box", tag);
+    if (targetMs > 0) {
+      if (!(await waitShown(session, YT.tagsInput, 20_000))) {
+        throw new NeedsHuman("ui", "Could not find the tags box on the page. The site's layout may have changed.");
+      }
+      await pacedFillField({ page: session.page, selector: YT.tagsInput, value: tag, clock: session.clock, env, hasTestSeam, targetMs, timeoutMs: 20_000 });
+    } else {
+      await fillIn(session, YT.tagsInput, "the tags box", tag);
+    }
     await session.page.keyboard.press("Enter");
+    await pacedWait(session.clock, 650, env, hasTestSeam, targetMs);
   }
   const shown = (await readText(session.page, YT.tagsBox)).toLowerCase();
   const missing = tags.filter((t) => !shown.includes(t.toLowerCase()));
@@ -624,8 +678,10 @@ async function youtubeFlow(
   scheduleControls: YouTubeScheduleControls,
   review: typeof reviewStudioVideo,
   preflight?: StudioReview,
+  hasTestSeam = false,
 ): Promise<PublishOutcome> {
   const { page } = session;
+  const uploadStartedAt = session.clock.now();
   const visibility = desiredVisibility(options);
   const scheduledAt = visibility === "scheduled" ? (options.scheduledAt as Date) : null;
   const wall = { appShell: YT.appShell, dialog: YT.dialog };
@@ -649,7 +705,7 @@ async function youtubeFlow(
         error: `Could not open YouTube Studio: ${err instanceof Error ? err.message : String(err)}. Nothing was uploaded.`,
       };
     }
-    await settleSignedIn(session);
+    await settleSignedIn(session, YT.studio);
     log("2. Verifying BookReel's active YouTube channel (30s limit)");
     await confirmChannel(session, visibility, env);
     log(`Channel verified: ${channelIdFrom(page.url())}. Next: inspect a saved upload or open Create.`);
@@ -665,6 +721,12 @@ async function youtubeFlow(
       log("Resuming the verified Studio draft without selecting the video file again");
     }
 
+    const uploadTargetMs = nextUploadDurationMs(env, hasTestSeam);
+    if (uploadTargetMs > 0) {
+      log(`YouTube: upload pace set to ${formatPaceDuration(uploadTargetMs)} for this video (2m 45s–3m 45s shuffled loop)`);
+    }
+    await pacedWait(session.clock, 5_000, env, hasTestSeam, uploadTargetMs);
+
     const reviewed = preflight ?? await reviewForUpload(prepared, options, hooks, review);
     prepared = { ...prepared, metadata: { ...prepared.metadata, tags: reviewed.tags } };
     await hooks.onMetadata?.(prepared.metadata);
@@ -673,7 +735,9 @@ async function youtubeFlow(
     if (!videoId) {
     log("3. Opening Create > Upload videos (each control: 30s limit)");
     await clickOn(session, YT.createButton, "the Create button");
+    await pacedWait(session.clock, 2_500, env, hasTestSeam, uploadTargetMs);
     await clickOn(session, YT.uploadItem, "the \"Upload videos\" menu item");
+    await pacedWait(session.clock, 3_000, env, hasTestSeam, uploadTargetMs);
     if (!(await waitPresent(session, YT.fileInput, 30_000))) {
       throw new NeedsHuman("ui", "The upload dialog did not offer a file picker.");
     }
@@ -696,23 +760,45 @@ async function youtubeFlow(
     await assertNoWall("youtube", session, wall);
     videoId = videoId ?? await seenVideoId(session);
     if (videoId) await hooks.onCheckpoint?.(videoId);
+    await pacedWait(session.clock, 6_000, env, hasTestSeam, uploadTargetMs);
     log("4. Filling and verifying title, description, thumbnail, audience and tags");
 
-    // 4. Title and description, each filled whole and read back.
-    await fillIn(session, YT.title, "the title box", prepared.metadata.title);
+    // 4. Title and description, populated calmly and read back.
+    if (uploadTargetMs > 0) {
+      if (!(await waitShown(session, YT.title, 20_000))) {
+        throw new NeedsHuman("ui", "Could not find the title box on the page. The site's layout may have changed.");
+      }
+      await pacedFillField({ page, selector: YT.title, value: prepared.metadata.title, clock: session.clock, env, hasTestSeam, targetMs: uploadTargetMs, timeoutMs: 20_000 });
+    } else {
+      await fillIn(session, YT.title, "the title box", prepared.metadata.title);
+    }
     if (squash(await readText(page, YT.title)) !== squash(prepared.metadata.title)) {
       throw new NeedsHuman("mismatch", "The title on the page is not the one that was typed. Nothing was published.");
     }
-    await fillIn(session, YT.description, "the description box", prepared.metadata.description);
+    await pacedWait(session.clock, 4_000, env, hasTestSeam, uploadTargetMs);
+
+    if (uploadTargetMs > 0) {
+      if (!(await waitShown(session, YT.description, 20_000))) {
+        throw new NeedsHuman("ui", "Could not find the description box on the page. The site's layout may have changed.");
+      }
+      await pacedFillField({ page, selector: YT.description, value: prepared.metadata.description, clock: session.clock, env, hasTestSeam, targetMs: uploadTargetMs, timeoutMs: 20_000 });
+    } else {
+      await fillIn(session, YT.description, "the description box", prepared.metadata.description);
+    }
     if (squash(await readText(page, YT.description)) !== squash(prepared.metadata.description)) {
       throw new NeedsHuman("mismatch", "The description on the page is not the one that was typed. Nothing was published.");
     }
+    await pacedWait(session.clock, 5_000, env, hasTestSeam, uploadTargetMs);
 
     const thumbnail = await setThumbnail(session, prepared.poster?.path ?? null);
+    await pacedWait(session.clock, 4_500, env, hasTestSeam, uploadTargetMs);
     await setAudience(session, false); // Only reached after the content review above.
+    await pacedWait(session.clock, 4_000, env, hasTestSeam, uploadTargetMs);
     await scheduleControls.details?.(page, env, log);
+    await pacedWait(session.clock, 4_000, env, hasTestSeam, uploadTargetMs);
     if (scheduleControls.tags) await scheduleControls.tags(page, uploadTags(prepared.metadata), log);
-    else await setTags(session, uploadTags(prepared.metadata));
+    else await setTags(session, uploadTags(prepared.metadata), env, hasTestSeam, uploadTargetMs);
+    await pacedWait(session.clock, 5_000, env, hasTestSeam, uploadTargetMs);
 
     // 5. Next until Visibility. A Next that stays disabled is Studio waiting on
     //    something this app does not answer for the operator.
@@ -731,6 +817,7 @@ async function youtubeFlow(
       }
       await page.locator(YT.next).first().click({ timeout: 15_000 });
       await session.clock.sleep(1_500);
+      await pacedWait(session.clock, 4_500, env, hasTestSeam, uploadTargetMs);
       await assertNoWall("youtube", session, wall);
     }
     if (!(await waitShown(session, YT.visibilityGroup, 30_000))) {
@@ -738,12 +825,14 @@ async function youtubeFlow(
     }
     videoId = videoId ?? (await seenVideoId(session));
     if (videoId) await hooks.onCheckpoint?.(videoId);
+    await pacedWait(session.clock, 4_000, env, hasTestSeam, uploadTargetMs);
 
     // 6. Visibility, then the point of no return.
     log(`5. Setting ${visibility} and verifying the platform's date/time`);
     if (scheduledAt) await scheduleControls.apply(page, scheduledAt, log);
     else await chooseVisibility(session, visibility, scheduledAt);
     if (videoId) await hooks.onCheckpoint?.(videoId);
+    await pacedWait(session.clock, 6_000, env, hasTestSeam, uploadTargetMs);
     if (scheduledAt) await scheduleControls.uploadComplete(page, log);
 
     const ready = await waitUntil(session.clock, async () => (await finalButton(session)).enabled || null, {
@@ -760,6 +849,17 @@ async function youtubeFlow(
         `The final button says "${final.label || "nothing"}", not what a ${visibility} post needs, so it was not pressed.`,
       );
     }
+    await ensureUploadDuration({
+      clock: session.clock,
+      startedAtMs: uploadStartedAt,
+      env,
+      hasTestSeam,
+      targetMs: uploadTargetMs,
+      platformLabel: "YouTube",
+      log,
+      scheduledAt,
+      minScheduleLeadMs: MIN_SCHEDULE_LEAD_MS,
+    });
     await assertNoWall("youtube", session, wall);
 
     committed = true;

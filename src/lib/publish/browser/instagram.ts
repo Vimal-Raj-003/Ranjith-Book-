@@ -56,6 +56,7 @@ import { expectedHandle } from "../identity";
 import { publishingEnabled } from "../execution";
 import { igNativeScheduleEnabled } from "./engine";
 import { scheduleInstagram, instagramMediaControls } from "./native-instagram";
+import { ensureUploadDuration, formatPaceDuration, nextUploadDurationMs, pacedFillField, pacedWait } from "./pacing";
 import type { Page } from "playwright-core";
 import type { EnvLike } from "../youtube/secrets";
 import {
@@ -239,23 +240,44 @@ export function browserInstagramPublisher(ctx: BrowserInstagramContext = {}): Br
       const options = ctx.options ?? {};
       const problems = browserOptionProblems(platform, options, Date.now(), env);
       if (problems.length > 0) return { status: "FAILED", error: problems.map((p) => p.message).join(" ") };
-      return runInSession(platform, deps, (session) => instagramFlow(session, prepared, hooks, env, options, ctx.mediaControls ?? instagramMediaControls));
+      return runInSession(platform, deps, (session) =>
+        instagramFlow(
+          session,
+          prepared,
+          hooks,
+          env,
+          options,
+          ctx.mediaControls ?? instagramMediaControls,
+          Boolean(ctx.deps?.launch || ctx.deps?.clock || ctx.mediaControls),
+        ),
+      );
     },
   };
 }
 
 // ----------------------------------------------------------------- the flow
 
-export async function settleSignedIn(session: BrowserSession): Promise<void> {
+export async function settleSignedIn(session: BrowserSession, reloadUrl?: string): Promise<void> {
   const selectors = { appShell: IG.appShell, dialog: IG.dialog };
-  const verdict = await waitUntil(
+  let verdict = await waitUntil(
     session.clock,
     async () => {
       const v = judgePage("instagram", await snapshotOf(session.page, selectors));
       return v.kind === "unknown" ? null : v;
     },
-    { timeoutMs: 45_000, pollMs: 1_000 },
+    { timeoutMs: 60_000, pollMs: 1_000 },
   );
+  if (!verdict && reloadUrl) {
+    await session.page.goto(reloadUrl, { waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
+    verdict = await waitUntil(
+      session.clock,
+      async () => {
+        const v = judgePage("instagram", await snapshotOf(session.page, selectors));
+        return v.kind === "unknown" ? null : v;
+      },
+      { timeoutMs: 60_000, pollMs: 1_000 },
+    );
+  }
   if (!verdict) {
     throw new NeedsHuman(
       "ui",
@@ -334,8 +356,10 @@ async function instagramFlow(
   env: EnvLike,
   options: BrowserPublishOptions,
   media: typeof instagramMediaControls,
+  hasTestSeam = false,
 ): Promise<PublishOutcome> {
   const { page } = session;
+  const uploadStartedAt = session.clock.now();
   const wall = { appShell: IG.appShell, dialog: IG.dialog };
   const caption = instagramCaption(prepared.metadata);
   let committed = false;
@@ -353,7 +377,7 @@ async function instagramFlow(
         error: `Could not open Instagram: ${err instanceof Error ? err.message : String(err)}. Nothing was posted.`,
       };
     }
-    await settleSignedIn(session);
+    await settleSignedIn(session, IG.home);
     await dismissRoutinePrompts(session);
 
     // 2. WHICH account? A Reel is public the instant it is shared, so an account
@@ -377,7 +401,19 @@ async function instagramFlow(
       );
     }
 
-    if (options.scheduledAt) return await scheduleInstagram(session, prepared, caption, options, hooks, IG, () => { committed = true; }, media);
+    if (options.scheduledAt) {
+      return await scheduleInstagram(
+        session,
+        prepared,
+        caption,
+        options,
+        hooks,
+        IG,
+        () => { committed = true; },
+        media,
+        { env, hasTestSeam },
+      );
+    }
     if (!prepared.poster) throw new NeedsHuman("ui", "The selected Instagram thumbnail is unavailable. Select a thumbnail before retrying; nothing was uploaded.");
     if (options.resumeDraftId) throw new NeedsHuman("unconfirmed", "An earlier Instagram upload may already exist. Inspect the profile and drafts before starting another upload.");
 
@@ -394,28 +430,47 @@ async function instagramFlow(
     await assertNoWall("instagram", session, wall);
 
     // 4. New post -> the render.
+    const log = (message: string) => { void hooks.onLog?.(message); };
+    const uploadTargetMs = nextUploadDurationMs(env, hasTestSeam);
+    if (uploadTargetMs > 0) {
+      log(`Instagram: upload pace set to ${formatPaceDuration(uploadTargetMs)} for this video (2m 45s–3m 45s shuffled loop)`);
+    }
     await page.goto(IG.home, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await settleSignedIn(session);
+    await pacedWait(session.clock, 4_000, env, hasTestSeam, uploadTargetMs);
     await clickOn(session, IG.newPost, "the New post button");
+    await pacedWait(session.clock, 2_500, env, hasTestSeam, uploadTargetMs);
     if (await waitShown(session, IG.postItem, 4_000)) await page.locator(IG.postItem).first().click({ timeout: 10_000 });
     if (!(await waitPresent(session, IG.fileInput, 30_000))) {
       throw new NeedsHuman("ui", "Instagram's new-post dialog did not offer a file picker.");
     }
+    await pacedWait(session.clock, 3_000, env, hasTestSeam, uploadTargetMs);
     await hooks.onCheckpoint?.("instagram-upload-unconfirmed");
     await page.locator(IG.fileInput).first().setInputFiles(prepared.video.path, { timeout: 60_000 });
     await hooks.onStage?.("UPLOADING");
     await assertNoWall("instagram", session, wall);
+    await pacedWait(session.clock, 10_000, env, hasTestSeam, uploadTargetMs);
 
     // 5. Crop -> Edit (the cover) -> caption.
-    const log = (message: string) => { void hooks.onLog?.(message); };
     await media.crop(page as unknown as Page, log);
+    await pacedWait(session.clock, 6_000, env, hasTestSeam, uploadTargetMs);
     await clickOn(session, IG.next, "the first Next button", 120_000);
     await session.clock.sleep(1_500);
+    await pacedWait(session.clock, 6_000, env, hasTestSeam, uploadTargetMs);
     if (!(await media.cover(page as unknown as Page, prepared.poster.path, log))) throw new NeedsHuman("ui", "The selected Instagram cover was not applied. Nothing was submitted.");
+    await pacedWait(session.clock, 8_000, env, hasTestSeam, uploadTargetMs);
     await clickOn(session, IG.next, "the second Next button", 60_000);
     await session.clock.sleep(1_500);
+    await pacedWait(session.clock, 5_000, env, hasTestSeam, uploadTargetMs);
 
-    await fillIn(session, IG.caption, "the caption box", caption, 60_000);
+    if (uploadTargetMs > 0) {
+      if (!(await waitShown(session, IG.caption, 60_000))) {
+        throw new NeedsHuman("ui", "Could not find the caption box on the page. The site's layout may have changed.");
+      }
+      await pacedFillField({ page, selector: IG.caption, value: caption, clock: session.clock, env, hasTestSeam, targetMs: uploadTargetMs, timeoutMs: 60_000 });
+    } else {
+      await fillIn(session, IG.caption, "the caption box", caption, 60_000);
+    }
     if (squash(await readText(page, IG.caption)) !== squash(caption)) {
       throw new NeedsHuman("mismatch", "The caption on the page is not the one that was typed. Nothing was posted.");
     }
@@ -425,6 +480,16 @@ async function instagramFlow(
     if (!(await waitShown(session, IG.share, 30_000)) || !(await page.locator(IG.share).first().isEnabled())) {
       throw new NeedsHuman("ui", "Instagram's Share button was not available.");
     }
+    await ensureUploadDuration({
+      clock: session.clock,
+      startedAtMs: uploadStartedAt,
+      env,
+      hasTestSeam,
+      targetMs: uploadTargetMs,
+      platformLabel: "Instagram",
+      log,
+    });
+    await assertNoWall("instagram", session, wall);
     committed = true;
     await page.locator(IG.share).first().click({ timeout: 15_000 });
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { strings, VOICES, VIDEO_THEMES, AUTO_THEME_OPTION, recordedVoiceName, GENERATION_ENGINES, GEMINI_MODELS, DEFAULT_GEMINI_MODEL_ID, type GeminiModelId, type GenerationEngineId } from "@/lib/strings";
+import { strings, VOICES, VIDEO_THEMES, AUTO_THEME_OPTION, REEL_MODELS, AUTO_REEL_MODEL_OPTION, reelModelLabel, recordedVoiceName, GENERATION_ENGINES, GEMINI_MODELS, DEFAULT_GEMINI_MODEL_ID, type GeminiModelId, type GenerationEngineId } from "@/lib/strings";
 import type { EngineSnapshot } from "./EngineSelectorModal";
 import { EMPTY_TRACK, displayed, stepTrack, type Track, type WriteEvent } from "@/lib/setting-writes";
 import { Badge, Disclosure, EmptyState, Hint, RailToggle } from "./ui";
@@ -62,6 +62,7 @@ const PREVIEW_TIMEOUT_MS = 120_000;
  */
 /** Auto first, then the five themes — what the picker offers, in that order. */
 const THEME_CHOICES = [AUTO_THEME_OPTION, ...VIDEO_THEMES];
+const MODEL_CHOICES = [AUTO_REEL_MODEL_OPTION, ...REEL_MODELS];
 
 /**
  * Where a theme's preview still lives. Written by `scripts/theme-previews.mjs`,
@@ -411,6 +412,10 @@ export default function Inspector({
   const themeSummary = theme
     ? strings.themePanel.summary(VIDEO_THEMES.find((t) => t.id === theme)?.label ?? titleCase(theme))
     : strings.themePanel.summaryUnknown;
+  const activeReelModel = episode?.reelStyle ?? settings.reelModel;
+  const modelSummary = activeReelModel
+    ? strings.modelPanel.summary(reelModelLabel(activeReelModel) ?? titleCase(activeReelModel))
+    : strings.modelPanel.summaryUnknown;
 
   const thumbSummary = strings.thumbnails.summary(thumbCount);
   const reminderSetting = settings.scheduleReminder;
@@ -624,7 +629,34 @@ export default function Inspector({
         </div>
       </Disclosure>
 
-      <Disclosure className="disclosure-panel theme-group" summary={themeSummary} defaultOpen>
+      <Disclosure className="disclosure-panel model-group" summary={modelSummary} defaultOpen>
+        <ul role="list" className="chip-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+          {MODEL_CHOICES.map((m) => {
+            const selected = (settings.reelModel ?? AUTO_REEL_MODEL_OPTION.id) === m.id;
+            return (
+              <li key={m.id} className="flex">
+                <button
+                  type="button"
+                  className="chip"
+                  data-state={selected ? "on" : "off"}
+                  data-reel-model={m.id}
+                  aria-pressed={selected}
+                  title={m.note}
+                  onClick={() => save("reelModel", m.id)}
+                >
+                  <span className="truncate">{m.shortLabel}</span>
+                  {selected && <span className="sr-only">{strings.modelPanel.current}</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="mt-2">
+          <Hint>{strings.modelPanel.hint}</Hint>
+        </div>
+      </Disclosure>
+
+      <Disclosure className="disclosure-panel theme-group" summary={themeSummary}>
         {/* Still five real buttons carrying aria-pressed — a shorter row, not
             a weaker control. The name is the label; the description moved to
             the disclosure below rather than being dropped. */}

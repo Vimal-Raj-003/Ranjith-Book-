@@ -46,6 +46,8 @@ export interface EpisodeState extends AttemptIdentity {
   durationSec?: number | null;
   /** Added by the thumbnail workstream; absent until then. */
   thumbnails?: ThumbnailRef[];
+  /** Which of the 7 viral/ultra-pro HyperFrames video models rendered this episode. */
+  reelStyle?: string | null;
   /** Automatic local cinematic visual engine mode and per-scene previews. */
   visualEngine?: string | null;
   sceneVisuals?: PublicSceneVisual[];

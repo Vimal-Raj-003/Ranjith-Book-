@@ -118,6 +118,8 @@ const DANGLING_TAIL_WORDS = new Set([
   "many", "some", "any", "other", "another", "whose", "where", "while", "during",
   "without", "within", "through", "between", "under", "over", "before", "after", "about",
   "because", "since", "though", "although", "unless", "whether", "until", "if",
+  "no", "longer", "required", "needed", "just", "merely", "simply", "fully",
+  "completely", "immediately", "gradually", "turning", "making", "leaving",
 ]);
 
 const CAMERA_SEQUENCE: readonly CameraMoveKind[] = [
@@ -294,6 +296,12 @@ function extractGroundedComparison(
     /\binstead\s+of\s+([^,.;:!?]{3,34}?)\s*,\s*([^,.;:!?]{3,34})(?:[,.;:!?]|$)/i,
     /\b([^,.;:!?]{3,32}?)\s+(?:versus|vs\.?)\s+([^,.;:!?]{3,32})(?:[,.;:!?]|$)/i,
     /\bdivided\s+between\s+([^,.;:!?]{3,36}?)\s+and\s+([^,.;:!?]{3,36}?)(?=\s+(?:is|are|was|were)\b|[,.;:!?]|$)/i,
+    /\b(?:what\s+)?(looks?\s+[^,.;:!?]{3,26}?)\s+(?:through\s+[^,.;:!?]{3,20}?\s+|in\s+[^,.;:!?]{3,20}?\s+)?(?:carries|holds|has|becomes)\s+([^,.;:!?]{3,28}?)(?=\s+because\b|[,.;:!?]|$)/i,
+    /\b([^,.;:!?]{4,34}?)\s+shows?\s+up\s+(?:just\s+)?as\s+clearly\s+as\s+([^,.;:!?]{4,34})(?:[,.;:!?]|$)/i,
+    /\b(?:your|their|our|his|her)\s+([^,.;:!?]{4,28}?)\s+or\s+([^,.;:!?]{4,24}?)\s+(?:immediately|quickly|instantly|always|soon)?\s*(?:surfaces?|appears?|emerges?|shows?)/i,
+    /\b(?:that\s+|this\s+|your\s+)?([^,.;:!?]{4,30}?)\s+shifts?\s*,\s*turning\s+([^,.;:!?]{4,30})(?:[,.;:!?]|$)/i,
+    /\bshifts?\s+from\s+([^,.;:!?]{4,28}?)\s+to\s+([^,.;:!?]{4,28})(?:[,.;:!?]|$)/i,
+    /\b(?:while|whereas)\s+([^,.;:!?]{4,30}?)\s*,\s*([^,.;:!?]{4,30})(?:[,.;:!?]|$)/i,
   ];
 
   for (const re of patterns) {
@@ -468,12 +476,16 @@ async function promoteMotionGraphicsScenes(
 
     const haystacks = haystacksForScene(scene, narration, pageWords);
 
-    // 1. Grounded comparison ("between X and Y", "not X, but Y", "X vs Y")
+    // 1. Grounded comparison ("between X and Y", "not X, but Y", "X vs Y", "looks X ... carries Y", "A or B surfaces")
     const comp = extractGroundedComparison(narration, haystacks);
     if (comp && !wouldViolateMaxRun(scenes, i, "comparison")) {
       const icons: SceneIcon[] = [];
-      for (const side of [comp.left, comp.right]) {
-        const icon = await resolveIcon(side, { embedder, exclude: usedIcons });
+      const fallbackQueries = ["eye-search", "scale"];
+      for (let si = 0; si < 2; si++) {
+        const side = si === 0 ? comp.left : comp.right;
+        const icon =
+          (await resolveIcon(side, { embedder, exclude: usedIcons, minScore: 0.24 })) ??
+          (await resolveIcon(fallbackQueries[si], { embedder, exclude: usedIcons, minScore: 0.12 }));
         if (icon) {
           usedIcons.add(icon.name);
           icons.push(icon);
@@ -559,10 +571,11 @@ async function promoteMotionGraphicsScenes(
       continue;
     }
 
-    // 5. Grounded multi-concept infographic (`icon-concept`) when 2-3 spoken concepts match icons
+    // 5. Grounded multi-concept / example infographic (`icon-concept`) when 2-3 spoken concepts or examples match icons
     const iconSceneCount = scenes.filter((s) => s.kind === "icon-concept").length;
+    const isExampleCue = /\b(?:for\s+example|for\s+instance|imagine|suppose|consider|such\s+as)\b/i.test(narration);
     if (
-      (scene.kind === "kinetic-text" || isSurplusCine) &&
+      (scene.kind === "kinetic-text" || isSurplusCine || (isExampleCue && !scene.cine?.hook && cineCount > 2)) &&
       iconSceneCount < MAX_ICON_SCENES &&
       !wouldViolateMaxRun(scenes, i, "icon-concept") &&
       docSignals.score < 2.8

@@ -96,9 +96,10 @@ async function synthOpenAI(text: string, out: string, apiKey: string, voice: str
 }
 
 /**
- * Pad each beat and even out its level. Padding protects the first and last
- * syllables; per-beat loudness keeps one loud sentence from burying a quiet one
- * before the final master runs.
+ * Pad each beat cleanly at 44.1 kHz mono without per-beat dynamic `loudnorm`
+ * (which switches to short-window gain riding on <3s beats and alters vocal
+ * timbre between short and long sentences). Unified loudness & EQ mastering
+ * runs once across the full joined track in `masterVoice`.
  */
 async function conditionBeat(input: string, out: string) {
   await ffmpeg([
@@ -107,7 +108,6 @@ async function conditionBeat(input: string, out: string) {
     [
       `adelay=${Math.round(LEAD * 1000)}`,
       `apad=pad_dur=${TAIL}`,
-      "loudnorm=I=-18:TP=-2.0:LRA=11",
     ].join(","),
     "-ar", "44100", "-ac", "1",
     out,
@@ -148,37 +148,62 @@ export async function synthesizeVoiceover(
   const elevenKey = (await getSetting("elevenLabsApiKey")) ?? process.env.ELEVENLABS_API_KEY ?? "";
   const openaiKey = (await getSetting("openaiApiKey")) ?? process.env.OPENAI_API_KEY ?? "";
 
-  const files: string[] = [];
-  for (let i = 0; i < beatTexts.length; i++) {
-    // A long episode is many beats, each its own TTS call; checked here too
-    // so a cancellation between two calls is not left waiting for whichever
-    // one happens to be in flight when the operator clicked cancel.
-    throwIfCancelled();
-    const n = String(i).padStart(2, "0");
-    const spoken = path.join(workDir, `beat-${n}-raw.wav`);
-    const ready = path.join(workDir, `beat-${n}.wav`);
-    const text = beatTexts[i];
+  const useStudioEdge =
+    provider === "pocket" &&
+    process.env.BOOKREEL_AUDIO_TESTS !== "1" &&
+    Boolean(await resolveEdgeTtsBin());
 
-    const useStudioEdge =
-      provider === "pocket" &&
-      process.env.BOOKREEL_AUDIO_TESTS !== "1" &&
-      Boolean(await resolveEdgeTtsBin());
+  /**
+   * Episode-wide Single-Voice Lock:
+   * Synthesize EVERY beat of the episode with ONE exact engine + voiceId.
+   * Never fall back per beat inside the loop (which previously mixed an
+   * American Edge-TTS voice and a British Pocket-TTS voice mid-video).
+   * If Studio Edge-TTS fails on any beat even after retries, all partial
+   * clips are discarded and the ENTIRE episode is synthesized cleanly with
+   * Pocket TTS from beat 0 to beat N-1.
+   */
+  const synthAllBeatsWith = async (
+    runBeat: (text: string, outWav: string, index: number) => Promise<void>,
+  ): Promise<string[]> => {
+    const outFiles: string[] = [];
+    for (let i = 0; i < beatTexts.length; i++) {
+      throwIfCancelled();
+      const n = String(i).padStart(2, "0");
+      const spoken = path.join(workDir, `beat-${n}-raw.wav`);
+      const ready = path.join(workDir, `beat-${n}.wav`);
+      await fs.rm(spoken, { force: true }).catch(() => {});
+      await fs.rm(ready, { force: true }).catch(() => {});
 
-    if (useStudioEdge) {
-      await synthEdgeNeural(text, spoken, voiceId).catch(() => synthPocket(text, spoken, voiceId));
-    } else if (provider === "pocket") {
-      await synthPocket(text, spoken, voiceId);
-    } else if (provider === "elevenlabs" && elevenKey) {
-      await synthElevenLabs(text, spoken, elevenKey, voiceId);
-    } else if (provider === "openai" && openaiKey) {
-      await synthOpenAI(text, spoken, openaiKey, voiceId);
-    } else {
-      await synthSystem(text, spoken, voiceId);
+      await runBeat(beatTexts[i], spoken, i);
+      await conditionBeat(spoken, ready);
+      await fs.rm(spoken, { force: true });
+      outFiles.push(ready);
     }
+    return outFiles;
+  };
 
-    await conditionBeat(spoken, ready);
-    await fs.rm(spoken, { force: true });
-    files.push(ready);
+  let files: string[];
+  if (useStudioEdge) {
+    try {
+      files = await synthAllBeatsWith(async (text, spoken, idx) => {
+        if (idx > 0) {
+          await new Promise((r) => setTimeout(r, 160));
+        }
+        await synthEdgeNeural(text, spoken, voiceId);
+      });
+    } catch (edgeErr) {
+      throwIfCancelled();
+      void edgeErr;
+      files = await synthAllBeatsWith((text, spoken) => synthPocket(text, spoken, voiceId));
+    }
+  } else if (provider === "pocket") {
+    files = await synthAllBeatsWith((text, spoken) => synthPocket(text, spoken, voiceId));
+  } else if (provider === "elevenlabs" && elevenKey) {
+    files = await synthAllBeatsWith((text, spoken) => synthElevenLabs(text, spoken, elevenKey, voiceId));
+  } else if (provider === "openai" && openaiKey) {
+    files = await synthAllBeatsWith((text, spoken) => synthOpenAI(text, spoken, openaiKey, voiceId));
+  } else {
+    files = await synthAllBeatsWith((text, spoken) => synthSystem(text, spoken, voiceId));
   }
 
   const joined = path.join(workDir, "voice-raw.wav");

@@ -338,9 +338,13 @@ model Episode {
   userId   String?
   user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  partNumber  Int    @default(1)
-  seriesTotal Int    @default(1)
-  theme       String @default("marginalia")
+  partNumber  Int     @default(1)
+  seriesTotal Int     @default(1)
+  theme       String  @default("marginalia")
+  /// Which of the 7 viral/ultra-pro HyperFrames video models built this episode
+  /// (`vision-bento`, `investigative-dossier`, `neuro-lab`, `trifecta-viral`,
+  /// `dankoe-vector`, `vox-explainer`, `magnates-cinema`). Null on older rows.
+  reelStyle   String?
   ideaKey     String?
 
   /// photo | idea. A photo episode covers a page range of a photographed

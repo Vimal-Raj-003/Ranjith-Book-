@@ -551,47 +551,119 @@ export async function generateSceneWithComfy(
   const res = resolutionForCheckpoint(input.checkpoint);
   const prefix = `bookreel/br_${input.cacheKey.slice(0, 12)}`;
 
-  const imageWorkflow: Record<string, unknown> = {
-    "3": {
-      class_type: "KSampler",
-      inputs: {
-        seed,
-        steps: res.steps,
-        cfg: res.cfg,
-        sampler_name: "dpmpp_2m",
-        scheduler: "karras",
-        denoise: 1.0,
-        model: ["4", 0],
-        positive: ["6", 0],
-        negative: ["7", 0],
-        latent_image: ["5", 0],
-      },
-    },
-    "4": {
-      class_type: "CheckpointLoaderSimple",
-      inputs: { ckpt_name: input.checkpoint },
-    },
-    "5": {
-      class_type: "EmptyLatentImage",
-      inputs: { width: res.width, height: res.height, batch_size: 1 },
-    },
-    "6": {
-      class_type: "CLIPTextEncode",
-      inputs: { text: input.positivePrompt.slice(0, 900), clip: ["4", 1] },
-    },
-    "7": {
-      class_type: "CLIPTextEncode",
-      inputs: { text: input.negativePrompt.slice(0, 600), clip: ["4", 1] },
-    },
-    "8": {
-      class_type: "VAEDecode",
-      inputs: { samples: ["3", 0], vae: ["4", 2] },
-    },
-    "9": {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: prefix, images: ["8", 0] },
-    },
-  };
+  const isSdxl = /sdxl|xl/i.test(input.checkpoint);
+  const hiresWidth = isSdxl ? res.width : 640;
+  const hiresHeight = isSdxl ? res.height : 1152;
+
+  const imageWorkflow: Record<string, unknown> = isSdxl
+    ? {
+        "3": {
+          class_type: "KSampler",
+          inputs: {
+            seed,
+            steps: res.steps,
+            cfg: res.cfg,
+            sampler_name: "dpmpp_2m",
+            scheduler: "karras",
+            denoise: 1.0,
+            model: ["4", 0],
+            positive: ["6", 0],
+            negative: ["7", 0],
+            latent_image: ["5", 0],
+          },
+        },
+        "4": {
+          class_type: "CheckpointLoaderSimple",
+          inputs: { ckpt_name: input.checkpoint },
+        },
+        "5": {
+          class_type: "EmptyLatentImage",
+          inputs: { width: res.width, height: res.height, batch_size: 1 },
+        },
+        "6": {
+          class_type: "CLIPTextEncode",
+          inputs: { text: input.positivePrompt.slice(0, 900), clip: ["4", 1] },
+        },
+        "7": {
+          class_type: "CLIPTextEncode",
+          inputs: { text: input.negativePrompt.slice(0, 600), clip: ["4", 1] },
+        },
+        "8": {
+          class_type: "VAEDecode",
+          inputs: { samples: ["3", 0], vae: ["4", 2] },
+        },
+        "9": {
+          class_type: "SaveImage",
+          inputs: { filename_prefix: prefix, images: ["8", 0] },
+        },
+      }
+    : {
+        // 2-Stage Latent Hi-Res Fix for SD 1.5: base 512×896 composition -> 640×1152 detail refine pass
+        "3": {
+          class_type: "KSampler",
+          inputs: {
+            seed,
+            steps: 22,
+            cfg: 7.2,
+            sampler_name: "dpmpp_2m",
+            scheduler: "karras",
+            denoise: 1.0,
+            model: ["4", 0],
+            positive: ["6", 0],
+            negative: ["7", 0],
+            latent_image: ["5", 0],
+          },
+        },
+        "4": {
+          class_type: "CheckpointLoaderSimple",
+          inputs: { ckpt_name: input.checkpoint },
+        },
+        "5": {
+          class_type: "EmptyLatentImage",
+          inputs: { width: res.width, height: res.height, batch_size: 1 },
+        },
+        "6": {
+          class_type: "CLIPTextEncode",
+          inputs: { text: input.positivePrompt.slice(0, 900), clip: ["4", 1] },
+        },
+        "7": {
+          class_type: "CLIPTextEncode",
+          inputs: { text: input.negativePrompt.slice(0, 650), clip: ["4", 1] },
+        },
+        "10": {
+          class_type: "LatentUpscale",
+          inputs: {
+            samples: ["3", 0],
+            upscale_method: "bislerp",
+            width: hiresWidth,
+            height: hiresHeight,
+            crop: "disabled",
+          },
+        },
+        "11": {
+          class_type: "KSampler",
+          inputs: {
+            seed: seed + 1,
+            steps: 10,
+            cfg: 6.5,
+            sampler_name: "dpmpp_2m",
+            scheduler: "karras",
+            denoise: 0.42,
+            model: ["4", 0],
+            positive: ["6", 0],
+            negative: ["7", 0],
+            latent_image: ["10", 0],
+          },
+        },
+        "8": {
+          class_type: "VAEDecode",
+          inputs: { samples: ["11", 0], vae: ["4", 2] },
+        },
+        "9": {
+          class_type: "SaveImage",
+          inputs: { filename_prefix: prefix, images: ["8", 0] },
+        },
+      };
 
   const history = await submitAndWaitWorkflow(
     baseUrl,
@@ -615,13 +687,13 @@ export async function generateSceneWithComfy(
     throw new Error("Could not retrieve generated image bytes from ComfyUI /view.");
   }
 
-  // Upscale to crisp vertical 1080×1920 with Lanczos3 + rich cinema saturation, contrast, and micro-sharpening.
+  // Upscale to crisp vertical 1080×1920 with Lanczos3 + rich low-key cinema contrast (preventing blown-out highlights).
   const upscaledBuf = await sharp(rawImageBuf)
     .resize(1080, 1920, { fit: "cover", position: "attention", kernel: sharp.kernel.lanczos3 })
-    .modulate({ saturation: 1.24, brightness: 1.05 })
-    .linear(1.09, -7)
+    .modulate({ saturation: 1.18, brightness: 0.92 })
+    .linear(1.08, -10)
     .sharpen({ sigma: 1.0, m1: 0.68, m2: 1.55 })
-    .jpeg({ quality: 93, mozjpeg: true })
+    .jpeg({ quality: 94, mozjpeg: true })
     .toBuffer();
 
   await fsp.writeFile(imagePath, upscaledBuf);

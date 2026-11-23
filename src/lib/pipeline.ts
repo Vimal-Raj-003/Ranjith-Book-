@@ -40,6 +40,12 @@ import { planScenes, describePlan, type ScenePlan } from "./video/scenes";
 import { generateEpisodeVisuals } from "./video/visual-engine";
 import { DEFAULT_VISUAL_ENGINE, isHybridVisualEngine } from "./video/visual-engine/types";
 import { enforceFreeRenderMode } from "./video/visual-engine/cost-guard";
+import {
+  applyReelModelToScenes,
+  chooseAutoReelModel,
+  isReelModelId,
+  type ReelModelId,
+} from "./video/reel-models";
 import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { bookThemeById, isBookThemeId } from "./video/composition/themes";
@@ -1117,7 +1123,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
           style: chosenStyle,
           voicePath: voice.audioPath,
           voiceOffsetSec: AUDIO_OFFSET,
-          targetMeanDb: Math.max(-23, Math.min(-16, music.level + 2.5)),
+          targetMeanDb: Math.max(-28, Math.min(-22, music.level - 3)),
         });
       })
       .then(
@@ -1177,12 +1183,22 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     );
     if (visualOut.notes.length) await appendNotes(episodeId, visualOut.notes);
 
+    const configuredReelModel = await getSetting("reelModel");
+    const activeReelModel: ReelModelId = isReelModelId(episode.reelStyle)
+      ? episode.reelStyle
+      : isReelModelId(configuredReelModel)
+        ? configuredReelModel
+        : chooseAutoReelModel(`${episode.book.title} ${pkg.title} ${pkg.hook}`);
+    const styledScenes = applyReelModelToScenes(activeReelModel, visualOut.scenes, pkg);
+
     const hasMusic = await musicJob;
     const sfxPath = path.join(workDir, "sfx.wav");
     const hasSfx = await generateSfxTrack({
       durationSec: compositionDuration,
       audioOffsetSec: AUDIO_OFFSET,
-      scenes: visualOut.scenes,
+      scenes: styledScenes,
+      strokes: columnSteps.map((st) => ({ start: st.start, end: st.end })),
+      speechSpans: timing.words.map((w) => ({ start: w.start, end: w.end })),
       outPath: sfxPath,
     }).then(
       ({ cues }) => cues.length > 0,
@@ -1212,6 +1228,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       music: hasMusic,
       sfx: hasSfx,
       viralCaptions: true,
+      reelStyle: activeReelModel,
       bookTitle: episode.book.title,
       // The byline shows a name ONLY when the four-link verification chain
       // established one. `authorVerified` is that chain's verdict; an
@@ -1221,7 +1238,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       author: episode.book.authorVerified ? episode.book.author : null,
       // Null unless the operator typed one. No link, no purchase card.
       bookLink: episode.book.bookLink,
-      scenes: visualOut.scenes,
+      scenes: styledScenes,
     });
 
     await prisma.episode.update({
@@ -1232,7 +1249,8 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         srt: toSrt(captions, AUDIO_OFFSET),
         wordTimings: serializeTiming(timing),
         timingSource: timing.source,
-        scenePlan: JSON.stringify(visualOut.scenes),
+        scenePlan: JSON.stringify(styledScenes),
+        reelStyle: activeReelModel,
         visualEngine: visualOut.engine,
         visualManifest: JSON.stringify(visualOut.manifest),
         durationSec: voice.totalDuration,

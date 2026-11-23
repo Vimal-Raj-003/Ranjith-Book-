@@ -30,7 +30,7 @@ import { transformersEmbedder } from "../../analysis/embed";
 import { abortOpts, wasCancelled, CancelledError } from "../../cancel";
 import type { ContentPackage } from "../../content/schema";
 import type { BookTheme } from "../composition/theme-contract";
-import { BOOK_KINDS, type Scene } from "../scenes/types";
+import { BOOK_KINDS, PAGE_KINDS, type Scene } from "../scenes/types";
 import { analyzeEpisodeVisuals } from "./analyze";
 import { classifyAndPlanEpisodeScenes } from "./hybrid-planner";
 import { discoverSceneStyleBrief } from "./references";
@@ -220,14 +220,11 @@ export async function generateEpisodeVisuals(
     hybridPlan.plans.map((p) => [p.sceneIndex, p]),
   );
 
-  // Scenes requiring ComfyUI 9:16 plate + 2.5D depth synthesis (`hybrid-cinematic` or `documentary`).
-  const plateScenes = plannedScenes.filter((s) => {
-    if (s.kind !== "cinematic" || !s.cine) return false;
-    const tr = planByIndex.get(s.index)?.visualTreatment ?? "hybrid-cinematic";
-    return tr === "hybrid-cinematic" || tr === "documentary";
-  });
+  // Scenes eligible for ComfyUI 9:16 plate + 2.5D depth synthesis (`hybrid-cinematic`, `documentary`,
+  // and `3d-animation` whenever local ComfyUI is reachable so no scene drops to bare cartoon shapes mid-video).
+  const plateScenes = plannedScenes.filter((s) => s.kind === "cinematic" && Boolean(s.cine));
 
-  // Non-book visual scenes reported in `manifest.scenes` (`plateScenes` + `3d-animation` + `motion-graphics`).
+  // Non-page visual scenes reported in `manifest.scenes` (`plateScenes` + `motion-graphics` + `quote`).
   const visualScenes = plannedScenes.filter((s) => !BOOK_KINDS.includes(s.kind));
 
   await input.onProgress?.({
@@ -317,7 +314,9 @@ export async function generateEpisodeVisuals(
     const isPlateScene =
       scene.kind === "cinematic" &&
       Boolean(scene.cine) &&
-      (plan.visualTreatment === "hybrid-cinematic" || plan.visualTreatment === "documentary");
+      (plan.visualTreatment === "hybrid-cinematic" ||
+        plan.visualTreatment === "documentary" ||
+        (plan.visualTreatment === "3d-animation" && comfyDiag.reachable && Boolean(comfyDiag.checkpoint)));
 
     // Dedicated Three.js 3D Animation or Motion Graphics scenes do not waste ComfyUI VRAM:
     if (!isPlateScene) {
@@ -356,6 +355,7 @@ export async function generateEpisodeVisuals(
     }
 
     const positivePrompt = [
+      "low-key dark chiaroscuro cinema macro photography, deep moody dark background, warm tungsten key light on subject in lower center, no people, 50mm f/1.8",
       intent.promptCore,
       styleBrief.lightingNote,
       `color palette inspired by ${styleBrief.dominantHex} and ${styleBrief.accentHex}`,
@@ -363,13 +363,20 @@ export async function generateEpisodeVisuals(
       .filter(Boolean)
       .join(", ");
 
+    const effectiveNegativePrompt = [
+      analysis.bible.negativePrompt,
+      "person, people, human, man, woman, face, portrait, body, silhouette, hands, white wall, bright window, overexposed, white background, sparks, particles, rain",
+    ]
+      .filter(Boolean)
+      .join(", ");
+
     const cacheKey = visualCacheKey({
-      v: 2,
+      v: 4,
       treatment: plan.visualTreatment,
       ckpt: comfyDiag.checkpoint ?? "procedural",
       videoModel: comfyDiag.videoModel ?? null,
       positivePrompt,
-      negativePrompt: analysis.bible.negativePrompt,
+      negativePrompt: effectiveNegativePrompt,
     });
 
     // Resume from previous manifest on retry if files are already intact on disk.
@@ -447,7 +454,7 @@ export async function generateEpisodeVisuals(
         checkpoint: comfyDiag.checkpoint,
         videoModel: comfyDiag.videoCapable ? comfyDiag.videoModel : null,
         positivePrompt,
-        negativePrompt: analysis.bible.negativePrompt,
+        negativePrompt: effectiveNegativePrompt,
         sceneDurationSec: Math.max(2.5, scene.end - scene.start),
         dominantHex: styleBrief.dominantHex,
         accentHex: styleBrief.accentHex,
@@ -597,7 +604,7 @@ export async function generateEpisodeVisuals(
   const enrichedScenes: Scene[] =
     availablePlateSrcs.length > 0
       ? updatedScenes.map((s, idx) => {
-          if (s.kind === "cinematic" || BOOK_KINDS.includes(s.kind)) return s;
+          if (s.kind === "cinematic" || PAGE_KINDS.includes(s.kind)) return s;
           return { ...s, bgImageSrc: availablePlateSrcs[idx % availablePlateSrcs.length] };
         })
       : updatedScenes;

@@ -270,12 +270,15 @@ export async function renderProject(
   return outputAbs;
 }
 
+/** Background music mix level (20% = 0.20 linear gain) so narration stays crisp and dominant. */
+export const BACKGROUND_MUSIC_VOLUME = 0.2;
+
 /**
  * Lossless-video (`-c:v copy`) broadcast audio mastering pass after HyperFrames
  * completes. Blends centered studio voiceover with stereo-widened cinematic music
- * and organic SFX, glued together at YouTube Shorts' -14 LUFS loudness standard.
+ * at 20% volume and subtle organic SFX, glued together at -14 LUFS.
  */
-async function masterRenderedVideoAudio(projectDir: string, mp4Path: string): Promise<void> {
+export async function masterRenderedVideoAudio(projectDir: string, mp4Path: string): Promise<void> {
   const assetsDir = path.join(projectDir, "assets");
   const voiceWav = path.join(assetsDir, "voice.wav");
   const musicWav = path.join(assetsDir, "music.wav");
@@ -308,8 +311,8 @@ async function masterRenderedVideoAudio(projectDir: string, mp4Path: string): Pr
   if (hasMusic) {
     inputs.push("-i", musicWav);
     chains.push(
-      // Subtle Haas 14ms stereo spread on the already sidechain-ducked cinematic score
-      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=0.88,asplit=2[ml][mr];[mr]adelay=14[mrd];[ml][mrd]amerge=inputs=2[mpan]`,
+      // Subtle Haas 14ms stereo spread on the sidechain-ducked cinematic score at 20% volume
+      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=${BACKGROUND_MUSIC_VOLUME},asplit=2[ml][mr];[mr]adelay=14[mrd];[ml][mrd]amerge=inputs=2[mpan]`,
     );
     mixInputs.push("[mpan]");
     nextIdx += 1;
@@ -317,7 +320,7 @@ async function masterRenderedVideoAudio(projectDir: string, mp4Path: string): Pr
   if (hasSfx) {
     inputs.push("-i", sfxWav);
     chains.push(
-      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=1.08,asplit=2[sl][sr];[sr]adelay=9[srd];[sl][srd]amerge=inputs=2[span]`,
+      `[${nextIdx}:a]atrim=0:${dur.toFixed(3)},volume=0.72,asplit=2[sl][sr];[sr]adelay=9[srd];[sl][srd]amerge=inputs=2[span]`,
     );
     mixInputs.push("[span]");
   }

@@ -84,6 +84,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       description: episode.description,
       hashtags: parseTags(episode.hashtags),
       thumbnails: publicThumbs(parseThumbnails(episode)),
+      reelStyle: episode.reelStyle,
       visualEngine: episode.visualEngine,
       sceneVisuals: publicSceneVisuals(parseVisualManifest(episode.visualManifest)),
       ...posterFields(episode),

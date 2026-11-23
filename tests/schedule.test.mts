@@ -14,7 +14,13 @@ import { thumbsDir, THUMB_KEYS } from "../src/lib/thumbnails/types";
 import type { PreparedPublish, PublishOutcome } from "../src/lib/publish/contract";
 import { browserPublisherFor } from "../src/lib/publish/registry";
 import { MIN_SCHEDULE_LEAD_MS, type BrowserPublishOptions, type BrowserPublisher } from "../src/lib/publish/browser/engine";
-import { isScheduleRunning, runSchedule } from "../src/lib/schedule/activate";
+import {
+  computeQueueCooldownMs,
+  isScheduleRunning,
+  MAX_QUEUE_COOLDOWN_MS,
+  MIN_QUEUE_COOLDOWN_MS,
+  runSchedule,
+} from "../src/lib/schedule/activate";
 import { publishDueInstagram } from "../src/lib/schedule/due";
 import { activateSchedule, saveDraft, scheduleView } from "../src/lib/schedule/store";
 import {
@@ -1111,4 +1117,68 @@ test("read-only recovery confirms an exact known receipt without executing an up
   assert.equal(confirmed?.attempts, 1);
   assert.equal(confirmed?.publishedAt, null);
   assert.equal((await scheduleView(s.ownerId, s.uploadId)).schedule?.slots[0].status, "scheduled");
+});
+
+test("queue cooldown enforces a varied 2m 45s to 3m 45s shuffled gap between consecutive uploads without delaying the first upload", async () => {
+  // 1. Verify production default cooldown cycles and shuffles within 2m 45s – 3m 45s (165,000–225,000 ms).
+  assert.equal(MIN_QUEUE_COOLDOWN_MS, 165_000);
+  assert.equal(MAX_QUEUE_COOLDOWN_MS, 225_000);
+  const prevTestPid = process.env.BOOKREEL_TEST_DB_PID;
+  const prevNodeTestCtx = process.env.NODE_TEST_CONTEXT;
+  const drawn: number[] = [];
+  try {
+    delete process.env.BOOKREEL_TEST_DB_PID;
+    delete process.env.NODE_TEST_CONTEXT;
+    for (let i = 0; i < 24; i++) {
+      const ms = computeQueueCooldownMs({}, {});
+      assert.ok(ms >= MIN_QUEUE_COOLDOWN_MS && ms <= MAX_QUEUE_COOLDOWN_MS, `cooldown ${ms}ms within 2m 45s .. 3m 45s`);
+      if (i > 0) assert.notEqual(ms, drawn[i - 1], "consecutive cooldowns do not repeat");
+      drawn.push(ms);
+    }
+  } finally {
+    if (prevTestPid !== undefined) process.env.BOOKREEL_TEST_DB_PID = prevTestPid;
+    if (prevNodeTestCtx !== undefined) process.env.NODE_TEST_CONTEXT = prevNodeTestCtx;
+  }
+  assert.ok(new Set(drawn).size >= 10, "cooldown loop visits distinct durations across 2m 45s – 3m 45s");
+
+  // 2. Verify consecutive Instagram slots wait varied cooldowns between Video 1 -> Video 2 -> Video 3, never before Video 1.
+  const s = await seed(3); seeds.push(s);
+  const events: string[] = [];
+  const mock = recorder((episodeId, opts) => {
+    events.push("publish:instagram");
+    return confirmed(`IG_${episodeId}`, opts.scheduledAt);
+  });
+
+  const igEnv = { BOOKREEL_INSTAGRAM_PUBLISH_ENABLED: "1", BOOKREEL_IG_NATIVE_SCHEDULE: "1", BOOKREEL_QUEUE_COOLDOWN_MS: "loop" };
+  const draft = must(await saveDraft(s.ownerId, draftBody(s, {
+    platforms: ["instagram"],
+    madeForKids: null,
+    days: 1,
+    timeSlots: ["09:00", "12:00", "18:00"],
+    videoIds: [s.episodes[0], s.episodes[1], s.episodes[2]],
+  })));
+
+  const sleptMs: number[] = [];
+  await activateSchedule(s.ownerId, draft.id, {
+    env: igEnv,
+    makePublisher: mock.makePublisher,
+    sleep: async (ms) => {
+      sleptMs.push(ms);
+      events.push(`sleep:${ms}`);
+    },
+    waitForCompletion: true,
+  });
+
+  assert.equal(sleptMs.length, 2, "slept after Video 1 and after Video 2, never before Video 1");
+  assert.notEqual(sleptMs[0], sleptMs[1], "consecutive inter-video gaps use distinct durations");
+  for (const ms of sleptMs) {
+    assert.ok(ms >= 165_000 && ms <= 225_000, `gap ${ms}ms stays within 2m 45s .. 3m 45s`);
+  }
+  assert.deepEqual(events, [
+    "publish:instagram",
+    `sleep:${sleptMs[0]}`,
+    "publish:instagram",
+    `sleep:${sleptMs[1]}`,
+    "publish:instagram",
+  ]);
 });

@@ -13,6 +13,14 @@
 import { prisma, getSetting } from "../db";
 import { isBookThemeId } from "../video/composition/themes";
 import { themeForTextSync } from "../video/composition/themes/choose";
+import {
+  chooseAutoReelModel,
+  isReelModelId,
+  isReelModelSetting,
+  preferredThemeForReelModel,
+  REEL_MODEL_AUTO,
+  type ReelModelId,
+} from "../video/reel-models";
 import type { IdeaBrief } from "../content/schema";
 import { VIDEO_MAX_SECONDS, VIDEO_MIN_HARD_SECONDS, VIDEO_MIN_TARGET_SECONDS, videoSecondsVerdict } from "../content/duration";
 import type { SourceRef } from "../analysis/types";
@@ -138,39 +146,46 @@ const ACTIVE_OR_DONE = new Set(["QUEUED", "RUNNING", "DONE"]);
  * on "Generate videos" must not render the same video twice. A FAILED episode
  * does not count, so generating again after a failure starts a fresh run.
  */
+export interface CreateIdeaEpisodesOptions {
+  /** Batch-wide model override (`"auto"` or one of the 7 `ReelModelId`s). */
+  reelModel?: string | null;
+  /** Optional per-idea model override (`ideaId -> "auto" | ReelModelId`). */
+  perIdeaModels?: Record<string, string> | null;
+}
+
 export async function createIdeaEpisodes(
   uploadId: string,
   ideaIds: string[],
   userId: string | null,
+  opts?: CreateIdeaEpisodesOptions,
 ): Promise<CreatedEpisode[]> {
   const ideas = await prisma.contentIdea.findMany({
     where: { id: { in: ideaIds }, uploadId },
     include: { episodes: { orderBy: { createdAt: "desc" } } },
   });
-  // The theme. An operator who has picked a specific one gets exactly that, on
-  // every episode, as before — an explicit choice is still an instruction.
-  // Anything else (the "auto" default, nothing stored, a value from a build that
-  // had a theme this one does not) means DERIVE IT, and the derivation happens
-  // per idea inside the loop, not once here.
-  //
-  // Per idea is the point. The old code read the setting once and stamped the
-  // same id on everything it created, so one click on "Generate videos" produced
-  // five identically-skinned episodes from five different ideas; four real
-  // episodes on four unrelated subjects rendered the same because all four were
-  // `marginalia`. Two ideas out of one book must be able to differ, which they
-  // can only do if the choice is made from each idea's own words.
-  //
-  // `themeForTextSync`, not `themeRanker`: this runs inside the POST the UI
-  // awaits when the operator clicks Generate. The semantic ranker's first call
-  // loads (and on a cold cache downloads) the sentence model, which would hold
-  // that response open for as long as that takes and could fail it outright. The
-  // keyword floor needs no model, no cache directory and no network, always
-  // answers, and answers the same way every time. The ingest path in
-  // `pipeline.ts` is a background job and does use the ranker.
   const settingTheme = await getSetting("theme");
   const fixedTheme = isBookThemeId(settingTheme) ? settingTheme : null;
+  const settingReelModel = await getSetting("reelModel");
+  const fallbackModelPref = isReelModelSetting(opts?.reelModel)
+    ? opts.reelModel
+    : isReelModelSetting(settingReelModel)
+      ? settingReelModel
+      : REEL_MODEL_AUTO;
+
+  // Seed `usedModels` with the most recently created episode's `reelStyle` so
+  // consecutive single-video `"auto"` runs never repeat the exact same model twice in a row.
+  const recentWithStyle = await prisma.episode.findFirst({
+    where: { reelStyle: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { reelStyle: true },
+  });
+  const usedModels: ReelModelId[] = [];
+  if (recentWithStyle?.reelStyle && isReelModelId(recentWithStyle.reelStyle)) {
+    usedModels.push(recentWithStyle.reelStyle);
+  }
 
   const out: CreatedEpisode[] = [];
+  let createdIdx = 0;
   for (const id of ideaIds) {
     const idea = ideas.find((i) => i.id === id);
     if (!idea) continue;
@@ -179,6 +194,22 @@ export async function createIdeaEpisodes(
       out.push({ ideaId: id, episodeId: existing.id, created: false, status: existing.status });
       continue;
     }
+
+    const perIdeaRaw = opts?.perIdeaModels?.[id];
+    const requestedModel = isReelModelSetting(perIdeaRaw) ? perIdeaRaw : fallbackModelPref;
+    const textForChoice = ideaThemeText(idea);
+    const chosenModel: ReelModelId = isReelModelId(requestedModel)
+      ? requestedModel
+      : chooseAutoReelModel(textForChoice, usedModels, createdIdx);
+
+    if (usedModels.length >= 7) usedModels.length = 0;
+    if (!usedModels.includes(chosenModel)) usedModels.push(chosenModel);
+    createdIdx += 1;
+
+    const chosenTheme =
+      fixedTheme ??
+      (isReelModelId(chosenModel) ? preferredThemeForReelModel(chosenModel) : themeForTextSync(textForChoice));
+
     const episode = await prisma.episode.create({
       data: {
         bookId: idea.bookId,
@@ -189,7 +220,8 @@ export async function createIdeaEpisodes(
         contentIdeaId: idea.id,
         ideaKey: idea.ideaKey,
         title: idea.title,
-        theme: fixedTheme ?? themeForTextSync(ideaThemeText(idea)),
+        theme: chosenTheme,
+        reelStyle: chosenModel,
         status: "QUEUED",
         step: "Queued",
       },

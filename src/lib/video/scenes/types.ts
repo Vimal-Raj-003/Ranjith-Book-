@@ -13,6 +13,7 @@
  */
 import type { SourceRef } from "../../analysis/types";
 import type { HeroId } from "./heroes";
+import type { ProModelKind, ProModelMeta } from "./pro-stage";
 import type {
   AtmosphereKind,
   CameraMoveKind,
@@ -247,6 +248,12 @@ export interface Scene {
     hook?: boolean;
     accentWords?: string[];
     plate?: CinePlateSpec;
+    /** When true, renders crisp 1080p SVG geometric vector motion diagrams instead of WebGL raster/3D canvas. */
+    vectorMode?: boolean;
+    /** Optional Ultra-Pro Creator bespoke interactive metaphor/example rig (`pro-stage.ts`). */
+    proModel?: ProModelKind;
+    /** Optional episode-grounded dynamic labels for `proModel`. */
+    proMeta?: ProModelMeta;
   };
 }
 

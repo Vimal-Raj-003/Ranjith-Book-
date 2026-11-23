@@ -118,18 +118,23 @@ const VISUAL_DIRECTOR_SCHEMA = {
   },
 } as const;
 
-const SYSTEM_PROMPT = `You are a master cinematographer and visual director for viral vertical 9:16 documentary & literary short films (Zack D. Films / Fern / Pursuit of Wonder visual clarity).
+const SYSTEM_PROMPT = `You are a master tabletop & architectural cinematographer for luxury vertical 9:16 documentary & book-storytelling films (A24 title sequences / MagnatesMedia / Pursuit of Wonder dark still-life cinema).
 Given a book's title, archetype, script, and exact spoken narration per cinematic scene:
-1. Build a unified BookVisualBible so every scene shares cohesive high-contrast lighting, deep shadows, warm rim highlights, and consistent visual atmosphere.
-2. For each listed scene, depict the EXACT concrete objects, actions, or real-world tension in the spoken narration — NEVER fall back to unrelated nature filler, generic staircases, or abstract shapes when the narration names real objects or situations (e.g. if the narration talks about rewarding a workout with sweets, show a heavy iron dumbbell on a dark gym floor next to a glossy glazed donut under dramatic spotlight; if it talks about excuses blocking a walk, show laced running shoes by a rain-streaked doorway).
-3. Describe concrete visual scenes suitable for local Stable Diffusion portrait rendering:
-   - Place ONE unmistakable focal subject in the crisp center-lower midground, framed with dark atmospheric top & bottom negative space so overlaid typography pops cleanly.
-   - Use dramatic volumetric rim lighting, shallow depth of field (35mm f/1.8), tactile real-world textures, and clear foreground/midground/background depth separation.
-   - NEVER ask for written text, signs, numbers, clock faces with digits, letters, book titles, or watermarks inside the generated image (all typography is rendered separately in HTML).
-   - Provide 2-3 concise photography/art reference search queries (2-5 words each, e.g. "running shoes rain doorway", "iron dumbbell dark studio") for free reference discovery.`;
+1. Build a unified BookVisualBible with LOW-KEY DARK CHIAROSCURO LIGHTING: deep obsidian, charcoal, walnut, and slate backgrounds (#0a0d14) with a single warm tungsten/amber spotlight illuminating the hero object in the lower-middle frame. NEVER generate bright white walls, daylight windows, or overexposed rooms!
+2. STRICT NO-HUMANS / NO-FACES RULE:
+   - NEVER include people, men, women, faces, portraits, bodies, silhouettes, or hands in any scene! (Local Stable Diffusion 1.5 distorts faces and stretches vertical human proportions).
+   - Instead, translate EVERY spoken sentence into an unmistakable, concrete, photorealistic MACRO STILL-LIFE OBJECT or MOODY ARCHITECTURAL SCENE that directly illustrates the story's exact meaning:
+     * Story about judging someone else's seemingly small choice: Macro 35mm close-up of an antique brass balance scale on dark walnut wood, a small rough uncut gemstone glowing warm amber on one pan outweighing a heavy iron block on the other pan, deep dark library shadow above.
+     * Story about hidden daily preferences revealing true character: Macro 35mm close-up of a carved black-and-gold marble chess king standing sharply lit at the center of a dark chessboard beside a crimson wax seal and brass compass, deep moody shadow above.
+     * Story about crisis / pressure testing resolution: Dramatic close-up of a heavy iron anchor chain taut over dark wet coastal basalt rock under moody twilight, warm lantern rim light, deep dark sky above.
+     * Story about facing a brand new choice vs habit automatism: Macro 35mm close-up of intricate interlocking golden brass clockwork gears and a gleaming brass metronome on a dark mahogany desk under a warm key light, deep dark negative space above.
+     * Story about diverging paths / clearing the path: Moody low-key night photograph of a stone garden pathway splitting in two directions, illuminated by low warm amber ground lanterns against deep dark foliage, zero people.
+3. Composition for 9:16 vertical video:
+   - Frame the crisp macro hero object in the LOWER-CENTER midground (y = 55%..80%), keeping the UPPER 40% in clean, deep dark shadow so the opening hook card and headlines pop with 100% cinema contrast.
+   - Specify: macro 50mm f/1.8 lens, razor-sharp tactile metal/wood/stone/glass textures, low-key studio lighting, zero text/letters/numbers, zero sparks/particles.`;
 
 const DEFAULT_NEGATIVE_PROMPT =
-  "text, words, letters, numbers, digits, watermark, logo, signature, caption, subtitle, blurry, low quality, jpeg artifacts, distorted hands, extra fingers, deformed face, cropped, frame border, split screen, cartoon sticker, flat clipart";
+  "person, people, human, man, woman, girl, boy, face, portrait, body, figure, silhouette, crowd, hands, fingers, white wall, bright window, overexposed, blown out highlights, daylight room, white background, text, words, letters, numbers, digits, watermark, logo, signature, caption, subtitle, blurry, out of focus, low quality, jpeg artifacts, cropped, frame border, split screen, cartoon, anime, fantasy, medieval, video game, 3d render, plastic, sparks, fireflies, glowing particles, dust motes, bokeh orbs, rain streaks, lens flare";
 
 /**
  * Determine which configured CLI/free-tier LLM provider directs scene visuals.
@@ -259,20 +264,20 @@ function heroVisualMetaphor(scene: Scene, narration: string, treatment?: VisualT
       subject: "wet cobblestone city street reflecting warm storefront lamps at dusk",
       environment: "authentic urban street canyon with layered architectural depth",
       emotion: "lived-in realism and reflection",
-      action: "distant pedestrians silhouetted in soft evening mist",
-      lighting: "natural twilight sky with warm practical streetlamp reflections",
-      atmosphere: "mist",
+      action: "warm amber reflections shimmering across wet slate cobblestones in evening mist",
+      lighting: "low-key twilight chiaroscuro with warm practical streetlamp reflections",
+      atmosphere: "still",
     };
   }
 
   if (/storm|fear|anger|chaos|crisis|danger|anxiet/.test(lower) || hero === "storm") {
     return {
-      subject: "solitary figure standing steady on a dark coastal cliff facing towering storm clouds",
-      environment: "dramatic windswept sea cliff under turbulent slate storm clouds",
+      subject: "heavy weathered iron anchor chain taut across wet black basalt rock",
+      environment: "dramatic dark sea cliff under deep slate storm shadow",
       emotion: "tension and resilience",
-      action: "wind sweeping mist across jagged rock as distant lightning illuminates the horizon",
-      lighting: "cold silver storm light with a warm lantern rim glow",
-      atmosphere: "rain",
+      action: "cold ocean spray glistening on dark volcanic stone in shallow depth of field",
+      lighting: "low-key chiaroscuro silver rim light with a warm brass lantern glow",
+      atmosphere: "still",
     };
   }
   if (/time|clock|hour|year|moment|wait|late|past/.test(lower) || hero === "hourglass" || hero === "clock") {
@@ -345,14 +350,24 @@ function heroVisualMetaphor(scene: Scene, narration: string, treatment?: VisualT
       atmosphere: "embers",
     };
   }
+  if (/equal|weigh|balance|swing|alternat|paralyz|hesitat/.test(lower) || hero === "scales") {
+    return {
+      subject: "vintage polished brass apothecary balance scale with two equal bronze weights on dark walnut",
+      environment: "shadowed classical mahogany study with warm amber desk lamp rim light",
+      emotion: "delicate equilibrium and tension",
+      action: "warm golden rim light glinting across finely machined brass balance arms",
+      lighting: "low-key chiaroscuro spotlight against deep charcoal velvet shadow",
+      atmosphere: "still",
+    };
+  }
   if (/people|friend|community|together|speak|conversation|world/.test(lower) || hero === "dialogue" || hero === "network") {
     return {
-      subject: "two silhouetted figures walking along a sunlit colonnade with long architectural shadows",
-      environment: "warm Mediterranean stone arcade at golden hour",
+      subject: "classical limestone colonnade casting rhythmic geometric shadows across warm stone",
+      environment: "architectural stone arcade in dramatic low-angle golden hour light",
       emotion: "connection and perspective",
-      action: "warm afternoon light casting rhythmic pillar shadows across stone",
-      lighting: "warm golden-hour side light with soft atmospheric haze",
-      atmosphere: "dust",
+      action: "warm directional light carving crisp pillar shadows across ancient flagstones",
+      lighting: "low-key golden-hour side light with deep architectural shadow",
+      atmosphere: "still",
     };
   }
 

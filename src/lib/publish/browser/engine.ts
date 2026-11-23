@@ -611,7 +611,12 @@ export async function openSession(platform: PlatformId, deps: BrowserDeps = {}):
   const options = launchOptionsFor(env);
   const profileDir = profileDirFor(platform, deps.profileRoot);
 
-  await closeLeftOpenWindow(platform);
+  const closedLeftOpen = await closeLeftOpenWindow(platform);
+  const isRealRun = deps.profileWindow === undefined && !deps.launch;
+  if (closedLeftOpen && isRealRun) {
+    // Allow Windows Chrome child processes (GPU/utility) a brief moment to release SingletonLock.
+    await (deps.clock ?? realClock).sleep(2_000);
+  }
   // Chrome forwards a second launch (including its about:blank startup URL)
   // to the existing profile owner and exits. Playwright then has no page to
   // navigate. Check ownership BEFORE launching, after releasing our own window.
@@ -619,7 +624,14 @@ export async function openSession(platform: PlatformId, deps: BrowserDeps = {}):
     ? deps.profileWindow
     : process.platform === "win32" && !deps.launch ? windowsProbe : null;
   if (options.channel && probe) {
-    const found = await probe.waitForWindow(profileDir, 0).catch(() => ({ state: "unknown" as const }));
+    let found = await probe.waitForWindow(profileDir, 0).catch(() => ({ state: "unknown" as const }));
+    if (isRealRun && found.state === "none" && found.holders.length > 0) {
+      // Background Chrome helper processes are still exiting with no visible window; poll briefly until released.
+      for (let retry = 0; retry < 5 && found.state === "none" && found.holders.length > 0; retry++) {
+        await (deps.clock ?? realClock).sleep(1_500);
+        found = await probe.waitForWindow(profileDir, 0).catch(() => ({ state: "unknown" as const }));
+      }
+    }
     if (found.state === "window" || (found.state === "none" && found.holders.length > 0)) {
       throw new Error(`BookReel ${platform} profile is in use by another browser process. Close that platform's BookReel browser window, then retry; no navigation or upload was attempted.`);
     }

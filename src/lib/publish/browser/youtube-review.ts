@@ -46,6 +46,16 @@ async function productionReview(prepared: PreparedPublish, timeoutMs: number): P
     if (productionRunners.size >= 8) productionRunners.delete(productionRunners.keys().next().value!);
     productionRunners.set(provenance, runner);
   }
+  if (timeoutMs >= 240_000) {
+    const halfTimeout = Math.floor(timeoutMs / 2);
+    try {
+      return await runner(prepared, halfTimeout);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/timed out/i.test(msg) || currentSignal()?.aborted) throw err;
+      return await runner(prepared, timeoutMs - halfTimeout);
+    }
+  }
   return runner(prepared, timeoutMs);
 }
 

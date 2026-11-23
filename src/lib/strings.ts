@@ -189,6 +189,85 @@ export const AUTO_THEME_OPTION: ThemeOption = {
   music: "Follows each video's own theme",
 };
 
+/**
+ * The 7 viral & ultra-pro HyperFrames video models, plus `"auto"` (which scores
+ * each idea and rotates across all 7 models). Kept free of imports so `"use client"`
+ * components can render the model selector directly.
+ */
+export interface ReelModelOption {
+  id: string;
+  label: string;
+  shortLabel: string;
+  tier: "Ultra-Pro" | "Viral";
+  note: string;
+}
+
+export const REEL_MODELS: ReelModelOption[] = [
+  {
+    id: "vision-bento",
+    label: "1 · VisionOS Bento (Ultra-Pro)",
+    shortLabel: "VisionOS Bento",
+    tier: "Ultra-Pro",
+    note: "Frosted glass Bento UI, 7-day streak telemetry, detour radar & 365-day horizon.",
+  },
+  {
+    id: "investigative-dossier",
+    label: "2 · Investigative Dossier (Ultra-Pro)",
+    shortLabel: "Investigative Dossier",
+    tier: "Ultra-Pro",
+    note: "Dark war-room, Manila case files, scale-asymmetry rig & red-string timeline.",
+  },
+  {
+    id: "neuro-lab",
+    label: "3 · Neon Neuro Lab (Ultra-Pro)",
+    shortLabel: "Neon Neuro Lab",
+    tier: "Ultra-Pro",
+    note: "Bioluminescent indigo lab, decision sensor rig, trajectory swerve & 3D orbit.",
+  },
+  {
+    id: "trifecta-viral",
+    label: "4 · 3-in-1 Trifecta Master",
+    shortLabel: "3-in-1 Trifecta",
+    tier: "Viral",
+    note: "Combines 2.5D dark cinema, live 3D brass sculpture, vector grid & ivory cards.",
+  },
+  {
+    id: "dankoe-vector",
+    label: "5 · Dan Koe Minimalist Vector",
+    shortLabel: "Dan Koe Vector",
+    tier: "Viral",
+    note: "Pitch-black ruled grid with razor-sharp live-drawing SVG geometric diagrams.",
+  },
+  {
+    id: "vox-explainer",
+    label: "6 · Vox Paper-Cutout Explainer",
+    shortLabel: "Vox Explainer",
+    tier: "Viral",
+    note: "Warm archival cream grid, inked stamp header & hard-shadow paper-cutout cards.",
+  },
+  {
+    id: "magnates-cinema",
+    label: "7 · Magnates 2.5D Dark Cinema",
+    shortLabel: "Magnates 2.5D",
+    tier: "Viral",
+    note: "Chiaroscuro 2.5D macro plates, theater spotlight & live 3D brass sculptures.",
+  },
+];
+
+export const AUTO_REEL_MODEL_OPTION: ReelModelOption = {
+  id: "auto",
+  label: "Auto — All 7 Models",
+  shortLabel: "Auto (7 Models)",
+  tier: "Ultra-Pro",
+  note: "Automatically matches & rotates across all 7 video models per book video.",
+};
+
+export function reelModelLabel(id: string | null | undefined): string | null {
+  if (!id) return null;
+  if (id === AUTO_REEL_MODEL_OPTION.id) return AUTO_REEL_MODEL_OPTION.shortLabel;
+  return REEL_MODELS.find((m) => m.id === id)?.shortLabel ?? id;
+}
+
 export const strings = {
   app: {
     brand: "BookReel",
@@ -891,6 +970,13 @@ export const strings = {
     saveFailed: "Could not save that setting.",
     displayOnly: "Display only — this cannot be changed yet.",
   },
+  modelPanel: {
+    heading: "Video Model",
+    summary: (label: string) => `Model · ${label}`,
+    summaryUnknown: "Video Model",
+    current: "In use",
+    hint: "Choose Auto to match & rotate across all 7 models automatically, or pick one specific model for your next video.",
+  },
   themePanel: {
     heading: "Theme",
     /**
@@ -1075,6 +1161,10 @@ export const strings = {
     ideasIntro: (pages: number | null) =>
       pages ? `Ranked from the strongest, across all ${pages} pages.` : "Ranked from the strongest.",
     selectedCount: (n: number) => (n === 0 ? "None selected" : n === 1 ? "1 selected" : `${n} selected`),
+    modelLabel: "Video model",
+    perIdeaModelLabel: (title: string) => `Video model for “${title}”`,
+    perIdeaModelInherit: "Default (Toolbar / Auto)",
+    makeOneVideo: "Make video",
     generate: (n: number) => (n <= 1 ? "Generate video" : `Generate ${n} videos`),
     generating: "Queuing…",
     generateHint: "Each video is 1–2 minutes and takes several minutes to make. They are made one at a time.",

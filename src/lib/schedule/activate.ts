@@ -18,6 +18,7 @@ import type { Fetcher } from "@/lib/publish/youtube/oauth";
 import { DEFAULT_TIMEZONE, formatInZone } from "./time";
 import { isSettledSlot, type SlotStatus } from "./view";
 import { holdMissedQueueItem } from "./reconcile";
+import { shuffledRingDurationAt } from "@/lib/publish/browser/pacing";
 
 export interface RunScheduleOptions {
   /** Limit an explicit action to selected cells of an already active plan. */
@@ -34,7 +35,62 @@ export interface RunScheduleOptions {
   /** How often to look at a job someone else is running, and how long to wait for it. */
   pollMs?: number;
   maxWaitMs?: number;
+  /** Optional cooldown between consecutive upload attempts on the same platform (defaults to 2m 45s – 3m 45s shuffled loop in production, 0 in tests). */
+  slotCooldownMs?: number | (() => number);
+  /** Injectable sleep seam for testing queue cooldowns without wall-clock delay. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Bounds for the shuffled queue cooldown between consecutive uploads on the same platform (2m 45s to 3m 45s). */
+export const MIN_QUEUE_COOLDOWN_MS = 165_000;
+export const MAX_QUEUE_COOLDOWN_MS = 225_000;
+
+interface QueueCooldownLoopState {
+  step: number;
+  lastMs: number | null;
+}
+
+export function computeQueueCooldownMs(options: RunScheduleOptions = {}, env: EnvLike = process.env): number {
+  if (typeof options.slotCooldownMs === "number" && Number.isFinite(options.slotCooldownMs)) {
+    return Math.max(0, options.slotCooldownMs);
+  }
+  if (typeof options.slotCooldownMs === "function") {
+    const val = options.slotCooldownMs();
+    return Number.isFinite(val) ? Math.max(0, val) : 0;
+  }
+  const rawEnv = env.BOOKREEL_QUEUE_COOLDOWN_MS?.trim().toLowerCase();
+  if (rawEnv !== undefined && rawEnv !== "") {
+    if (rawEnv === "loop" || rawEnv === "shuffle") {
+      const stateHolder = globalThis as unknown as { bookreelQueueCooldownState?: QueueCooldownLoopState };
+      // Start at step 3 so the cooldown ring is offset from the upload ring.
+      const st = (stateHolder.bookreelQueueCooldownState ??= { step: 3, lastMs: null });
+      const chosen = shuffledRingDurationAt(st.step, st.lastMs);
+      st.step += 1;
+      st.lastMs = chosen;
+      return chosen;
+    }
+    const parsed = Number(rawEnv);
+    if (Number.isFinite(parsed)) return Math.max(0, parsed);
+  }
+  // Keep unit/integration test runs instant unless `slotCooldownMs` or `BOOKREEL_QUEUE_COOLDOWN_MS` is explicitly passed.
+  if (
+    options.makePublisher ||
+    options.deps?.launch ||
+    options.deps?.clock ||
+    process.env.BOOKREEL_TEST_DB_PID ||
+    process.env.NODE_TEST_CONTEXT
+  ) {
+    return 0;
+  }
+  const stateHolder = globalThis as unknown as { bookreelQueueCooldownState?: QueueCooldownLoopState };
+  const st = (stateHolder.bookreelQueueCooldownState ??= { step: 3, lastMs: null });
+  const chosen = shuffledRingDurationAt(st.step, st.lastMs);
+  st.step += 1;
+  st.lastMs = chosen;
+  return chosen;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const PLATFORM: PlatformId = "youtube";
 const IN_FLIGHT = ["PREPARING", "UPLOADING"];
@@ -57,6 +113,7 @@ interface JobFacts {
   id: string;
   status: string;
   externalId: string | null;
+  remoteDraftId?: string | null;
   externalUrl: string | null;
   scheduledFor: Date | null;
   lastError: string | null;
@@ -104,21 +161,27 @@ export function alreadyThere(job: JobFacts | null, assignedAt: Date, timeZone: s
 }
 
 const SYSTEMIC_HOLD_ERROR =
-  /sign in|signed out|security|challenge|captcha|2-step|two-step|verify your|upload limit|daily upload limit|does not match BookReel's configured channel/i;
+  /sign in|signed out|wants you to sign in|asked you to sign in|did not finish loading|security|challenge|captcha|2-step|two-step|verify your|upload limit|daily upload limit|does not match BookReel's configured channel|wrong (youtube|instagram)|did not say which (channel|account)|schedule content.*unavailable|does not offer schedule content|page crashed|browser has been closed/i;
+
+const PER_VIDEO_ISOLATED_ERROR =
+  /Audience and tag review|Audience\/tag review|Audience needs human review|stored video script|thumbnail is unavailable|Original could not be selected|cover was not applied|Studio Details settings could not be verified|schedule's time shows|schedule's date|less than (15|20) minutes away|no valid future publication time/i;
 
 /**
- * True when an `AWAITING_HUMAN` job already uploaded its video and recorded a valid
- * 11-character platform ID, and its hold reason is per-video (such as post-submit
- * receipt/time verification) rather than a systemic account/auth/quota block.
- * That individual video remains safely held without duplicate upload while independent
- * queued videos behind it continue.
+ * True when an `AWAITING_HUMAN` job failed for an isolated per-video reason (either after
+ * recording a post-upload checkpoint/draft ID, or on a single-episode pre-upload check such
+ * as script/tag review timeout, missing thumbnail, or per-slot schedule/details verification)
+ * rather than a systemic account/auth/quota/browser block. That individual video remains safely
+ * held without duplicate upload while independent queued videos behind it continue.
  */
 export function isPerVideoPostUploadHold(
-  job: { status: string; externalId?: string | null; lastError?: string | null } | null | undefined,
+  job: { status: string; externalId?: string | null; remoteDraftId?: string | null; lastError?: string | null } | null | undefined,
 ): boolean {
   if (!job || job.status !== "AWAITING_HUMAN") return false;
-  if (!job.externalId || !/^[\w-]{11}$/.test(job.externalId)) return false;
-  return !SYSTEMIC_HOLD_ERROR.test(job.lastError ?? "");
+  const err = job.lastError ?? "";
+  if (SYSTEMIC_HOLD_ERROR.test(err)) return false;
+  const checkpoint = (job.externalId ?? job.remoteDraftId)?.trim();
+  if (checkpoint) return true;
+  return PER_VIDEO_ISOLATED_ERROR.test(err);
 }
 
 /**
@@ -181,15 +244,15 @@ interface Plan {
   youtubePrivacy: string;
 }
 
-/** One slot. Returns whether the run should stop after it. Never throws. */
+/** One slot. Returns whether the run should stop after it and whether an upload attempt actually ran. Never throws. */
 async function runSlot(
   slot: { id: string; episodeId: string; assignedAt: Date; payloadJson: string | null; status: string },
   plan: Plan,
   options: RunScheduleOptions,
-): Promise<boolean> {
+): Promise<{ stop: boolean; attempted: boolean }> {
   try {
     const claimed = await prisma.scheduleSlot.updateMany({ where: { id: slot.id, status: slot.status, controlState: "active" }, data: { status: "scheduling", note: "Starting platform verification" } });
-    if (!claimed.count) return false;
+    if (!claimed.count) return { stop: false, attempted: false };
     await settle(slot.episodeId, options);
 
     const platform = options.platform ?? "youtube";
@@ -198,7 +261,7 @@ async function runSlot(
     const there = alreadyThere(before, slot.assignedAt, plan.timezone);
     if (there && before && !(options.acknowledgeRetry && before.status === "AWAITING_HUMAN")) {
       await setSlot(slot.id, { status: there.status, note: there.note, publishJobId: before.id });
-      return false;
+      return { stop: false, attempted: false };
     }
 
     console.log(`[schedule ${slot.id}] Upload start; platform=${platform}; target=${slot.assignedAt.toISOString()}; native=${native}`);
@@ -231,14 +294,14 @@ async function runSlot(
       : slotOutcome(job, slot.assignedAt, plan.timezone);
     if (platform === "instagram" && outcome.note) outcome.note = outcome.note.replace(/YouTube/g, "Instagram");
     await setSlot(slot.id, { status: outcome.status, note: outcome.note, publishJobId: job?.id ?? null });
-    return outcome.stop;
+    return { stop: outcome.stop, attempted: true };
   } catch (err) {
     if ((options.platform ?? "youtube") === "youtube") await stopYouTubeRetry(slot.episodeId, err).catch(() => {});
     const message = err instanceof Error && err.message ? err.message : "The upload could not be started.";
     // The engine already refuses a second upload; if it says so, that is "already there", not a failure.
     const already = isAppError(err) && err.code === "already_on_platform";
     await setSlot(slot.id, { status: already ? "skipped" : "failed", note: message }).catch(() => {});
-    return isAppError(err) && STOP_CODES.has(err.code);
+    return { stop: isAppError(err) && STOP_CODES.has(err.code), attempted: !already };
   }
 }
 
@@ -256,24 +319,17 @@ async function runSlots(scheduleId: string, options: RunScheduleOptions): Promis
     orderBy: [{ position: "asc" },{platform:"asc"}],
   });
   const stopped = new Set<PlatformId>();
+  const completedAttempts = new Map<PlatformId, number>();
+  const sleep = options.sleep ?? defaultSleep;
+
   for (const slot of slots) {
     const platform = slot.platform as PlatformId;
     if (platform === "youtube" && !schedule.boardGrid && typeof schedule.madeForKids !== "boolean") continue;
     if (isSettledSlot(slot.status)) continue;
     if (slot.status === "scheduling") continue;
     const native = platform === "instagram" || schedule.youtubePrivacy === "public";
-    const now = Date.now();
-    if (!native && slot.assignedAt.getTime() > now) continue;
-    const missed = native ? slot.assignedAt.getTime() < now + (platform === "instagram" ? 20 : 15) * 60_000 : slot.assignedAt.getTime() < now - 45 * 60_000;
-    if (missed) {
-      const existing=await prisma.publishJob.findUnique({where:{episodeId_platform:{episodeId:slot.episodeId,platform}}});
-      const settled=alreadyThere(existing,slot.assignedAt,schedule.timezone);
-      if(settled&&existing){await setSlot(slot.id,{status:settled.status,note:settled.note,publishJobId:existing.id});continue;}
-      const note = native ? "Not scheduled: the target time is past or too near for a native schedule. Move it to a future time." : "Missed: the server did not start this post within 45 minutes. It was held, not published late.";
-      await setSlot(slot.id,{status:"failed",note});
-      await holdMissedQueueItem(slot.publishJobId,note);
-      continue;
-    }
+    if (!native && slot.assignedAt.getTime() > Date.now()) continue;
+
     if (options.automatic && slot.status === "failed") {
       const job = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: slot.episodeId, platform } } });
       if (job?.status === "SCHEDULED" || job?.status === "PUBLISHED") {
@@ -291,7 +347,66 @@ async function runSlots(scheduleId: string, options: RunScheduleOptions): Promis
       await setSlot(slot.id, { status: "pending", note: "Not started: the run stopped at an earlier video that needs you." }).catch(() => {});
       continue;
     }
-    if (await runSlot(slot, plan, {...options,platform})) stopped.add(platform);
+
+    // Queue Cooldown: wait 3 minutes between consecutive real upload attempts on
+    // the same platform so videos are spaced naturally instead of firing back-to-back.
+    if ((completedAttempts.get(platform) ?? 0) > 0) {
+      const existingBeforeWait = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: slot.episodeId, platform } } });
+      const alreadySettled = alreadyThere(existingBeforeWait, slot.assignedAt, schedule.timezone);
+      if (!alreadySettled) {
+        const cooldownMs = computeQueueCooldownMs(options, options.env ?? process.env);
+        if (cooldownMs > 0) {
+          let remaining = cooldownMs;
+          let aborted = false;
+          while (remaining > 0) {
+            const liveState = await prisma.weeklySchedule.findUnique({ where: { id: scheduleId }, select: { status: true } });
+            const liveSlot = await prisma.scheduleSlot.findUnique({ where: { id: slot.id }, select: { controlState: true, status: true } });
+            if (liveState?.status !== "active") { aborted = true; break; }
+            if (!liveSlot || liveSlot.controlState !== "active" || isSettledSlot(liveSlot.status)) break;
+            const secs = Math.ceil(remaining / 1000);
+            const minsPart = Math.floor(secs / 60);
+            const secsPart = secs % 60;
+            const waitLabel = minsPart > 0 ? `${minsPart}m ${secsPart}s` : `${secsPart}s`;
+            await prisma.scheduleSlot.updateMany({
+              where: { id: slot.id, status: "pending" },
+              data: { note: `Queue cooldown: waiting ${waitLabel} before starting the next ${platform} upload…` },
+            }).catch(() => {});
+            const step = options.sleep ? remaining : Math.min(remaining, 5_000);
+            await sleep(step);
+            remaining -= step;
+          }
+          if (aborted) break;
+        }
+      }
+    }
+
+    const now = Date.now();
+    const minLeadMs = (platform === "instagram" ? 20 : 15) * 60_000;
+    if (native && slot.assignedAt.getTime() > now && slot.assignedAt.getTime() < now + minLeadMs) {
+      const existingNear = await prisma.publishJob.findUnique({ where: { episodeId_platform: { episodeId: slot.episodeId, platform } } });
+      const settledNear = alreadyThere(existingNear, slot.assignedAt, schedule.timezone);
+      if (!settledNear) {
+        const bumpedAt = new Date(Math.ceil((now + minLeadMs + 5 * 60_000) / 60_000) * 60_000);
+        slot.assignedAt = bumpedAt;
+        await prisma.scheduleSlot.update({ where: { id: slot.id }, data: { assignedAt: bumpedAt } }).catch(() => {});
+      }
+    }
+    const missed = native ? slot.assignedAt.getTime() < now + minLeadMs : slot.assignedAt.getTime() < now - 45 * 60_000;
+    if (missed) {
+      const existing=await prisma.publishJob.findUnique({where:{episodeId_platform:{episodeId:slot.episodeId,platform}}});
+      const settled=alreadyThere(existing,slot.assignedAt,schedule.timezone);
+      if(settled&&existing){await setSlot(slot.id,{status:settled.status,note:settled.note,publishJobId:existing.id});continue;}
+      const note = native ? "Not scheduled: the target time is past or too near for a native schedule. Move it to a future time." : "Missed: the server did not start this post within 45 minutes. It was held, not published late.";
+      await setSlot(slot.id,{status:"failed",note});
+      await holdMissedQueueItem(slot.publishJobId,note);
+      continue;
+    }
+
+    const res = await runSlot(slot, plan, {...options,platform});
+    if (res.attempted) {
+      completedAttempts.set(platform, (completedAttempts.get(platform) ?? 0) + 1);
+    }
+    if (res.stop) stopped.add(platform);
   }
 }
 

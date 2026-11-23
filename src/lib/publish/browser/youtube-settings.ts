@@ -1,5 +1,7 @@
 /** Adapted from RepoReel: platform logic only; no accounts, sessions or data. */
 import type { Page } from "playwright-core";
+import type { PageLike } from "./engine";
+import { isUploadPacingEnabled, pacedFillField } from "./pacing";
 import type { PublishLog } from "../types";
 import { normaliseTags } from "../limits";
 import { tagsLength } from "../youtube/publisher";
@@ -409,18 +411,52 @@ export async function setVideoLocation(page: Page, wanted: string, log: PublishL
     }
 
     const city = wanted.split(",")[0].trim();
+    const queries = city.toLowerCase() === wanted.toLowerCase() ? [city] : [city, wanted];
 
-    log(`Video location: searching for "${wanted}"`);
-    await field.scrollIntoViewIfNeeded({ timeout: 10_000 }).catch(() => {});
-    await field.click({ timeout: 15_000 });
-    await field.fill("", { timeout: 10_000 });
-    // Typed rather than filled: the autocomplete listens for keystrokes, and a
-    // value set in one go raises no input events at all.
-    await field.pressSequentially(city, { timeout: 10_000 });
+    const isSuggestionMenuClosed = async (chosenText: string) =>
+      page
+        .locator(ITEM)
+        .filter({ hasText: chosenText })
+        .evaluateAll((nodes) =>
+          nodes.every((node) => {
+            const el = node as HTMLElement;
+            if (!el.offsetWidth || !el.offsetHeight || (!el.offsetParent && !el.getClientRects().length)) return true;
+            if (el.closest('[aria-hidden="true"], [hidden]')) return true;
+            const style = window.getComputedStyle(el);
+            return style.display === "none" || style.visibility === "hidden" || style.opacity === "0";
+          }),
+        )
+        .catch(() => false);
 
-    const taken = await takeOption(page, { mode: "exact", wanted });
-    const named = taken.offered.filter((t) => norm(t).includes(norm(city))).slice(0, 6);
-    log(`Video location: suggestions offered: ${named.length ? named.join(" | ") : `(none named ${wanted})`}`);
+    let taken: Pick & { clicked: boolean } = { offered: [], chosen: null, clicked: false };
+    for (let qIdx = 0; qIdx < queries.length; qIdx++) {
+      const query = queries[qIdx];
+      log(`Video location: searching for "${wanted}"${qIdx > 0 ? ` (retry with "${query}")` : ""}`);
+      await field.scrollIntoViewIfNeeded({ timeout: 10_000 }).catch(() => {});
+      await field.click({ timeout: 15_000 });
+      await field.fill("", { timeout: 10_000 });
+      // Typed rather than filled: the autocomplete listens for keystrokes, and a
+      // value set in one go raises no input events at all.
+      if (isUploadPacingEnabled()) {
+        await page.waitForTimeout(450);
+        for (const ch of query) {
+          await field.pressSequentially(ch, { timeout: 5_000 });
+          await page.waitForTimeout(180);
+        }
+        await page.waitForTimeout(650);
+      } else {
+        await field.pressSequentially(query, { timeout: 10_000 });
+      }
+
+      taken = await takeOption(page, { mode: "exact", wanted });
+      const named = taken.offered.filter((t) => norm(t).includes(norm(city))).slice(0, 6);
+      log(`Video location: suggestions offered: ${named.length ? named.join(" | ") : `(none named ${wanted})`}`);
+      if (taken.chosen && taken.clicked) break;
+      if (qIdx + 1 < queries.length) {
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.waitForTimeout(900);
+      }
+    }
 
     if (!taken.chosen) {
       log(`Video location: nothing offered for "${wanted}" — leaving the field unset`);
@@ -431,19 +467,38 @@ export async function setVideoLocation(page: Page, wanted: string, log: PublishL
       log(`Video location: "${taken.chosen}" was offered but would not click`);
       return false;
     }
-    log(`Video location: took "${taken.chosen}"`);
-    await page.waitForTimeout(2000);
+    let chosenText = taken.chosen;
+    log(`Video location: took "${chosenText}"`);
 
-    // Committed, not typed: the field now holds the place's own name, which is
-    // how the chosen suggestion begins. Typed text would still read in full.
-    const menuClosed = await page.locator(ITEM).filter({ hasText: taken.chosen }).evaluateAll(nodes => nodes.every(node => !(node as HTMLElement).offsetWidth || !(node as HTMLElement).offsetHeight));
+    // Committed, not typed: clicking the suggestion closes Studio's autocomplete
+    // dropdown (including Polymer iron-dropdowns hidden via aria-hidden/visibility)
+    // and rewrites the field to the place's short name. If a late Places response
+    // re-rendered the list during the click and left it open, re-select up to twice.
+    let menuClosed = false;
+    for (let retry = 0; retry < 3; retry++) {
+      const waitDeadline = Date.now() + 2_200;
+      while (Date.now() < waitDeadline) {
+        if (await isSuggestionMenuClosed(chosenText)) {
+          menuClosed = true;
+          break;
+        }
+        await page.waitForTimeout(250);
+      }
+      if (menuClosed || retry === 2) break;
+      const retryPick = await takeOption(page, { mode: "exact", wanted });
+      if (!retryPick.chosen || !retryPick.clicked) break;
+      taken = retryPick;
+      chosenText = retryPick.chosen;
+      log(`Video location: re-selected "${chosenText}" after suggestion list re-rendered`);
+    }
+
     await field.press("Tab", { timeout: 5_000 });
     await page.waitForTimeout(300);
     const after = flat(await field.inputValue({ timeout: 5_000 }).catch(() => ""));
-    const ok = menuClosed && (norm(after) === norm(city) || norm(after) === norm(wanted) || norm(after) === norm(taken.chosen));
+    const ok = menuClosed && (norm(after) === norm(city) || norm(after) === norm(wanted) || norm(after) === norm(chosenText));
     log(
       ok
-        ? `Video location: verified "${after}" — taken from the suggestion "${taken.chosen}"`
+        ? `Video location: verified "${after}" — taken from the suggestion "${chosenText}"`
         : `Video location: verification FAILED — the field reads "${after || "nothing"}" and no suggestion was committed`,
     );
     return ok;
@@ -525,9 +580,19 @@ export async function setYouTubeTags(page: Page, tags: string[], log: PublishLog
       }
       await input.fill("", { timeout: 5_000 });
       for (const [index, tag] of tags.entries()) {
-        await input.fill(tag, { timeout: 5_000 });
+        if (isUploadPacingEnabled()) {
+          await pacedFillField({
+            page: page as unknown as PageLike,
+            selector: "#tags-container #text-input, ytcp-chip-bar #text-input, #tags-container input, ytcp-chip-bar input",
+            value: tag,
+            timeoutMs: 10_000,
+          });
+        } else {
+          await input.fill(tag, { timeout: 5_000 });
+        }
         await input.press("Enter", { timeout: 5_000 });
         if (!await verifiedWithin(async () => JSON.stringify(await read()) === JSON.stringify(tags.slice(0, index + 1)))) throw new Error("Committed tag chips differ from the generated tags");
+        if (isUploadPacingEnabled()) await page.waitForTimeout(650);
       }
     }
     await input.press("Tab", { timeout: 5_000 });

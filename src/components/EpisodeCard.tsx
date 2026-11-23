@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import PipelineRail from "./PipelineRail";
 import RunClock from "./RunClock";
 import PublishCenter from "./PublishCenter";
-import { Dialog, Disclosure, StatusBadge } from "./ui";
-import { strings } from "@/lib/strings";
+import { Badge, Dialog, Disclosure, StatusBadge } from "./ui";
+import { reelModelLabel, strings } from "@/lib/strings";
 import { EPISODE_STEPS } from "@/lib/pipeline-steps";
 import type { EpisodeState } from "./types";
 import AttemptHistory from "./AttemptHistory";
@@ -297,9 +297,14 @@ export default function EpisodeCard({
           both fit, two where they do not, at any width. */}
       <header className="panel-head episode-head">
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
-            {strings.run.episodeLabel(episode.partNumber, episode.seriesTotal)}
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color: "var(--mute-2)" }}>
+              {strings.run.episodeLabel(episode.partNumber, episode.seriesTotal)}
+            </span>
+            {episode.reelStyle && (
+              <Badge>{reelModelLabel(episode.reelStyle)}</Badge>
+            )}
+          </div>
           {/* Clamped to two lines, not truncated to one. An episode title is a
               whole sentence ("Why Your Brain Won't Switch Off at Night") and in
               a 320px aside one line shows about 199px of the 296px it needs —

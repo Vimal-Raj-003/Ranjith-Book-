@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ANALYSIS_STEPS } from "@/lib/pipeline-steps";
-import { strings } from "@/lib/strings";
+import { AUTO_REEL_MODEL_OPTION, REEL_MODELS, strings } from "@/lib/strings";
 import type { AnalysisView, EpisodeState, IdeaView } from "./types";
 import PipelineRail from "./PipelineRail";
 import AnalysisElapsed from "./AnalysisElapsed";
@@ -49,6 +49,33 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [episodeStates, setEpisodeStates] = useState<Record<string, EpisodeState>>({});
   const [savingRights, setSavingRights] = useState(false);
+  const [reelModel, setReelModel] = useState<string>(AUTO_REEL_MODEL_OPTION.id);
+  const [perIdeaModels, setPerIdeaModels] = useState<Record<string, string>>({});
+  const [makingIdeaId, setMakingIdeaId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/settings", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: Record<string, string> | null) => {
+        if (active && data && typeof data.reelModel === "string") {
+          setReelModel(data.reelModel);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function updateToolbarModel(next: string) {
+    setReelModel(next);
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reelModel: next }),
+    }).catch(() => {});
+  }
 
   // One EpisodeCard per video polls it and reports here; the preview reads
   // the same snapshot, exactly as the photo Studio does.
@@ -60,28 +87,47 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
     });
   }, []);
 
+  async function generateForIdeas(ideaIds: string[]) {
+    if (!view || !ideaIds.length) return;
+    const scopedOverrides: Record<string, string> = {};
+    for (const id of ideaIds) {
+      if (perIdeaModels[id]) scopedOverrides[id] = perIdeaModels[id];
+    }
+    const res = await fetch(`/api/books/${uploadId}/videos`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ideaIds, reelModel, perIdeaModels: scopedOverrides }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body?.episodes) throw new Error(body?.error || strings.books.generateError);
+    const list = body.episodes as { ideaId: string; episodeId: string; created: boolean }[];
+    show(strings.books.generated(list.filter((e) => e.created).length, list.filter((e) => !e.created).length), "ok");
+    setSelectedVideo(list[0]?.episodeId ?? null);
+    setPollKey((k) => k + 1);
+  }
+
   async function generate() {
     if (!view) return;
     const ideaIds = view.ideas.filter((i) => i.selected).map((i) => i.id);
     if (!ideaIds.length) return;
     setGenerating(true);
     try {
-      const res = await fetch(`/api/books/${uploadId}/videos`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ideaIds }),
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok || !body?.episodes) throw new Error(body?.error || strings.books.generateError);
-      const list = body.episodes as { ideaId: string; episodeId: string; created: boolean }[];
-      show(strings.books.generated(list.filter((e) => e.created).length, list.filter((e) => !e.created).length), "ok");
-      setSelectedVideo(list[0]?.episodeId ?? null);
-      // Re-read the book so every idea carries its episode id.
-      setPollKey((k) => k + 1);
+      await generateForIdeas(ideaIds);
     } catch (err) {
       show(err instanceof Error ? err.message : strings.books.generateError, "error");
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function generateSingle(ideaId: string) {
+    setMakingIdeaId(ideaId);
+    try {
+      await generateForIdeas([ideaId]);
+    } catch (err) {
+      show(err instanceof Error ? err.message : strings.books.generateError, "error");
+    } finally {
+      setMakingIdeaId(null);
     }
   }
 
@@ -392,6 +438,24 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
                 {strings.books.deselectAll}
               </button>
             </div>
+            <label className="flex items-center gap-1.5 text-[12px]" style={{ color: "var(--mute)" }}>
+              <span className="font-mono text-[11px] uppercase tracking-wider">{strings.books.modelLabel}</span>
+              <select
+                aria-label={strings.books.modelLabel}
+                value={reelModel}
+                disabled={generating}
+                onChange={(e) => void updateToolbarModel(e.target.value)}
+                className="rounded-lg border px-2.5 py-1 text-[12px] font-mono disabled:opacity-50"
+                style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--ink)" }}
+              >
+                <option value={AUTO_REEL_MODEL_OPTION.id}>{AUTO_REEL_MODEL_OPTION.label}</option>
+                {REEL_MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               type="button"
               onClick={generate}
@@ -411,7 +475,22 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
             {ideaVideos.map(({ idea, latest }) => {
               return (
                 <section key={idea.id} aria-labelledby={`idea-${idea.id}`} data-idea-group={idea.id} className="@container flex min-w-0 flex-col gap-2">
-                  <IdeaCard idea={{ ...idea, episode: latest }} busy={pending.has(idea.id)} onToggle={(sel) => toggle(idea.id, sel)} />
+                  <IdeaCard
+                    idea={{ ...idea, episode: latest }}
+                    busy={pending.has(idea.id)}
+                    onToggle={(sel) => toggle(idea.id, sel)}
+                    reelModelValue={perIdeaModels[idea.id] ?? ""}
+                    onChangeReelModel={(nextModel) =>
+                      setPerIdeaModels((prev) => {
+                        const copy = { ...prev };
+                        if (!nextModel) delete copy[idea.id];
+                        else copy[idea.id] = nextModel;
+                        return copy;
+                      })
+                    }
+                    onMakeVideo={() => void generateSingle(idea.id)}
+                    makingVideo={makingIdeaId === idea.id}
+                  />
                   <IdeaEpisodeVideo idea={idea} states={episodeStates} activeId={activeVideo}
                     onSelect={setSelectedVideo} onState={handleEpisodeState} />
                 </section>

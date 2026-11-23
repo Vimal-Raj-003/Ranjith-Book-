@@ -16,6 +16,7 @@ import { POCKET_VOICES, DEFAULT_POCKET_VOICE } from "../media/pocket-tts";
 import { MOODS } from "../media/moods";
 import { DEFAULT_GEMINI_MODEL_ID, GEMINI_MODELS } from "../strings";
 import { DEFAULT_VISUAL_ENGINE, VISUAL_ENGINES } from "../video/visual-engine/types";
+import { isReelModelSetting, REEL_MODEL_AUTO } from "../video/reel-models";
 import { getSetting } from "../db";
 
 /**
@@ -27,7 +28,7 @@ import { getSetting } from "../db";
  * `openaiApiKey`, which `tts.ts` reads. Those are deliberately absent here.
  */
 export const SETTING_KEYS = [
-  "theme", "voiceId", "voiceProvider",
+  "theme", "reelModel", "voiceId", "voiceProvider",
   "musicMood", "musicIntensity", "musicLevel", "musicDuck",
   "cliProvider", "geminiModel", "visualEngine", "scheduleReminder",
 ] as const;
@@ -41,6 +42,7 @@ export function isSettingKey(key: unknown): key is SettingKey {
 /** What each key resolves to when it has never been written. */
 export const SETTING_FALLBACKS: Record<SettingKey, string> = {
   theme: THEME_SETTING_AUTO,
+  reelModel: REEL_MODEL_AUTO,
   voiceId: DEFAULT_POCKET_VOICE,
   voiceProvider: "pocket",
   // `auto` means "derived from the theme", which is exactly today's behaviour.
@@ -157,6 +159,8 @@ export function validateSetting(
   switch (key) {
     case "theme":
       return isThemeSetting(value) ? value : null;
+    case "reelModel":
+      return isReelModelSetting(value) ? value : null;
     case "voiceId":
       return oneOf(value, VOICE_IDS);
     case "voiceProvider":

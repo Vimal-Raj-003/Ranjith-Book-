@@ -5,7 +5,7 @@ const OPENERS = '[aria-label="Select crop" i], [aria-label="Crop" i], [aria-labe
 const ORIGINAL = 'button:text-is("Original"), [role="button"]:text-is("Original"), [role="menuitem"]:text-is("Original"), span:text-is("Original")';
 
 /** Never advance to Next with Instagram's default framing. */
-export async function chooseOriginalCrop(page: Page, log: PublishLog, timeoutMs = 30_000): Promise<void> {
+export async function chooseOriginalCrop(page: Page, log: PublishLog, timeoutMs = 60_000): Promise<void> {
   const dialog = page.locator('div[role="dialog"]:visible').last();
   await dialog.getByRole('heading', { name: 'Crop', exact: true }).waitFor({ state: 'visible', timeout: timeoutMs });
   const video = dialog.locator('video').first();
@@ -17,26 +17,37 @@ export async function chooseOriginalCrop(page: Page, log: PublishLog, timeoutMs 
       }
       await page.waitForTimeout(100);
     }
+    await page.waitForTimeout(300);
   }
   const option = dialog.locator(ORIGINAL).filter({ visible: true }).first();
-  if (!(await option.isVisible())) {
-    // The accessible name is on an SVG inside the bottom-left button. Click
-    // its nearest interactive ancestor, never the media-gallery button on the right.
-    const opener = dialog.locator(OPENERS).filter({ visible: true }).first()
-      .locator('xpath=ancestor-or-self::*[self::button or @role="button"][1]');
-    try {
-      await opener.waitFor({ state: "visible", timeout: timeoutMs });
-      await opener.click({ timeout: timeoutMs });
-      log("Crop: opened the aspect-ratio menu");
-    } catch (error) {
-      throw new Error(`Instagram did not offer an accessible crop/expand control. Original could not be selected; Next was not pressed. ${error instanceof Error ? error.message : String(error)}`);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (!(await option.isVisible())) {
+      // The accessible name is on an SVG inside the bottom-left button. Click
+      // its nearest interactive ancestor, never the media-gallery button on the right.
+      const opener = dialog.locator(OPENERS).filter({ visible: true }).first()
+        .locator('xpath=ancestor-or-self::*[self::button or @role="button"][1]');
+      try {
+        await opener.waitFor({ state: "visible", timeout: Math.round(timeoutMs / 2) });
+        await opener.click({ timeout: Math.round(timeoutMs / 2) });
+        log("Crop: opened the aspect-ratio menu");
+      } catch (error) {
+        if (attempt === 2) {
+          throw new Error(`Instagram did not offer an accessible crop/expand control. Original could not be selected; Next was not pressed. ${error instanceof Error ? error.message : String(error)}`);
+        }
+        await page.waitForTimeout(1_000);
+        continue;
+      }
     }
-  }
-  try {
-    await option.waitFor({ state: "visible", timeout: timeoutMs });
-    await option.click({ timeout: timeoutMs });
-  } catch {
-    throw new Error("Instagram did not accept Original in the crop menu. Next was not pressed; inspect the open draft before retrying.");
+    try {
+      await option.waitFor({ state: "visible", timeout: Math.round(timeoutMs / 2) });
+      await option.click({ timeout: Math.round(timeoutMs / 2) });
+      break;
+    } catch {
+      if (attempt === 2) {
+        throw new Error("Instagram did not accept Original in the crop menu. Next was not pressed; inspect the open draft before retrying.");
+      }
+      await page.waitForTimeout(800);
+    }
   }
   const deadline = Date.now() + timeoutMs;
   do {

@@ -581,9 +581,36 @@ async function setTime(page: Page, target: StudioTarget, log: PublishLog): Promi
   // Only the committed value is read back: a box that rejects what is typed reverts it on
   // commit, so this does not mistake an uncommitted string for a time that was accepted.
   await typeTime(page, target.timeText, "Enter");
-  const got = await timeBoxValue(page);
+  let got = await timeBoxValue(page);
   log(`Schedule: after typing, the time box holds "${got}"`);
   if (parseStudioTime(got) === target.minutes) return;
+
+  // On Windows Studio builds, clicking the time input opens the quarter-hour listbox with
+  // "00:00" highlighted, which can intercept Enter and revert an off-grid minute like "05:51"
+  // back to "00:00". Dismiss the popup, set the input value directly with input/change events,
+  // and commit with Tab.
+  for (let retry = 1; retry <= 2; retry++) {
+    await page.keyboard.press("Escape").catch(() => {});
+    await pause(200, 350);
+    if (await mark(page, "time-input")) {
+      const box = page.locator(marked("time-input")).first();
+      await box.fill(target.timeText, { timeout: 8_000 }).catch(() => {});
+      await box
+        .evaluate((el, val) => {
+          const input = el as HTMLInputElement;
+          input.value = val;
+          input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        }, target.timeText)
+        .catch(() => {});
+      await pause(200, 350);
+      await page.keyboard.press("Tab").catch(() => {});
+      await pause(400, 700);
+      got = await timeBoxValue(page);
+      log(`Schedule: after direct time commit (retry ${retry}), the time box holds "${got}"`);
+      if (parseStudioTime(got) === target.minutes) return;
+    }
+  }
 
   // Not taken: the box's own list is the other way in, for a time it offers (a quarter hour).
   // An off-grid minute it does not offer leaves this a no-op, and the mismatch is reported.
@@ -765,9 +792,24 @@ export async function readScheduledFromChannel(page: Page, videoId: string): Pro
       for (const [n, was] of hidden) n.style.display = was;
       return { title: titleText, text };
     });
+    // If Studio's edit page is still hydrating its visibility label ("Pending" / blank),
+    // poll briefly so slow loads do not falsely report an unconfirmed schedule.
+    let currentView = view;
+    for (let poll = 0; poll < 4 && !/\bscheduled\b/i.test(currentView.text); poll++) {
+      await page.waitForTimeout(1500);
+      const refreshed = await page
+        .evaluate(() => {
+          const vis = document.querySelector(
+            "ytcp-video-metadata-visibility, ytcp-video-metadata-editor-sidepanel .visibility, #visibility-text",
+          ) as HTMLElement | null;
+          return vis ? (vis.innerText || "").replace(/\s+/g, " ").trim() : "";
+        })
+        .catch(() => "");
+      if (refreshed) currentView = { ...currentView, text: refreshed };
+    }
     // Studio's saved Visibility summary often says only "Scheduled". Open that
     // existing summary to READ its saved date/time; never select a radio or save.
-    if (/\bscheduled\b/i.test(view.text) && (!parseStudioDate(view.text) || parseStudioTime(view.text) === null || parseOffset(view.text) === null)) {
+    if (/\bscheduled\b/i.test(currentView.text) && (!parseStudioDate(currentView.text) || parseStudioTime(currentView.text) === null || parseOffset(currentView.text) === null)) {
       const visibility = page.locator("ytcp-video-metadata-visibility, #visibility-text").first();
       if (await visibility.isVisible().catch(() => false) && /^\s*(?:visibility\s*)?scheduled\b/i.test(await visibility.innerText())) {
         const details = visibility.getByRole("button", {name:"Edit video visibility status",exact:true});
@@ -780,13 +822,17 @@ export async function readScheduledFromChannel(page: Page, videoId: string): Pro
         }
         // Closing Studio's timezone popup can also close the outer visibility
         // panel. Capture the saved date/time first, while that panel is visible.
-        const zone = await readStudioZone(page, () => {});
+        let zone = await readStudioZone(page, () => {});
+        if (!zone.label) {
+          await page.waitForTimeout(800);
+          zone = await readStudioZone(page, () => {});
+        }
         if (saved.dateText && saved.timeText && zone.label) return {
-          title: view.title, text: `Scheduled ${saved.dateText} ${saved.timeText} ${zone.label}`,
+          title: currentView.title, text: `Scheduled ${saved.dateText} ${saved.timeText} ${zone.label}`,
         };
       }
     }
-    return view;
+    return currentView;
   } catch {
     return null;
   }

@@ -1,7 +1,10 @@
 /** Adapted from RepoReel: platform logic only; no accounts, sessions or data. */
 import type { Page } from "playwright-core";
 import { humanType, pause } from "./actions";
+import type { PageLike } from "./engine";
+import { pacedFillField, type PacingClock } from "./pacing";
 import type { PublishLog } from "../types";
+import type { EnvLike } from "../youtube/secrets";
 
 /**
  * Two settings on Instagram's final New Reel screen: the AI label, and the
@@ -22,9 +25,23 @@ import type { PublishLog } from "../types";
 const LOCATION_INPUT = 'input[aria-label="Add location"], input[placeholder="Add location"]';
 
 /** Blur instead of Escape: Escape opens Instagram's destructive discard dialog. */
-export async function fillNativeInstagramCaption(page: Page, selector: string, caption: string): Promise<void> {
+export async function fillNativeInstagramCaption(
+  page: Page,
+  selector: string,
+  caption: string,
+  pacing?: { clock?: PacingClock; env?: EnvLike; hasTestSeam?: boolean; targetMs?: number },
+): Promise<void> {
   const field = page.locator(selector).first();
-  await field.fill(caption);
+  await pacedFillField({
+    page: page as unknown as PageLike,
+    selector,
+    value: caption,
+    clock: pacing?.clock,
+    env: pacing?.env,
+    hasTestSeam: pacing?.hasTestSeam,
+    targetMs: pacing?.targetMs,
+    timeoutMs: 60_000,
+  });
   await field.blur();
 }
 

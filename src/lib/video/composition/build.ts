@@ -11,6 +11,7 @@ import type { ContentPackage } from "../../content/schema";
 import type { BeatAudio } from "../../media/tts";
 import { BANDS, CONTENT_WIDTH, FRAME } from "./frame";
 import { cardZooms, dimKeys, type Keyed } from "./highlight";
+import { auditMotionMaxxingLayout, pageCameraRecipeAt, viralCaptionFontSize } from "../motionmaxxing";
 
 // Re-exported so the page-highlight geometry can live in its own module while
 // existing callers keep importing it from here.
@@ -344,6 +345,19 @@ export interface CompositionInput {
    * cross-faded layer, and the card is hidden while they hold the frame.
    */
   scenes?: Scene[];
+  /**
+   * Optional viral motion-design archetype (`dankoe-vector` minimalist monochrome/vector,
+   * `vox-explainer` tactile paper collage & stamp header, `magnates-cinema` deep chiaroscuro,
+   * or `trifecta-viral` combining all 3 visual languages seamlessly in one composition).
+   */
+  reelStyle?:
+    | "dankoe-vector"
+    | "vox-explainer"
+    | "magnates-cinema"
+    | "trifecta-viral"
+    | "vision-bento"
+    | "investigative-dossier"
+    | "neuro-lab";
 }
 
 /** How the backdrop glow sits for each scene tone: quiet, lifted, or wide. */
@@ -559,7 +573,7 @@ function purchaseLink(bookLink: string | null | undefined): string | null {
  * The same rule is why `hookMarkup` and `ctaMarkup` below bake their text in
  * too, rather than the runtime script writing `pkg.hook` into an empty div.
  */
-function captionMarkup(captions: CaptionLine[], hookKeywords?: string[]): string {
+function captionMarkup(captions: CaptionLine[], hookKeywords?: string[], viral?: boolean): string {
   const keySet = new Set(
     (hookKeywords ?? [])
       .filter((k): k is string => typeof k === "string")
@@ -569,8 +583,9 @@ function captionMarkup(captions: CaptionLine[], hookKeywords?: string[]): string
   );
   return captions
     .map((c, i) => {
+      const viralVar = viral ? `;--cap-sz:${viralCaptionFontSize(c.text)}px` : "";
       if (!c.words || c.words.length === 0) {
-        return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${esc(c.text)}</div>`;
+        return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px${viralVar}">${esc(c.text)}</div>`;
       }
       const emph = emphasizeWords(c.words.map((w) => w.word));
       const inner = c.words
@@ -579,7 +594,7 @@ function captionMarkup(captions: CaptionLine[], hookKeywords?: string[]): string
           return `<span class="cap-w${isKey ? " cap-w-key" : ""}" data-cw="${i}-${wi}">${esc(w.word)}</span>`;
         })
         .join(" ");
-      return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px">${inner}</div>`;
+      return `<div class="caption-line" data-caption="${i}" style="font-size:${captionFontSize(c.text)}px${viralVar}">${inner}</div>`;
     })
     .join("\n");
 }
@@ -783,7 +798,7 @@ function sharedCss(theme: BookTheme): string {
   .column { position:relative; }
   .page { position:absolute; left:0; }
   .page img { display:block; width:100%; height:100%; object-fit:cover;
-              filter:contrast(1.06) brightness(0.97) saturate(1.06); }
+              filter:contrast(1.12) brightness(0.98) saturate(1.08); }
   .stroke { position:absolute; transform-origin:left center; border-radius:3px;
             filter:blur(0.6px); mix-blend-mode:multiply; }
   /* The surround of the cited lines. Lives in #column so it scrolls and scales
@@ -830,20 +845,22 @@ function sharedCss(theme: BookTheme): string {
   .cap-w { opacity:0.42; }
   .cap-w-key { color:${p.hookKey}; }
   .captions-viral .caption-line {
-    background:transparent !important; border:none !important; box-shadow:none !important; border-radius:0 !important;
-    font-family:"Arial Black", "Segoe UI Black", Impact, Inter, system-ui, sans-serif !important;
-    font-size:70px !important; font-weight:900 !important; text-transform:uppercase !important;
-    letter-spacing:-0.5px !important; line-height:1.15 !important; padding:22px 24px !important;
+    background:radial-gradient(closest-side at 50% 54%, rgba(6,8,14,0.52) 0%, rgba(6,8,14,0.18) 58%, rgba(6,8,14,0) 100%) !important;
+    border:none !important; box-shadow:none !important; border-radius:28px !important;
+    font-family:Inter, "Segoe UI", Roboto, "Arial Black", system-ui, sans-serif !important;
+    font-size:var(--cap-sz, 68px) !important; font-weight:900 !important; text-transform:uppercase !important;
+    letter-spacing:-0.8px !important; line-height:1.14 !important; padding:24px 34px !important;
     display:block !important; -webkit-line-clamp:unset !important; overflow:visible !important;
     color:#ffffff !important;
-    -webkit-text-stroke:12px rgba(0,0,0,0.95); paint-order:stroke fill;
-    filter:drop-shadow(0 10px 22px rgba(0,0,0,0.92)) drop-shadow(0 3px 6px rgba(0,0,0,0.96));
+    -webkit-text-stroke:10px rgba(6,8,14,0.96); paint-order:stroke fill;
+    filter:drop-shadow(0 10px 24px rgba(0,0,0,0.92)) drop-shadow(0 3px 8px rgba(0,0,0,0.96));
   }
   .captions-viral .cap-w {
-    display:inline-block; margin:0 0.1em; opacity:0.62; color:#ffffff;
+    display:inline-block; margin:0 0.11em; opacity:0.95; color:#f1f5f9;
+    -webkit-text-stroke:10px rgba(6,8,14,0.96); paint-order:stroke fill;
     transform-origin:50% 68%;
   }
-  .captions-viral .cap-w-key { color:#ffd60a; }
+  .captions-viral .cap-w-key { color:#ffe066; }
 
   /* --- hook card (§2.2) --------------------------------------------------- */
   /* Rest state is VISIBLE: the hook owns t=0, so a render that never ran the
@@ -889,6 +906,213 @@ function sharedCss(theme: BookTheme): string {
   .buy-kicker { font-size:24px; font-weight:800; letter-spacing:5px; text-transform:uppercase;
                 color:${p.accent}; margin-bottom:12px; }
   .buy-text { font-size:38px; font-weight:800; line-height:1.15; }
+  /* --- 3 Viral HyperFrames Archetype Overlays (Dan Koe / Vox / Magnates) --- */
+  .stage-dankoe-vector .backdrop {
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 72px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 72px),
+      radial-gradient(90% 60% at 50% 45%, #0c121e 0%, #04060a 100%) !important;
+  }
+  .stage-dankoe-vector .cine-hook {
+    background:rgba(8,12,20,0.92) !important;
+    border-radius:20px !important;
+    box-shadow:0 0 0 1.5px rgba(255,255,255,0.14), 0 30px 80px rgba(0,0,0,0.85) !important;
+    letter-spacing:-1.2px !important;
+  }
+  .stage-dankoe-vector .captions-viral .caption-line {
+    font-family:Inter, system-ui, sans-serif !important;
+    letter-spacing:-1px !important;
+  }
+  .stage-vox-explainer .backdrop {
+    background:
+      repeating-linear-gradient(0deg, rgba(24,21,18,0.055) 0px, rgba(24,21,18,0.055) 1px, transparent 1px, transparent 48px),
+      repeating-linear-gradient(90deg, rgba(24,21,18,0.055) 0px, rgba(24,21,18,0.055) 1px, transparent 1px, transparent 48px),
+      radial-gradient(110% 80% at 50% 35%, #faf6ec 0%, #ebe3d1 100%) !important;
+  }
+  .stage-vox-explainer .card,
+  .stage-vox-explainer .sc-side,
+  .stage-vox-explainer .sc-step,
+  .stage-vox-explainer .sc-icon-well,
+  .stage-vox-explainer .sc-quote-card,
+  .stage-vox-explainer .cine-hook {
+    border-radius:14px !important;
+    box-shadow:10px 12px 0px rgba(24,21,18,0.88), 0 0 0 2.5px #181512 !important;
+  }
+  .stage-vox-explainer .byline {
+    background:#181512; color:#faf6ec !important; padding:6px 18px; border-radius:6px;
+    font-weight:800 !important; letter-spacing:1.6px !important; text-transform:uppercase;
+  }
+  .stage-vox-explainer .captions-viral .caption-line {
+    background:transparent !important;
+    filter:drop-shadow(4px 6px 0px rgba(24,21,18,0.92)) !important;
+  }
+  .stage-magnates-cinema .card {
+    box-shadow:0 50px 120px -20px rgba(0,0,0,0.92), 0 0 0 1.5px rgba(255,168,76,0.45) !important;
+  }
+  .stage-trifecta-viral .backdrop {
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.028) 0px, rgba(255,255,255,0.028) 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.028) 0px, rgba(255,255,255,0.028) 1px, transparent 1px, transparent 64px),
+      radial-gradient(95% 65% at 50% 42%, #151118 0%, #05060a 100%) !important;
+  }
+  .stage-trifecta-viral .byline {
+    background:rgba(12,14,20,0.88); color:#faf6ec !important; padding:6px 18px; border-radius:8px;
+    box-shadow:0 0 0 1.5px rgba(255,168,76,0.42);
+    font-weight:800 !important; letter-spacing:1.5px !important; text-transform:uppercase;
+  }
+  .stage-trifecta-viral .card {
+    box-shadow:0 50px 120px -20px rgba(0,0,0,0.92), 0 0 0 2px rgba(255,168,76,0.48) !important;
+  }
+  .stage-trifecta-viral .sc-side,
+  .stage-trifecta-viral .sc-step,
+  .stage-trifecta-viral .sc-icon-well,
+  .stage-trifecta-viral .sc-quote-card {
+    background:#faf6ec !important;
+    border-radius:16px !important;
+    box-shadow:10px 12px 0px rgba(8,8,12,0.92), 0 0 0 2.5px #181512, 0 28px 68px rgba(0,0,0,0.72) !important;
+  }
+  .stage-trifecta-viral .sc-side-label,
+  .stage-trifecta-viral .sc-step-t,
+  .stage-trifecta-viral .sc-quote-text {
+    color:#181512 !important;
+  }
+  .stage-trifecta-viral .sc-side-icon-ring-a {
+    background:rgba(24,21,18,0.08) !important;
+    box-shadow:inset 0 0 0 1.5px rgba(24,21,18,0.24) !important;
+  }
+  .stage-trifecta-viral .sc-side-a .sc-icon {
+    color:#3b342d !important;
+  }
+  .stage-trifecta-viral .sc-vs-badge {
+    background:#181512 !important;
+    box-shadow:0 0 0 2.5px #faf6ec, 0 8px 24px rgba(0,0,0,0.7) !important;
+  }
+
+  /* --- 3 ULTRA-PRO CREATOR ARCHETYPES (VisionOS Bento / Investigative Dossier / Neuro Lab) --- */
+  /* 1. Apple Keynote / Iman Gadzhi VisionOS Glass Bento Dashboard */
+  .stage-vision-bento .backdrop {
+    background:
+      radial-gradient(65% 42% at 50% 24%, rgba(16,185,129,0.22) 0%, transparent 72%),
+      radial-gradient(75% 48% at 82% 68%, rgba(56,189,248,0.16) 0%, transparent 74%),
+      repeating-linear-gradient(0deg, rgba(148,163,184,0.04) 0px, rgba(148,163,184,0.04) 1px, transparent 1px, transparent 60px),
+      repeating-linear-gradient(90deg, rgba(148,163,184,0.04) 0px, rgba(148,163,184,0.04) 1px, transparent 1px, transparent 60px),
+      linear-gradient(180deg, #060b16 0%, #03060d 100%) !important;
+  }
+  .stage-vision-bento .byline {
+    background:rgba(15,23,42,0.76); color:#e2e8f0 !important; padding:7px 20px; border-radius:999px;
+    box-shadow:inset 0 0 0 1px rgba(52,211,153,0.45), 0 8px 24px rgba(0,0,0,0.5);
+    font-weight:700 !important; letter-spacing:1.4px !important; text-transform:uppercase;
+  }
+  .stage-vision-bento .cine-hook,
+  .stage-vision-bento .pro-card,
+  .stage-vision-bento .pro-mini-card,
+  .stage-vision-bento .sc-side,
+  .stage-vision-bento .sc-step {
+    background:linear-gradient(160deg, rgba(18,28,48,0.88) 0%, rgba(9,15,28,0.92) 100%) !important;
+    backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+    border-radius:28px !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 1.5px rgba(52,211,153,0.34), 0 34px 80px rgba(0,0,0,0.78) !important;
+  }
+  .stage-vision-bento .pro-pill-ok,
+  .stage-vision-bento .pro-day-ok,
+  .stage-vision-bento .pro-meter-fill {
+    background:rgba(16,185,129,0.24) !important;
+    color:#34d399 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(52,211,153,0.6) !important;
+  }
+  .stage-vision-bento .pro-meter-fill {
+    background:linear-gradient(90deg, #10b981 0%, #38bdf8 100%) !important;
+  }
+  .stage-vision-bento .pro-day-warn,
+  .stage-vision-bento .pro-tag-warn {
+    background:rgba(245,158,11,0.24) !important;
+    color:#fbbf24 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(251,191,36,0.65) !important;
+  }
+  .stage-vision-bento .pro-svg-hero-line { stroke:#34d399 !important; filter:drop-shadow(0 0 14px rgba(52,211,153,0.65)); }
+
+  /* 2. Johnny Harris / Vox Investigative Dark-Room Evidence Dossier */
+  .stage-investigative-dossier .backdrop {
+    background:
+      radial-gradient(75% 50% at 50% 38%, rgba(225,29,72,0.16) 0%, transparent 72%),
+      repeating-radial-gradient(circle at 18% 24%, transparent 0px, transparent 46px, rgba(246,239,224,0.025) 46px, transparent 48px),
+      repeating-linear-gradient(0deg, rgba(246,239,224,0.03) 0px, rgba(246,239,224,0.03) 1px, transparent 1px, transparent 54px),
+      repeating-linear-gradient(90deg, rgba(246,239,224,0.03) 0px, rgba(246,239,224,0.03) 1px, transparent 1px, transparent 54px),
+      linear-gradient(180deg, #130e0c 0%, #070606 100%) !important;
+  }
+  .stage-investigative-dossier .byline {
+    background:#e11d48; color:#fffaf0 !important; padding:6px 18px; border-radius:4px;
+    font-weight:900 !important; letter-spacing:2.2px !important; text-transform:uppercase;
+    box-shadow:4px 5px 0px rgba(0,0,0,0.85);
+  }
+  .stage-investigative-dossier .pro-card,
+  .stage-investigative-dossier .pro-ev-card,
+  .stage-investigative-dossier .sc-side,
+  .stage-investigative-dossier .sc-quote-card {
+    background:#f6efe0 !important;
+    color:#181412 !important;
+    border-radius:12px !important;
+    box-shadow:12px 14px 0px rgba(0,0,0,0.92), 0 0 0 2.5px #181412 !important;
+  }
+  .stage-investigative-dossier .pro-kicker,
+  .stage-investigative-dossier .pro-callout-txt,
+  .stage-investigative-dossier .pro-ev-title,
+  .stage-investigative-dossier .sc-side-label,
+  .stage-investigative-dossier .sc-quote-text {
+    color:#181412 !important;
+  }
+  .stage-investigative-dossier .pro-ev-sub { color:#4a4039 !important; }
+  .stage-investigative-dossier .pro-ev-pin,
+  .stage-investigative-dossier .pro-pill-warn,
+  .stage-investigative-dossier .pro-tag-warn {
+    background:#e11d48 !important; color:#fffaf0 !important;
+    box-shadow:3px 4px 0px #181412 !important;
+  }
+  .stage-investigative-dossier .pro-svg-hero-line { stroke:#e11d48 !important; stroke-width:7 !important; }
+  .stage-investigative-dossier .pro-svg-lbl { fill:#181412 !important; }
+  .stage-investigative-dossier .pro-crowd-dot { fill:#29221e !important; opacity:0.82; }
+  .stage-investigative-dossier .pro-svg-panel { fill:rgba(24,20,18,0.06) !important; stroke:#181412 !important; stroke-width:2.5 !important; }
+  .stage-investigative-dossier .pro-node-block { fill:#e11d48 !important; stroke:#181412 !important; stroke-width:2.5 !important; }
+  .stage-investigative-dossier .pro-svg-big,
+  .stage-investigative-dossier .pro-svg-lbl-warn { fill:#fffaf0 !important; }
+  .stage-investigative-dossier .sc-side-a .sc-icon { color:#29221e !important; }
+  .stage-investigative-dossier .sc-side-icon-ring-a { background:rgba(24,20,18,0.08) !important; }
+
+  /* 3. Kurzgesagt / Cleo Abram Neon-Indigo Neuroscience & Physics Lab */
+  .stage-neuro-lab .backdrop {
+    background:
+      radial-gradient(68% 46% at 50% 34%, rgba(34,211,238,0.2) 0%, transparent 70%),
+      radial-gradient(64% 44% at 24% 72%, rgba(168,85,247,0.22) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(56,189,248,0.045) 0px, rgba(56,189,248,0.045) 1px, transparent 1px, transparent 56px),
+      repeating-linear-gradient(90deg, rgba(56,189,248,0.045) 0px, rgba(56,189,248,0.045) 1px, transparent 1px, transparent 56px),
+      linear-gradient(180deg, #0d0722 0%, #050310 100%) !important;
+  }
+  .stage-neuro-lab .byline {
+    background:rgba(13,7,34,0.86); color:#67e8f9 !important; padding:7px 20px; border-radius:999px;
+    box-shadow:inset 0 0 0 1.5px rgba(34,211,238,0.5), 0 0 24px rgba(34,211,238,0.22);
+    font-weight:800 !important; letter-spacing:1.6px !important; text-transform:uppercase;
+  }
+  .stage-neuro-lab .cine-hook,
+  .stage-neuro-lab .pro-card,
+  .stage-neuro-lab .sc-side,
+  .stage-neuro-lab .sc-quote-card {
+    background:linear-gradient(165deg, rgba(22,14,52,0.92) 0%, rgba(11,7,28,0.95) 100%) !important;
+    border-radius:28px !important;
+    box-shadow:0 0 0 2px rgba(34,211,238,0.42), 0 0 48px rgba(139,92,246,0.24), 0 32px 80px rgba(0,0,0,0.82) !important;
+  }
+  .stage-neuro-lab .pro-svg-hero-line {
+    stroke:#fbbf24 !important; stroke-width:8 !important;
+    filter:drop-shadow(0 0 16px rgba(251,191,36,0.78));
+  }
+  .stage-neuro-lab .pro-pill-warn,
+  .stage-neuro-lab .pro-tag-warn {
+    background:rgba(251,191,36,0.22) !important; color:#fde047 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(251,191,36,0.65) !important;
+  }
+  .stage-neuro-lab .pro-pill-ok {
+    background:rgba(34,211,238,0.2) !important; color:#67e8f9 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(34,211,238,0.6) !important;
+  }
 `;
 }
 
@@ -1020,19 +1244,24 @@ const TIMELINE_JS = `
                 var isLastW = wi === line.words.length - 1;
                 var activeEnd = isLastW ? Math.max(wt.end, wt.start + 0.22) : line.words[wi + 1].start;
                 if (now < wt.start) {
-                  wNode.style.opacity = "0.58";
-                  wNode.style.transform = "scale(0.94) translateY(0px)";
-                  wNode.style.color = "#ffffff";
+                  wNode.style.opacity = "0.94";
+                  wNode.style.transform = "scale(0.96) translateY(0px) rotate(0deg)";
+                  wNode.style.color = "#e2e8f0";
+                  wNode.style.textShadow = "none";
                 } else if (now < activeEnd) {
                   var u = Math.max(0, Math.min(1, (now - wt.start) / Math.max(0.08, activeEnd - wt.start)));
-                  var liftScale = 1 + 0.19 * Math.sin(Math.min(1, u * 2.4) * 1.5708) * (1 - 0.22 * u);
+                  var spring = Math.exp(-3.4 * u) * Math.sin(Math.min(1, u * 1.9) * 3.14159) * 0.14 + Math.sin(Math.min(1, u * 2.4) * 1.5708) * (1 - 0.2 * u) * 0.16;
+                  var liftScale = 1 + Math.max(0, spring);
+                  var tiltDeg = (keyFlags[wi] ? (wi % 2 === 0 ? -1.4 : 1.4) : 0) * (1 - u);
                   wNode.style.opacity = "1";
-                  wNode.style.transform = "scale(" + liftScale.toFixed(3) + ") translateY(-4px)";
-                  wNode.style.color = keyFlags[wi] ? "#ff5e36" : "#ffd60a";
+                  wNode.style.transform = "scale(" + liftScale.toFixed(3) + ") translateY(-7px) rotate(" + tiltDeg.toFixed(2) + "deg)";
+                  wNode.style.color = keyFlags[wi] ? "#ff6b35" : "#ffd60a";
+                  wNode.style.textShadow = keyFlags[wi] ? "0 0 28px rgba(255,107,53,0.72)" : "0 0 22px rgba(255,214,10,0.58)";
                 } else {
                   wNode.style.opacity = "1";
-                  wNode.style.transform = "scale(1) translateY(0px)";
-                  wNode.style.color = keyFlags[wi] ? "#ffd60a" : "#ffffff";
+                  wNode.style.transform = "scale(1) translateY(0px) rotate(0deg)";
+                  wNode.style.color = keyFlags[wi] ? "#ffe066" : "#ffffff";
+                  wNode.style.textShadow = "none";
                 }
               }
             },
@@ -1194,10 +1423,13 @@ const TIMELINE_JS = `
     var camera3d = new T.PerspectiveCamera(38, 1, 0.1, 10);
     camera3d.position.set(0, 0, 3.1);
     camera3d.lookAt(0, 0, 0);
-    scene3d.add(new T.AmbientLight(0xffffff, 0.65));
-    var key = new T.DirectionalLight(0xffffff, 0.9);
+    scene3d.add(new T.AmbientLight(0xffffff, 1.35));
+    var key = new T.DirectionalLight(0xffffff, 1.65);
     key.position.set(1.4, 1.8, 2.2);
     scene3d.add(key);
+    var rim3d = new T.DirectionalLight(0xffffff, 0.85);
+    rim3d.position.set(-1.6, -1.2, 1.8);
+    scene3d.add(rim3d);
 
     // ONE material for every shape and every icon: colour is the theme's own
     // accent (data.accent, set once per render, never per-scene), and flat
@@ -1205,9 +1437,11 @@ const TIMELINE_JS = `
     // faceted look rather than a smooth, oddly under-detailed sphere.
     var material = new T.MeshStandardMaterial({
       color: data.accent || "#d9531e",
+      emissive: data.accent || "#d9531e",
+      emissiveIntensity: 0.32,
       flatShading: true,
-      metalness: 0.15,
-      roughness: 0.55,
+      metalness: 0.12,
+      roughness: 0.42,
     });
     var mesh = new T.Mesh(new T.IcosahedronGeometry(1, 0), material);
     scene3d.add(mesh);
@@ -1310,7 +1544,7 @@ const TIMELINE_JS = `
     var shared = getThreeShared(size);
     var inst = { ctx: ctx, shared: shared, geometry: geometryFor(shared, shape), size: size };
     threeRenderAt(inst, 0);
-    canvasEl.style.opacity = "1";
+    canvasEl.style.opacity = "0.28";
     canvasEl.style.visibility = "visible";
     return inst;
   }
@@ -1326,7 +1560,7 @@ const TIMELINE_JS = `
     if (cineEngine) return cineEngine;
     if (!window.CINE || typeof window.THREE === "undefined" || !detectThreeSupport()) return null;
     var buf = data.cineBuf || { w: 720, h: 1280 };
-    cineEngine = window.CINE.create({ THREE: window.THREE, width: buf.w, height: buf.h, accent: data.accent || "#d9531e", light: !!data.cineLight });
+    cineEngine = window.CINE.create({ THREE: window.THREE, width: buf.w, height: buf.h, accent: data.accent || "#d9531e", light: !!data.cineLight, noParticles: !!data.viralCaptions });
     window.addEventListener("pagehide", function () {
       try { cineEngine.dispose(); } catch (e) { /* best-effort cleanup only */ }
     });
@@ -1496,6 +1730,12 @@ const TIMELINE_JS = `
       tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.94, y: 12 }, { autoAlpha: 1, scale: 1, y: 0, duration: d, ease: "power3.out", immediateRender: false }, a.t);
     } else if (a.k === "pop") {
       tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.7 }, { autoAlpha: 1, scale: 1, duration: d, ease: "back.out(1.6)", immediateRender: false }, a.t);
+    } else if (a.k === "spring-card") {
+      tl.fromTo(el, { autoAlpha: 0, scale: a.v || 0.84, y: 28 }, { autoAlpha: 1, scale: 1, y: 0, duration: d, ease: "back.out(1.85)", immediateRender: false }, a.t);
+    } else if (a.k === "split-reveal") {
+      tl.fromTo(el, { autoAlpha: 0, y: a.v || 24, skewY: 2.2 }, { autoAlpha: 1, y: 0, skewY: 0, duration: d, ease: "expo.out", immediateRender: false }, a.t);
+    } else if (a.k === "whip-pan") {
+      tl.fromTo(el, { autoAlpha: 0, x: a.v || -48, scale: 0.96, filter: "blur(5px)" }, { autoAlpha: 1, x: 0, scale: 1, filter: "blur(0px)", duration: d, ease: "expo.out", immediateRender: false }, a.t);
     } else if (a.k === "wipe") {
       tl.fromTo(el, { autoAlpha: 1, scaleX: 0 }, { autoAlpha: 1, scaleX: 1, duration: d, ease: "power2.out", immediateRender: false }, a.t);
     } else if (a.k === "grow") {
@@ -1911,7 +2151,7 @@ export function cardCineMoves(scenes: Scene[], shift: number): CardCine[] {
   let k = 0;
   for (const s of scenes) {
     if (!PAGE_KINDS.includes(s.kind)) continue;
-    const dir = k++ % 2 === 0 ? 1 : -1;
+    const recipe = pageCameraRecipeAt(k++);
     const t = Math.max(0, shift + s.start - SCENE_FADE * 0.5);
     const d = Math.max(0.6, Math.min(6, shift + s.end - t));
     const prev = out[out.length - 1];
@@ -1919,8 +2159,8 @@ export function cardCineMoves(scenes: Scene[], shift: number): CardCine[] {
     out.push({
       t,
       d,
-      from: { ry: dir * 9, rx: 4.5, s: 0.93, y: 30 },
-      to: { ry: dir * 2.2, rx: 1.2, s: 1.02, y: 0 },
+      from: { ...recipe.from },
+      to: { ...recipe.to },
     });
   }
   return out;
@@ -1956,7 +2196,7 @@ export function bokehField(count = 11): Bokeh[] {
 }
 
 export function buildComposition(input: CompositionInput): string {
-  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music, sfx, viralCaptions } = input;
+  const { theme, pages, sweeps, camera, captions, pkg, beats, totalDuration, music, sfx, viralCaptions, reelStyle } = input;
   const { bookTitle, author, bookLink } = input;
 
   // Includes AUDIO_OFFSET: the audio element itself starts at AUDIO_OFFSET, not
@@ -2078,7 +2318,7 @@ export function buildComposition(input: CompositionInput): string {
     from: POP_FROM,
   }));
 
-  const lightSweeps = sweepPasses(beats, AUDIO_OFFSET, duration);
+  const lightSweeps = viralCaptions ? [] : sweepPasses(beats, AUDIO_OFFSET, duration);
 
   // --- the scene stack (§3C) ------------------------------------------------
   // Absent scenes must render the pre-3C composition exactly, so every piece
@@ -2124,12 +2364,16 @@ export function buildComposition(input: CompositionInput): string {
   const dim = scenes.length ? dimKeys(scenes, AUDIO_OFFSET) : [];
   const glow = scenes.length ? glowKeys(scenes, AUDIO_OFFSET) : [];
   const env = environmentKeys(scenes, AUDIO_OFFSET);
+  const mmAudit = scenes.length
+    ? auditMotionMaxxingLayout({ scenes, captions, anims, viralCaptions })
+    : null;
 
   const data = embed({
     strokes,
     camera: cameraData,
     captions: captionData,
     ...(viralCaptions ? { viralCaptions: true } : {}),
+    ...(mmAudit ? { motionMaxxing: { ok: mmAudit.ok, safeZonePass: mmAudit.safeZonePass, seekSafePass: mmAudit.seekSafePass, shotRecipes: mmAudit.shotRecipes } } : {}),
     pops,
     lightSweeps,
     hook: hookData,
@@ -2202,7 +2446,7 @@ export function buildComposition(input: CompositionInput): string {
   // that is actually present through the outro tail — see the field doc on
   // `music` above.
   const musicHtml = music
-    ? `<audio id="music" src="assets/music.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="10" data-volume="1"></audio>`
+    ? `<audio id="music" src="assets/music.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="10" data-volume="0.2"></audio>`
     : "";
   const sfxHtml = sfx
     ? `<audio id="sfx" src="assets/sfx.wav" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="15" data-volume="1"></audio>`
@@ -2238,13 +2482,13 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
 <style>${sharedCss(theme)}${sceneCss(theme, rect)}${scenes.length ? environmentCss(theme) : ""}${theme.css()}</style>
 </head>
 <body>
-<div id="root" class="stage" data-composition-id="main" data-start="0" data-width="${FRAME.width}" data-height="${FRAME.height}" data-duration="${duration.toFixed(3)}" data-fps="${FPS}">
+<div id="root" class="stage${reelStyle ? ` stage-${reelStyle}` : ""}" data-composition-id="main" data-start="0" data-width="${FRAME.width}" data-height="${FRAME.height}" data-duration="${duration.toFixed(3)}" data-fps="${FPS}">
   <div class="clip" id="scene" data-start="0" data-duration="${duration.toFixed(3)}" data-track-index="0">
     ${theme.backdrop()}
     ${scenes.length ? `<div class="scene-glow" id="scene-glow"></div>` : ""}
     ${environmentLayers(scenes, env)}
     ${
-      scenes.length
+      scenes.length && !viralCaptions
         ? `<div class="cine-bokeh">${bokeh
             .map(
               (b) =>
@@ -2253,7 +2497,9 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
                 };opacity:${isLightPalette(theme.palette.backdropDeep) ? Math.min(0.32, b.opacity * 2.4) * (b.tone === "accent" ? 0.45 : 1) : b.opacity}"></div>`,
             )
             .join("")}</div>`
-        : ""
+        : scenes.length
+          ? `<div class="cine-bokeh"></div>`
+          : ""
     }
     <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
     <div class="card-stage"><div class="card" id="card">
@@ -2278,7 +2524,7 @@ ${usesCine ? `<script>${cineRuntimeSource()}</script>` : ""}
     ${scenes.length ? `<div id="card-overlay" style="position:absolute;inset:0;pointer-events:none">${theme.overlay()}</div>` : theme.overlay()}
     ${bylineHtml}
     <div class="captions${viralCaptions ? " captions-viral" : ""}" id="captions">
-      ${captionMarkup(captions, pkg.hookKeywords)}
+      ${captionMarkup(captions, pkg.hookKeywords, viralCaptions)}
     </div>
     ${hookHtml}
     ${ctaHtml}

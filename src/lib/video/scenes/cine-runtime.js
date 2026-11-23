@@ -102,16 +102,18 @@
     return s;
   }
 
-  /** N points as one Points object; colours in `color`, additive on dark themes. */
+  /** N points as one Points object; hidden completely whenever `E.noParticles` is set (zero sparks on real videos). */
   function points(E, n, size, color, opacity) {
     var T = E.T;
     var g = new T.BufferGeometry();
     g.setAttribute("position", new T.BufferAttribute(new Float32Array(n * 3), 3));
+    var hide = !!E.noParticles;
     var m = new T.PointsMaterial({
-      map: E.soft, size: size * 2.6, color: color, transparent: true, opacity: opacity === undefined ? 1 : opacity,
-      depthWrite: false, blending: E.light ? T.NormalBlending : T.AdditiveBlending, sizeAttenuation: true,
+      map: E.soft, size: size * 2.6, color: color, transparent: true, opacity: hide ? 0 : (opacity === undefined ? 1 : opacity),
+      depthWrite: false, blending: hide || E.light ? T.NormalBlending : T.AdditiveBlending, sizeAttenuation: true,
     });
     var p = new T.Points(g, m);
+    if (hide) p.visible = false;
     p.frustumCulled = false;
     return p;
   }
@@ -1677,7 +1679,7 @@
       var rim = new T.DirectionalLight(acc2.getHex(), 3.2); rim.position.set(3.5, 2, -4); scene.add(rim);
       var pl = new T.PointLight(acc.getHex(), 9, 12, 1.6); pl.position.set(0, 0.2, 1.4); scene.add(pl);
     }
-    var E = { T: T, light: light, acc: acc, acc2: acc2, soft: softTexture(T), scene: scene, camera: camera };
+    var E = { T: T, light: light, noParticles: !!o.noParticles, acc: acc, acc2: acc2, soft: softTexture(T), scene: scene, camera: camera };
     var built = {};
     var plates = {};
     function hideAll(activeGroup) {
@@ -1754,21 +1756,34 @@
       bgMesh.position.z = -0.92;
       g.add(bgMesh);
 
-      // 2. Midground 72x128 depth-displaced plate mesh.
-      var geo = new T.PlaneGeometry(5.92, 10.52, segX, segY);
+      // 2. Midground 96x168 depth-displaced plate mesh (crisp Full-HD contour fidelity, zero spark/particle clutter).
+      var segX2 = 96, segY2 = 168, cols2 = segX2 + 1, rows2 = segY2 + 1;
+      var depths2 = null;
+      if (depthEl && depthEl.naturalWidth > 0 && depthEl.naturalHeight > 0) {
+        try {
+          var dc2 = document.createElement("canvas");
+          dc2.width = cols2; dc2.height = rows2;
+          var dx2 = dc2.getContext("2d");
+          dx2.drawImage(depthEl, 0, 0, cols2, rows2);
+          depths2 = dx2.getImageData(0, 0, cols2, rows2).data;
+        } catch (e2) {
+          depths2 = null;
+        }
+      }
+      var geo = new T.PlaneGeometry(5.92, 10.52, segX2, segY2);
       geo.clearGroups();
       var pos = geo.attributes.position;
-      var zSpan = 1.48 * pIntensity;
-      for (var ry = 0; ry < rows; ry++) {
-        var v = ry / segY;
+      var zSpan = 1.42 * pIntensity;
+      for (var ry = 0; ry < rows2; ry++) {
+        var v = ry / segY2;
         var ey = smooth(0, 0.09, v) * smooth(1, 0.91, v);
-        for (var rx = 0; rx < cols; rx++) {
-          var u = rx / segX;
+        for (var rx = 0; rx < cols2; rx++) {
+          var u = rx / segX2;
           var ex = smooth(0, 0.09, u) * smooth(1, 0.91, u);
-          var idx = ry * cols + rx;
+          var idx = ry * cols2 + rx;
           var d01;
-          if (depths) {
-            d01 = depths[idx * 4] / 255;
+          if (depths2) {
+            d01 = depths2[idx * 4] / 255;
           } else {
             var cx = u - 0.5, cy = v - 0.48;
             d01 = clamp(0.26 + v * 0.34 + Math.max(0, 0.42 - Math.sqrt(cx * cx + cy * cy)) * 0.85, 0, 1);
@@ -1785,114 +1800,19 @@
         color: gradeTint,
         emissiveMap: tex,
         emissive: gradeTint,
-        emissiveIntensity: isDoc ? (E.light ? 0.88 : 0.86) : (E.light ? 0.84 : 0.82),
+        emissiveIntensity: isDoc ? (E.light ? 0.90 : 0.88) : (E.light ? 0.88 : 0.86),
         roughness: isDoc ? 0.9 : 0.86,
         metalness: 0.02,
       });
       var plane = new T.Mesh(geo, mat);
       g.add(plane);
 
-      var lightCol = gradeTint.clone().lerp(accCol, isDoc ? 0.12 : 0.2);
-      var keyLight = new T.PointLight(lightCol.getHex(), isDoc ? (E.light ? 1.2 : 1.6) : (E.light ? 1.5 : 2.1), 18, 1.5);
+      var lightCol = gradeTint.clone().lerp(accCol, isDoc ? 0.1 : 0.16);
+      var keyLight = new T.PointLight(lightCol.getHex(), isDoc ? (E.light ? 1.15 : 1.45) : (E.light ? 1.35 : 1.75), 18, 1.5);
       keyLight.position.set(0, 0.8, 3.4);
       g.add(keyLight);
 
-      var glow = sprite(E, lightCol, isDoc ? 4.8 : 5.4, isDoc ? 0.02 : (E.light ? 0.03 : 0.04));
-      glow.position.set(0, 0.6, 0.9);
-      g.add(glow);
-
-      var rnd = mulberry(hashSeed(key));
-      var atm = cfg.atmosphere || "dust";
-      var motes = null, moteData = [], fgBokeh = null, fgData = [], rainLines = null, rainData = [], rays = [], mists = [], accentGroup = null;
-
-      // 3. Optional Hybrid 3D sculptural accent (single-group Torus rings in 3D space, never forced on documentary).
-      if (cfg.accent3d && !isDoc) {
-        accentGroup = new T.Group();
-        var rOuter = new T.Mesh(
-          new T.TorusGeometry(1.55, 0.014, 8, 96),
-          new T.MeshBasicMaterial({
-            color: accCol,
-            transparent: true,
-            opacity: E.light ? 0.34 : 0.46,
-            depthWrite: false,
-            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
-          })
-        );
-        var rInner = new T.Mesh(
-          new T.TorusGeometry(1.12, 0.009, 6, 84),
-          new T.MeshBasicMaterial({
-            color: gradeTint,
-            transparent: true,
-            opacity: E.light ? 0.22 : 0.3,
-            depthWrite: false,
-            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
-          })
-        );
-        rOuter.rotation.x = 1.05;
-        rInner.rotation.y = 0.72;
-        accentGroup.position.set(0, -0.35, 1.05);
-        accentGroup.add(rOuter);
-        accentGroup.add(rInner);
-        g.add(accentGroup);
-      }
-
-      // 4. Foreground bokeh separation plane (z = +2.15..+2.85) for true 3-plane parallax on hybrid scenes.
-      if (!isDoc && atm !== "none") {
-        var FN = 16;
-        fgBokeh = points(E, FN, 0.095, accCol.clone().lerp(gradeTint, 0.45), E.light ? 0.16 : 0.24);
-        for (var f1 = 0; f1 < FN; f1++) {
-          fgData.push([rnd() * 4.4 - 2.2, rnd() * 7.8 - 3.9, 2.15 + rnd() * 0.7, rnd()]);
-        }
-        g.add(fgBokeh);
-      }
-
-      if (atm === "rain") {
-        var RN = 68;
-        var rg = new T.BufferGeometry();
-        rg.setAttribute("position", new T.BufferAttribute(new Float32Array(RN * 6), 3));
-        rainLines = new T.LineSegments(rg, lineMat(E, E.light ? 0x6b7c96 : 0xcfe2ff, E.light ? 0.32 : 0.42));
-        rainLines.frustumCulled = false;
-        for (var r1 = 0; r1 < RN; r1++) rainData.push([rnd() * 5.2 - 2.6, rnd(), 0.7 + rnd() * 0.7, 0.5 + rnd() * 1.5]);
-        g.add(rainLines);
-      } else if (atm !== "none" && atm !== "still") {
-        var MN = atm === "embers" ? 56 : (isDoc ? 28 : 48);
-        var pCol = atm === "embers" ? accCol : (E.light ? 0x8a7a68 : 0xdfe8ff);
-        var pSize = atm === "embers" ? 0.055 : (isDoc ? 0.032 : 0.042);
-        var pOp = atm === "embers" ? 0.82 : (isDoc ? (E.light ? 0.2 : 0.28) : (E.light ? 0.34 : 0.48));
-        motes = points(E, MN, pSize, pCol, pOp);
-        for (var m1 = 0; m1 < MN; m1++) {
-          moteData.push([rnd() * 4.8 - 2.4, rnd() * 8.4 - 4.2, 0.45 + rnd() * 1.6, rnd()]);
-        }
-        g.add(motes);
-      }
-
-      if (atm === "mist") {
-        for (var mi = 0; mi < 4; mi++) {
-          var mp = puff(E, E.light ? 0xffffff : shdCol.clone().lerp(accCol, 0.22), 4.6 + mi * 0.7, E.light ? 0.2 : 0.18);
-          mp.position.set((mi % 2 ? 1 : -1) * 1.1, -2.4 + mi * 0.65, 0.75 + mi * 0.15);
-          g.add(mp);
-          mists.push(mp);
-        }
-      } else if (atm === "rays") {
-        for (var ri = 0; ri < 3; ri++) {
-          var rayGeo = new T.PlaneGeometry(0.85 + ri * 0.35, 9.6);
-          rayGeo.clearGroups();
-          var rayMat = new T.MeshBasicMaterial({
-            color: lightCol,
-            transparent: true,
-            opacity: isDoc ? (E.light ? 0.035 : 0.055) : (E.light ? 0.06 : 0.1),
-            depthWrite: false,
-            blending: E.light ? T.NormalBlending : T.AdditiveBlending,
-            side: T.DoubleSide,
-          });
-          var ray = new T.Mesh(rayGeo, rayMat);
-          ray.rotation.z = -0.26 + ri * 0.08;
-          ray.position.set(-1.1 + ri * 1.05, 0.7, 0.8 + ri * 0.1);
-          g.add(ray);
-          rays.push(ray);
-        }
-      }
-
+      void hashSeed;
       var move = cfg.cameraMove || "push-in";
       var angle = cfg.shotAngle || "eye-level";
       return {
@@ -1904,53 +1824,7 @@
         bgMat: bgMat,
         update: function (t, p) {
           var ep = smooth(0, 1, p);
-          keyLight.position.set(Math.sin(t * 0.45) * 1.4, lerp(1.1, -0.3, ep), 3.1 + Math.cos(t * 0.35) * 0.4);
-          glow.position.set(Math.sin(t * 0.3) * 0.7, lerp(0.9, 0.2, ep), 0.9);
-          glow.material.opacity = (isDoc ? 0.02 : (E.light ? 0.03 : 0.04)) + 0.012 * Math.sin(t * 1.3);
-
-          if (accentGroup) {
-            accentGroup.rotation.z = t * 0.16;
-            accentGroup.rotation.y = Math.sin(t * 0.28) * 0.24;
-          }
-          if (fgBokeh) {
-            var fpAttr = fgBokeh.geometry.attributes.position;
-            for (var fq = 0; fq < fgData.length; fq++) {
-              var fd = fgData[fq];
-              var fwy = ((fd[1] + 3.9 + t * 0.11 * (0.4 + fd[3])) % 7.8) - 3.9;
-              var fwx = fd[0] + Math.sin(t * 0.32 + fd[3] * 6.28) * 0.28;
-              fpAttr.setXYZ(fq, fwx, fwy, fd[2]);
-            }
-            fpAttr.needsUpdate = true;
-          }
-          if (motes) {
-            var mpAttr = motes.geometry.attributes.position;
-            var riseRate = atm === "embers" ? 0.52 : 0.14;
-            for (var q = 0; q < moteData.length; q++) {
-              var d = moteData[q];
-              var wy = ((d[1] + 4.2 + t * riseRate * (0.5 + d[3])) % 8.4) - 4.2;
-              var wx = d[0] + Math.sin(t * 0.42 + d[3] * 6.28) * 0.22;
-              mpAttr.setXYZ(q, wx, wy, d[2]);
-            }
-            mpAttr.needsUpdate = true;
-          }
-          if (rainLines) {
-            var rpAttr = rainLines.geometry.attributes.position;
-            for (var rk = 0; rk < rainData.length; rk++) {
-              var rd = rainData[rk];
-              var rf = fract(rd[1] + t * 1.35 * rd[2]);
-              var ry2 = 4.6 - rf * 9.2;
-              var rx2 = rd[0] - rf * 0.55;
-              rpAttr.setXYZ(rk * 2, rx2, ry2, rd[3]);
-              rpAttr.setXYZ(rk * 2 + 1, rx2 - 0.07, ry2 - 0.42, rd[3]);
-            }
-            rpAttr.needsUpdate = true;
-          }
-          for (var m2 = 0; m2 < mists.length; m2++) {
-            mists[m2].position.x = lerp(-1.8, 1.8, fract(0.18 * m2 + t * 0.025));
-          }
-          for (var r2 = 0; r2 < rays.length; r2++) {
-            rays[r2].material.opacity = (isDoc ? (E.light ? 0.03 : 0.05) : (E.light ? 0.045 : 0.085)) * (0.7 + 0.3 * Math.sin(t * 0.8 + r2 * 1.7));
-          }
+          keyLight.position.set(Math.sin(t * 0.35) * 1.1, lerp(0.9, -0.25, ep), 3.2 + Math.cos(t * 0.28) * 0.3);
         },
         cam: function (t, p, cam) {
           var ep = smooth(0, 1, p);
@@ -2033,10 +1907,11 @@
         h.update(t, p);
         if (h.cam) h.cam(t, p, camera); else { camera.position.set(0, 0.6, 7); camera.lookAt(0, 0, 0); }
         var fit = FIT[HEROES[id] ? id : "orb"] || { z: 1, dy: 0 };
+        var scaleY = H / 1280;
         // `low`: the opening hook's headline can run to four or five lines from the top, so
         // the hero steps back and down to sit below it instead of under its letters.
         camera.zoom = low ? fit.z * 0.82 : fit.z;
-        camera.setViewOffset(W, H, 0, -(low ? fit.dy + 120 : fit.dy), W, H);
+        camera.setViewOffset(W, H, 0, -Math.round((low ? fit.dy + 120 : fit.dy) * scaleY), W, H);
         camera.updateProjectionMatrix();
         renderer.render(scene, camera);
         try { renderer.getContext().finish(); } catch (e) { /* the blit below still reads what is there */ }

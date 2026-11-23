@@ -52,7 +52,9 @@ export type SceneTransitionKind =
   | "dissolve"
   | "depth-push"
   | "pan-slide"
-  | "rise-wipe";
+  | "rise-wipe"
+  | "whip-pan"
+  | "spring-pop";
 
 export type ColorGradePreset =
   | "warm-cinema"

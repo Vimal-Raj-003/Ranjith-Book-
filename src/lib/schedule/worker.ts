@@ -31,7 +31,12 @@ export async function processScheduleQueue(options: RunScheduleOptions = {}): Pr
         await prisma.scheduleSlot.updateMany({ where: { id: slot.id, status: "scheduling", updatedAt: slot.updatedAt }, data: { status: outcome.status, note: outcome.note, publishJobId: job?.id } });
       }
     }
-    for (const plan of plans) await runSchedule(plan.id, { ...options, automatic: true });
+    for (const plan of plans) {
+      await Promise.all([
+        runSchedule(plan.id, { ...options, platform: "instagram", automatic: true }),
+        runSchedule(plan.id, { ...options, platform: "youtube", automatic: true }),
+      ]);
+    }
     if (!process.env.BOOKREEL_TEST_DB_PID) {
       await checkAndDispatchScheduleReminders();
     }

@@ -126,11 +126,13 @@ export function hasLeftOpenWindow(platform: PlatformId): boolean {
 
 /**
  * Close the window a previous job left open, so the profile is free for this one.
+ * Returns whether an open window handle was closed.
  * Never throws: a window the person already closed is simply gone.
  */
-export async function closeLeftOpenWindow(platform: PlatformId): Promise<void> {
+export async function closeLeftOpenWindow(platform: PlatformId): Promise<boolean> {
   const handle = state.windows.get(platform);
-  if (!handle) return;
+  if (!handle) return false;
   state.windows.delete(platform);
   await handle.close().catch(() => {});
+  return true;
 }

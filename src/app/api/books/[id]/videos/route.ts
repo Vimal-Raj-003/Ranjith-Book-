@@ -18,10 +18,21 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const user = await requireUser();
     const { id } = await ctx.params;
-    const body = (await req.json().catch(() => null)) as { ideaIds?: unknown } | null;
+    const body = (await req.json().catch(() => null)) as {
+      ideaIds?: unknown;
+      reelModel?: unknown;
+      perIdeaModels?: unknown;
+    } | null;
     const ideaIds = Array.isArray(body?.ideaIds)
       ? [...new Set(body.ideaIds.filter((v): v is string => typeof v === "string"))]
       : [];
+    const reelModel = typeof body?.reelModel === "string" ? body.reelModel : null;
+    const perIdeaModels: Record<string, string> = {};
+    if (body?.perIdeaModels && typeof body.perIdeaModels === "object" && !Array.isArray(body.perIdeaModels)) {
+      for (const [k, v] of Object.entries(body.perIdeaModels as Record<string, unknown>)) {
+        if (typeof v === "string") perIdeaModels[k] = v;
+      }
+    }
     if (ideaIds.length === 0) {
       return NextResponse.json({ error: "Choose at least one idea to make into a video.", code: "bad_request" }, { status: 400 });
     }
@@ -37,7 +48,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return NextResponse.json({ error: "This book is still being analysed.", code: "not_ready" }, { status: 409 });
     }
 
-    const episodes = await createIdeaEpisodes(id, ideaIds, user.id);
+    const episodes = await createIdeaEpisodes(id, ideaIds, user.id, { reelModel, perIdeaModels });
     if (episodes.length === 0) {
       return NextResponse.json({ error: "None of those ideas belong to this book.", code: "not_found" }, { status: 404 });
     }

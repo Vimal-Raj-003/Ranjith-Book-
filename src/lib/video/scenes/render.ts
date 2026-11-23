@@ -27,6 +27,8 @@ import { alpha } from "../composition/themes/color";
 import type { HeroId } from "./heroes";
 import { lottieFor, LOTTIE_DURATION_S, type LottieAnimationData } from "./lottie";
 import { shapeForIcon, type ThreeShapeKind } from "./three-shapes";
+import { buildVectorDiagram, vectorKindForHero } from "./vector-stage";
+import { buildProModel } from "./pro-stage";
 
 /** Where scene content may be drawn: the same rectangle the page card occupies. */
 export interface SceneRect {
@@ -53,6 +55,9 @@ export interface SceneAnim {
     | "slide-x"
     | "scale-soft"
     | "pop"
+    | "spring-card"
+    | "split-reveal"
+    | "whip-pan"
     | "wipe"
     | "grow"
     | "draw"
@@ -97,8 +102,8 @@ export interface RenderedScene {
  */
 export const FULL_FRAME: SceneRect = { x: 0, y: 0, w: 1080, h: 1920 };
 
-/** Internal render-buffer sizes of a hero canvas and its bloom (CSS stretches both to the frame). */
-export const CINE_BUFFER = { w: 720, h: 1280 };
+/** Internal render-buffer sizes of a hero canvas and its bloom (native 1080x1920 Full HD for crisp plates). */
+export const CINE_BUFFER = { w: 1080, h: 1920 };
 export const CINE_BLOOM = { w: 90, h: 160 };
 
 let cineSource: string | null = null;
@@ -329,18 +334,28 @@ function cinematic(scene: Scene, i: number): RenderedScene {
     const accent = new Set((cine.accentWords ?? []).map((w) => normalizeToken(w)).filter(Boolean));
     const emphasis = emphasizeWords(words.map((w) => w.word));
     const chars = words.reduce((n, w) => n + w.word.length + 1, 0);
-    const size = fitSize(chars, 76, 46, 0.26);
-    const spans = words
-      .map((w, k) => {
-        const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
-        return `<span class="sc-word${emph ? " sc-word-emph" : ""}" data-el="${2 + k}">${esc(w.word)}</span>`;
-      })
-      .join(" ");
+    const size = fitSize(chars, 68, 42, 0.24);
+    // Group words into balanced 4-word centered rows so partially spoken lines never hang awkwardly on the left edge,
+    // while keeping every `<span class="sc-word..." data-el="${2 + k}">` intact for word-exact pop/rise timing.
+    const rows: string[] = [];
+    let currentRow: string[] = [];
+    let rowChars = 0;
     words.forEach((w, k) => {
       const emph = accent.has(normalizeToken(w.word)) || Boolean(emphasis[k]);
-      anims.push(emph ? { s: i, e: 2 + k, k: "pop", t: w.start, d: 0.32, v: 0.52 } : { s: i, e: 2 + k, k: "rise", t: w.start, d: 0.24, v: 20 });
+      const span = `<span class="sc-word${emph ? " sc-word-emph" : ""}" data-el="${2 + k}">${esc(w.word)}</span>`;
+      if (currentRow.length >= 4 || (currentRow.length >= 3 && rowChars + w.word.length > 22)) {
+        rows.push(`<span class="cine-hook-row">${currentRow.join(" ")}</span>`);
+        currentRow = [];
+        rowChars = 0;
+      }
+      currentRow.push(span);
+      rowChars += w.word.length + 1;
+      anims.push(emph ? { s: i, e: 2 + k, k: "pop", t: w.start, d: 0.3, v: 0.68 } : { s: i, e: 2 + k, k: "rise", t: w.start, d: 0.22, v: 16 });
     });
-    text = `<div class="cine-hook" style="font-size:${size}px">${spans}</div>`;
+    if (currentRow.length > 0) {
+      rows.push(`<span class="cine-hook-row">${currentRow.join(" ")}</span>`);
+    }
+    text = `<div class="cine-hook" style="font-size:${size}px"><div class="cine-hook-bar"></div>${rows.join("")}</div>`;
   } else {
     const key = cine.keyword.trim();
     const letters = Array.from(key);
@@ -357,7 +372,7 @@ function cinematic(scene: Scene, i: number): RenderedScene {
     if (callout) {
       const calloutEl = n++;
       calloutMarkup = `<div class="cine-callout" data-el="${calloutEl}">${esc(callout)}</div>`;
-      anims.push({ s: i, e: calloutEl, k: "reveal", t: earliest, d: 0.4, v: 14 });
+      anims.push({ s: i, e: calloutEl, k: "split-reveal", t: earliest, d: 0.42, v: 18 });
     }
     if (lead && !cine.plate) {
       const first = normalizeToken(lead.split(/\s+/)[0] ?? "");
@@ -379,6 +394,51 @@ function cinematic(scene: Scene, i: number): RenderedScene {
       })
       .join("");
     text = `<div class="cine-text">${calloutMarkup}${leadMarkup}<div class="cine-key" style="font-size:${size}px">${spans}</div></div>`;
+  }
+
+  if (cine.proModel) {
+    const proBaseEl = 500 + words.length + Array.from(cine.keyword ?? "").length;
+    const pro = buildProModel(cine.proModel, proBaseEl, cine.proMeta);
+    const sceneSpan = Math.max(0.8, scene.end - scene.start);
+    for (const spec of pro.anims) {
+      const t = Math.max(scene.start, Math.min(scene.start + sceneSpan - 0.22, scene.start + spec.delaySec));
+      const d = Math.min(spec.durSec, Math.max(0.2, scene.end - t));
+      if (spec.kind === "draw") {
+        anims.push({ s: i, e: spec.el, k: "draw", t, d, v: spec.val ?? 300 });
+      } else if (spec.kind === "wipe") {
+        anims.push({ s: i, e: spec.el, k: "wipe", t, d });
+      } else if (spec.kind === "whip-pan") {
+        anims.push({ s: i, e: spec.el, k: "whip-pan", t, d, v: spec.val ?? -36 });
+      } else {
+        anims.push({ s: i, e: spec.el, k: "spring-card", t, d, v: spec.val ?? 0.84 });
+      }
+    }
+    const proBgPlate = cine.plate?.imageSrc
+      ? `<div class="sc-bg-plate" style="left:0px;top:0px;width:1080px;height:1920px"><img src="${esc(cine.plate.imageSrc)}" alt="" /><div class="sc-bg-scrim"></div></div>`
+      : `<div class="cine-vec-backdrop"></div>`;
+    return {
+      markup: `${proBgPlate}${pro.markup}${text}`,
+      anims,
+    };
+  }
+
+  if (cine.vectorMode) {
+    const narration = words.map((w) => w.word).join(" ") || cine.keyword || cine.lead;
+    const vecBaseEl = 400 + words.length + Array.from(cine.keyword ?? "").length;
+    const vec = buildVectorDiagram(vectorKindForHero(cine.hero, narration), vecBaseEl);
+    const sceneSpan = Math.max(0.8, scene.end - scene.start);
+    for (const dr of vec.draws) {
+      const t = Math.min(scene.start + sceneSpan - 0.25, scene.start + dr.delaySec);
+      anims.push({ s: i, e: dr.el, k: "draw", t: Math.max(scene.start, t), d: Math.min(dr.durSec, Math.max(0.2, scene.end - t)), v: dr.dash });
+    }
+    for (const pp of vec.pops) {
+      const t = Math.min(scene.start + sceneSpan - 0.2, scene.start + pp.delaySec);
+      anims.push({ s: i, e: pp.el, k: "spring-card", t: Math.max(scene.start, t), d: 0.42, v: pp.scaleFrom });
+    }
+    return {
+      markup: `<div class="cine-vec-backdrop"></div>${vec.markup}${text}`,
+      anims,
+    };
   }
 
   anims.push({
@@ -409,8 +469,10 @@ function cinematic(scene: Scene, i: number): RenderedScene {
 }
 
 function quote(scene: Scene, i: number): RenderedScene {
-  const text = scene.quote?.text ?? "";
-  const size = fitSize(text.length, 74, 38, 0.13);
+  const rawText = scene.quote?.text ?? "";
+  // Join scanned-book line-wrap hyphenation ("reveal- ed." -> "revealed.") while preserving real compound hyphens.
+  const text = rawText.replace(/([A-Za-z]{2,})-\s+([a-z]{2,})/g, "$1$2");
+  const size = fitSize(text.length, 68, 36, 0.13);
   const times = stagger(2, scene.start, scene.end - scene.start);
   return {
     // No page-number label. It read on screen as "PAGE 17" beside the quotation — a piece of
@@ -419,12 +481,15 @@ function quote(scene: Scene, i: number): RenderedScene {
     // scene (`scene.quote.page`) and still checked by the grounding tests; it is simply not
     // painted. `times` keeps its two stops so the quote mark and the line still stagger.
     markup: `<div class="sc-quote" data-drift>
-      <div class="sc-quote-mark" data-el="0">&ldquo;</div>
-      <blockquote class="sc-quote-text" data-el="1" style="font-size:${size}px">${esc(text)}</blockquote>
+      <div class="sc-quote-card">
+        <div class="sc-quote-bar"></div>
+        <div class="sc-quote-mark" data-el="0">&ldquo;</div>
+        <blockquote class="sc-quote-text" data-el="1" style="font-size:${size}px">${esc(text)}</blockquote>
+      </div>
     </div>`,
     anims: [
       { s: i, e: 0, k: "pop", t: times[0], d: ENTER, v: 0.7 },
-      { s: i, e: 1, k: "rise", t: times[0] + 0.12, d: ENTER, v: 26 },
+      { s: i, e: 1, k: "split-reveal", t: times[0] + 0.12, d: 0.56, v: 26 },
       // A quote card can be on screen for ten seconds while the line is read: it drifts closer the whole time.
       { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: DRIFT_SCALE },
     ],
@@ -443,7 +508,13 @@ function iconConcept(scene: Scene, i: number): RenderedScene {
   const maxLabelLen = Math.max(8, ...labels.map((l) => l.length));
   const labelSize = fitSize(maxLabelLen, 36, 24, 0.34);
   const syncPhrases = labels.length === icons.length ? labels : icons.map((ic) => ic.query);
-  const times = syncPhrasesToWords(syncPhrases, scene.words, scene.start, scene.end - scene.start);
+  const rawTimes = syncPhrasesToWords(syncPhrases, scene.words, scene.start, scene.end - scene.start);
+  const times: number[] = [];
+  rawTimes.forEach((rt, k) => {
+    const floor = k === 0 ? scene.start : times[k - 1] + 0.34;
+    const cap = k === 0 ? scene.start + 0.35 : times[k - 1] + 0.65;
+    times.push(Math.max(floor, Math.min(cap, rt)));
+  });
   const threeEl = (k: number) => icons.length + k;
   const shapes = icons.map((icon) => shapeForIcon(icon));
   const cells = icons
@@ -457,7 +528,7 @@ function iconConcept(scene: Scene, i: number): RenderedScene {
       </div>`,
     )
     .join("");
-  const anims: SceneAnim[] = icons.map((_, k) => ({ s: i, e: k, k: "pop" as const, t: times[k], d: ENTER, v: 0.68 }));
+  const anims: SceneAnim[] = icons.map((_, k) => ({ s: i, e: k, k: "spring-card" as const, t: times[k], d: 0.56, v: 0.82 }));
   icons.forEach((_icon, k) => {
     const shape = shapes[k];
     if (!shape) return;
@@ -473,8 +544,9 @@ function iconConcept(scene: Scene, i: number): RenderedScene {
   if (icons.length > 1) {
     anims.push({ s: i, e: railEl, k: "wipe", t: Math.max(scene.start, times[0] + 0.08), d: Math.min(0.65, Math.max(0.3, times[times.length - 1] - times[0] + 0.25)) });
   }
+  anims.push({ s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.045 });
   return {
-    markup: `<div class="sc-icons-wrap">${railMarkup}<div class="sc-icons sc-cols-${icons.length}">${cells}</div></div>`,
+    markup: `<div class="sc-icons-wrap" data-drift>${railMarkup}<div class="sc-icons sc-cols-${icons.length}">${cells}</div></div>`,
     anims,
   };
 }
@@ -493,19 +565,20 @@ function comparison(scene: Scene, i: number): RenderedScene {
   const side = (label: string, icon: SceneIcon | undefined, el: number, variant: "a" | "b") =>
     `<div class="sc-side sc-side-${variant}" data-el="${el}">
       <div class="sc-side-bar sc-side-bar-${variant}"></div>
-      ${icon ? `<div class="sc-side-icon">${iconSvg(icon, 108)}</div>` : ""}
+      ${icon ? `<div class="sc-side-icon"><div class="sc-side-icon-ring sc-side-icon-ring-${variant}">${iconSvg(icon, 96)}</div></div>` : ""}
       <div class="sc-side-label" style="font-size:${labelSize}px">${esc(label)}</div>
     </div>`;
   return {
-    markup: `<div class="sc-compare">
+    markup: `<div class="sc-compare" data-drift>
       ${side(left, icons[0], 0, "a")}
       <div class="sc-vs-badge" data-el="1"><span class="sc-vs">vs</span></div>
       ${side(right, icons[1], 2, "b")}
     </div>`,
     anims: [
-      { s: i, e: 0, k: "slide-x", t: leftT, d: ENTER, v: -28 },
-      { s: i, e: 1, k: "pop", t: vsT, d: 0.36, v: 0.58 },
-      { s: i, e: 2, k: "slide-x", t: rightT, d: ENTER, v: 28 },
+      { s: i, e: 0, k: "whip-pan", t: leftT, d: 0.48, v: -44 },
+      { s: i, e: 1, k: "spring-card", t: vsT, d: 0.44, v: 0.62 },
+      { s: i, e: 2, k: "whip-pan", t: rightT, d: 0.48, v: 44 },
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.045 },
     ],
   };
 }
@@ -513,7 +586,13 @@ function comparison(scene: Scene, i: number): RenderedScene {
 function steps(scene: Scene, i: number): RenderedScene {
   const items = scene.steps ?? [];
   const dur = Math.max(0.6, scene.end - scene.start);
-  const times = syncPhrasesToWords(items, scene.words, scene.start + 0.08, dur);
+  const rawTimes = syncPhrasesToWords(items, scene.words, scene.start + 0.08, dur);
+  const times: number[] = [];
+  rawTimes.forEach((rt, k) => {
+    const floor = k === 0 ? scene.start + 0.08 : times[k - 1] + 0.32;
+    const cap = k === 0 ? scene.start + 0.32 : times[k - 1] + 0.55;
+    times.push(Math.max(floor, Math.min(cap, rt)));
+  });
   const maxLen = Math.max(10, ...items.map((s) => s.length));
   const textSize = fitSize(maxLen, 38, 26, 0.26);
   const headingText = (scene.concept ?? "")
@@ -538,13 +617,14 @@ function steps(scene: Scene, i: number): RenderedScene {
       ? Math.max(0.45, Math.min(1.4, (times[times.length - 1] ?? scene.start + 0.6) - scene.start + 0.25))
       : 0.5;
   return {
-    markup: `<div class="sc-steps">${headingText ? `<div class="sc-heading" data-el="${headingEl}" style="font-size:${headingSize}px">${esc(headingText)}</div>` : ""}<div class="sc-steps-track">${connector}${rows}</div></div>`,
+    markup: `<div class="sc-steps" data-drift>${headingText ? `<div class="sc-heading" data-el="${headingEl}" style="font-size:${headingSize}px">${esc(headingText)}</div>` : ""}<div class="sc-steps-track">${connector}${rows}</div></div>`,
     anims: [
-      ...items.map((_, k) => ({ s: i, e: k, k: "reveal" as const, t: times[k], d: 0.46, v: 24 })),
-      ...(headingText ? [{ s: i, e: headingEl, k: "reveal" as const, t: scene.start, d: 0.36, v: 14 }] : []),
+      ...items.map((_, k) => ({ s: i, e: k, k: "spring-card" as const, t: times[k], d: 0.5, v: 0.88 })),
+      ...(headingText ? [{ s: i, e: headingEl, k: "split-reveal" as const, t: scene.start, d: 0.38, v: 16 }] : []),
       ...(items.length > 1
         ? [{ s: i, e: connectorEl, k: "grow" as const, t: Math.max(scene.start, times[0] - 0.04), d: connectorDur }]
         : []),
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.045 },
     ],
   };
 }
@@ -569,13 +649,14 @@ function timeline(scene: Scene, i: number): RenderedScene {
   const axisEl = items.length;
   const axisDur = Math.max(0.5, Math.min(1.4, (times[times.length - 1] ?? scene.start + 0.7) - scene.start + 0.25));
   return {
-    markup: `<div class="sc-timeline">
+    markup: `<div class="sc-timeline" data-drift>
       <div class="sc-tl-axis" data-el="${axisEl}"></div>
       ${rows}
     </div>`,
     anims: [
       { s: i, e: axisEl, k: "grow", t: scene.start, d: axisDur },
       ...items.map((_, k) => ({ s: i, e: k, k: "slide-x" as const, t: times[k], d: 0.44, v: 24 })),
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.045 },
     ],
   };
 }
@@ -642,7 +723,7 @@ function growthCurve(scene: Scene, i: number): RenderedScene {
   const head = xy[xy.length - 1] ?? { x: CURVE.w, y: 0 };
 
   return {
-    markup: `<div class="sc-curve">
+    markup: `<div class="sc-curve" data-drift>
       ${label ? `<div class="sc-curve-label" data-el="2" style="font-size:${labelSize}px">${esc(label)}</div>` : ""}
       <svg class="sc-curve-svg" viewBox="-16 -18 ${CURVE.w + 32} ${CURVE.h + 34}" width="${CURVE.w + 32}" height="${CURVE.h + 34}" fill="none" aria-hidden="true">
         <defs>
@@ -665,10 +746,11 @@ function growthCurve(scene: Scene, i: number): RenderedScene {
     </div>`,
     anims: [
       { s: i, e: 0, k: "draw", t: drawStart, d: Math.max(0.2, drawEnd - drawStart), v: dash },
-      { s: i, e: 1, k: "pop", t: drawEnd, d: 0.38, v: 0.25 },
+      { s: i, e: 1, k: "spring-card", t: drawEnd, d: 0.42, v: 0.35 },
       { s: i, e: 3, k: "in", t: Math.max(drawStart + 0.2, drawEnd), d: 0.55 },
       ...midNodes.map((n) => n.anim),
-      ...(label ? [{ s: i, e: 2, k: "reveal" as const, t: scene.start, d: 0.4, v: 14 }] : []),
+      ...(label ? [{ s: i, e: 2, k: "split-reveal" as const, t: scene.start, d: 0.4, v: 14 }] : []),
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.04 },
     ],
   };
 }
@@ -714,7 +796,7 @@ function stat(scene: Scene, i: number): RenderedScene {
     ? `<span class="sc-stat-count" data-el="3">${esc(count.prefix)}0${esc(count.suffix)}</span>`
     : esc(value);
   return {
-    markup: `<div class="sc-stat">
+    markup: `<div class="sc-stat" data-drift>
       <div class="sc-stat-card">
         <div class="sc-stat-value" data-el="0" style="font-size:${size}px">${valueMarkup}</div>
         <div class="sc-stat-track"><div class="sc-stat-rule" data-el="2" style="width:${fillShare}%"></div></div>
@@ -722,9 +804,9 @@ function stat(scene: Scene, i: number): RenderedScene {
       </div>
     </div>`,
     anims: [
-      { s: i, e: 0, k: "pop", t: valueStart, d: 0.48, v: 0.72 },
+      { s: i, e: 0, k: "spring-card", t: valueStart, d: 0.52, v: 0.78 },
       { s: i, e: 2, k: "wipe", t: ruleStart, d: 0.52 },
-      ...(label ? [{ s: i, e: 1, k: "reveal" as const, t: labelStart, d: 0.46, v: 20 }] : []),
+      ...(label ? [{ s: i, e: 1, k: "split-reveal" as const, t: labelStart, d: 0.46, v: 20 }] : []),
       ...(count
         ? [
             {
@@ -739,6 +821,7 @@ function stat(scene: Scene, i: number): RenderedScene {
             },
           ]
         : []),
+      { s: i, e: DRIFT_EL, k: "drift", t: scene.start, d: Math.max(1, scene.end - scene.start), v: 1.045 },
     ],
   };
 }
@@ -764,7 +847,7 @@ export function entranceFor(index: number): { k: "in" | "rise" | "pop"; v?: numb
 function transitionEntrance(
   scene: Scene,
   index: number,
-): { k: "in" | "rise" | "pop" | "reveal" | "slide-x" | "scale-soft"; v?: number } {
+): { k: "in" | "rise" | "pop" | "reveal" | "slide-x" | "scale-soft" | "whip-pan" | "spring-card"; v?: number } {
   switch (scene.transitionIn) {
     case "dissolve":
       return { k: "in" };
@@ -774,6 +857,10 @@ function transitionEntrance(
       return { k: "slide-x", v: index % 2 === 0 ? 28 : -28 };
     case "rise-wipe":
       return { k: "reveal", v: 34 };
+    case "whip-pan":
+      return { k: "whip-pan", v: index % 2 === 0 ? 56 : -56 };
+    case "spring-pop":
+      return { k: "spring-card", v: 0.88 };
     default:
       return entranceFor(index);
   }
@@ -830,13 +917,14 @@ export function renderScene(scene: Scene, rect: SceneRect, accent: string): Rend
     { s: i, e: -1, k: "out", t: Math.max(scene.start + SCENE_FADE + 0.01, scene.end), d: SCENE_FADE },
   ];
   const r = cine ? FULL_FRAME : rect;
+  const hasPlate = Boolean(cine ? scene.cine?.plate : scene.bgImageSrc);
   const bgPlateMarkup =
     !cine && scene.bgImageSrc
       ? `<div class="sc-bg-plate" style="left:${-r.x}px;top:${-r.y}px;width:1080px;height:1920px"><img src="${esc(scene.bgImageSrc)}" alt="" /><div class="sc-bg-scrim"></div></div>`
       : "";
 
   return {
-    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${bgPlateMarkup}${body.markup}</div>`,
+    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}${hasPlate ? " sc-has-plate" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${bgPlateMarkup}${body.markup}</div>`,
     anims: [...layerAnims, ...body.anims],
   };
 }
@@ -881,6 +969,8 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   // which is exactly how .sc-step-t and .sc-side-label ended up invisible. See
   // the note above .sc-side below.
   const cardInk = isLightPalette(p.cardFace) ? p.ink : p.hookInk;
+  const plateScrimColor = light ? p.ink : p.backdropDeep;
+  const plateTextInk = light ? p.cardFace : ink;
   return `
   /* --- scene stack (Phase 3C) ---------------------------------------------
      One layer per non-book scene, in the card's own rectangle. Layers rest
@@ -892,8 +982,8 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
         font-family: Inter, system-ui, sans-serif; color:${p.hookInk}; }
   .sc > * { width:100%; position:relative; }
   .sc > .sc-bg-plate { position:absolute; pointer-events:none; overflow:hidden; }
-  .sc-bg-plate img { display:block; width:100%; height:100%; object-fit:cover; filter:blur(15px) saturate(1.26) contrast(1.08); transform:scale(1.08); opacity:0.78; }
-  .sc-bg-scrim { position:absolute; inset:0; background:radial-gradient(95% 78% at 50% 45%, ${alpha(p.backdropDeep, light ? 0.44 : 0.48)} 0%, ${alpha(p.backdropDeep, light ? 0.78 : 0.82)} 100%); }
+  .sc-bg-plate img { display:block; width:100%; height:100%; object-fit:cover; filter:blur(5px) saturate(1.28) contrast(1.12); transform:scale(1.06); opacity:0.88; }
+  .sc-bg-scrim { position:absolute; inset:0; background:radial-gradient(95% 78% at 50% 45%, ${alpha(plateScrimColor, 0.36)} 0%, ${alpha(plateScrimColor, 0.78)} 100%); }
   .sc [data-el] { opacity:0; visibility:hidden; }
 
   /* The content-aware glow: one element, one colour tween per scene, sitting
@@ -917,25 +1007,32 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .sc-word-emph { color:${p.accent}; font-size:1.15em; padding:0 0.08em; border-radius:8px;
                   background:linear-gradient(180deg, transparent 68%, ${alpha(p.accent, light ? 0.16 : 0.22)} 68%); }
 
-  /* quote — the book's own words */
-  .sc-quote { text-align:center; padding:0 28px; max-width:810px; margin:0 auto; }
-  .sc-quote-mark { font-size:176px; line-height:0.6; color:${p.accent}; font-family:Georgia, serif; }
-  .sc-quote-text { margin:32px 0 0; font-weight:600; line-height:1.32; font-family:Georgia, "Times New Roman", serif;
-                   font-style:italic; }
+  /* quote — the book's own words, framed in an editorial cinema card */
+  .sc-quote { text-align:center; padding:0 24px; max-width:830px; margin:0 auto; }
+  .sc-quote-card { position:relative; padding:56px 46px 50px; border-radius:36px; overflow:hidden;
+                   background:${alpha(p.cardFace, light ? 0.94 : 0.88)};
+                   box-shadow:0 38px 90px -26px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}, inset 0 2px 0 ${alpha(p.accent, 0.32)}; }
+  .sc-quote-bar { position:absolute; left:34%; right:34%; top:0; height:6px; border-radius:0 0 6px 6px;
+                  background:${p.accent}; }
+  .sc-quote-mark { font-size:152px; line-height:0.58; color:${p.accent}; font-family:Georgia, serif; }
+  .sc-quote-text { margin:26px 0 0; font-weight:600; line-height:1.34; font-family:Georgia, "Times New Roman", serif;
+                   font-style:italic; color:${cardInk}; }
 
   /* icon concept — modular infographic diagram with optional Three.js accents */
-  .sc-icons-wrap { position:relative; max-width:810px; margin:0 auto; }
-  .sc-icons-rail { position:absolute; left:14%; right:14%; height:4px; border-radius:2px;
-                   background:${alpha(p.accent, 0.38)}; transform:scaleX(0); transform-origin:left center; }
+  .sc-icons-wrap { position:relative; max-width:820px; margin:0 auto; }
+  .sc-icons-rail { position:absolute; left:16%; right:16%; height:4px; border-radius:2px;
+                   background:${alpha(p.accent, 0.45)}; transform:scaleX(0); transform-origin:left center; }
   .sc-icons { position:relative; display:flex; align-items:flex-start; justify-content:center; gap:32px; }
   .sc-cell { display:flex; flex-direction:column; align-items:center; gap:22px; flex:1 1 0; min-width:0; }
   .sc-icon-well { position:relative; width:var(--sz); height:var(--sz); border-radius:36px;
                   display:flex; align-items:center; justify-content:center;
                   background:${p.cardFace};
-                  box-shadow:0 28px 68px -28px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}, inset 0 1px 0 ${alpha(p.accent, 0.16)}; }
-  .sc-cell-label { font-size:34px; font-weight:800; text-align:center; line-height:1.2; max-width:236px;
+                  box-shadow:0 30px 72px -26px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}, inset 0 1.5px 0 ${alpha(p.accent, 0.24)}; }
+  .sc-icon-well .sc-icon { position:relative; z-index:2; }
+  .sc-cell-label { font-size:34px; font-weight:800; text-align:center; line-height:1.2; max-width:248px;
                    color:${ink}; overflow-wrap:break-word; }
-  .sc [data-el].sc-three { position:absolute; inset:22%; width:56%; height:56%; }
+  .sc-has-plate .sc-cell-label { color:${plateTextInk}; text-shadow:0 3px 18px ${alpha(plateScrimColor, 0.88)}; }
+  .sc [data-el].sc-three { position:absolute; inset:10%; width:80%; height:80%; z-index:1; pointer-events:none; }
 
   /* comparison — balanced documentary contrast with visual hierarchy */
   .sc-compare { display:flex; align-items:stretch; justify-content:center; gap:20px; max-width:810px; margin:0 auto; }
@@ -945,9 +1042,12 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
              box-shadow:0 28px 66px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
   .sc-side-b { box-shadow:0 32px 74px -28px ${p.cardShadow}, 0 0 0 2px ${alpha(p.accent, 0.68)}; }
   .sc-side-bar { position:absolute; left:24px; right:24px; top:0; height:6px; border-radius:0 0 6px 6px; }
-  .sc-side-bar-a { background:${alpha(p.bylineInk, 0.35)}; }
+  .sc-side-bar-a { background:${alpha(cardInk, 0.36)}; }
   .sc-side-bar-b { background:${p.accent}; }
-  .sc-side-a .sc-icon { color:${p.bylineInk}; }
+  .sc-side-icon-ring { width:144px; height:144px; border-radius:36px; display:flex; align-items:center; justify-content:center; }
+  .sc-side-icon-ring-a { background:${alpha(cardInk, 0.08)}; box-shadow:inset 0 0 0 1.5px ${alpha(cardInk, 0.2)}; }
+  .sc-side-icon-ring-b { background:${alpha(p.accent, light ? 0.14 : 0.2)}; box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.45)}; }
+  .sc-side-a .sc-icon { color:${alpha(cardInk, 0.72)}; }
   .sc-side-b .sc-icon { color:${p.accent}; }
   .sc-side-label { font-size:36px; font-weight:800; text-align:center; line-height:1.22; color:${cardInk};
                    max-width:100%; overflow-wrap:break-word; }
@@ -965,7 +1065,7 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
                 color:${p.accent}; text-align:center; margin-bottom:6px; }
   .sc-step { position:relative; display:flex; align-items:center; gap:26px; padding:24px 28px; border-radius:26px;
              background:${p.cardFace};
-             box-shadow:0 22px 54px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+             box-shadow:0 24px 58px -28px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}, inset 0 1.5px 0 ${alpha(p.accent, 0.24)}; }
   .sc-step-n { flex:0 0 auto; width:68px; height:68px; border-radius:20px; background:${p.accent};
                color:${p.ctaFace}; font-size:34px; font-weight:800; font-variant-numeric:tabular-nums;
                display:flex; align-items:center; justify-content:center; }
@@ -1013,7 +1113,7 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   /* stat — documentary figure card with tabular counter & precision bar */
   .sc-stat { text-align:center; max-width:780px; margin:0 auto; }
   .sc-stat-card { padding:54px 48px 48px; border-radius:36px; background:${p.cardFace};
-                  box-shadow:0 32px 78px -30px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}; }
+                  box-shadow:0 34px 82px -28px ${p.cardShadow}, 0 0 0 1px ${p.cardEdge}, inset 0 2px 0 ${alpha(p.accent, 0.28)}; }
   .sc-stat-value { font-weight:900; line-height:0.98; letter-spacing:-4px; color:${p.accent};
                    font-variant-numeric:tabular-nums; }
   .sc [data-el].sc-stat-count { opacity:1; visibility:visible; font-variant-numeric:tabular-nums; }
@@ -1037,25 +1137,105 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .cine-plate-src { position:absolute; left:0; top:0; width:1px; height:1px; opacity:0; pointer-events:none; }
   .cine-video { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; object-fit:cover; filter:contrast(1.08) saturate(1.18) brightness(1.04); }
   .cine-plate-scrim { position:absolute; inset:0; pointer-events:none;
-                      background: linear-gradient(180deg, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.6 : 0.62)} 0%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.02 : 0.03)} 34%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.03 : 0.05)} 66%, ${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.74 : 0.76)} 100%); }
+                      background: linear-gradient(180deg, ${alpha(plateScrimColor, 0.78)} 0%, ${alpha(plateScrimColor, 0.34)} 30%, ${alpha(plateScrimColor, 0.12)} 56%, ${alpha(plateScrimColor, 0.82)} 100%); }
   .cine-fallback { position:absolute; left:140px; top:640px; width:800px; height:800px; border-radius:50%;
                    background: radial-gradient(circle, ${alpha(p.accent, 0.4)} 0%, ${alpha(p.accent, 0.14)} 46%, transparent 70%);
                    box-shadow: inset 0 0 0 3px ${alpha(p.accent, 0.35)}, 0 0 0 80px ${alpha(p.accent, 0.06)}; }
   .cine-text { position:absolute; left:130px; right:130px; top:264px; text-align:center; font-family: Inter, system-ui, sans-serif; }
-  .cine-callout { display:inline-block; margin-bottom:18px; padding:10px 24px; border-radius:999px;
-                  font-size:26px; font-weight:800; letter-spacing:2.2px; text-transform:uppercase;
-                  color:${key}; background:${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.82 : 0.68)};
-                  box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.48)}; }
+  .cine-callout { display:inline-block; margin-bottom:18px; padding:10px 26px; border-radius:999px;
+                  font-size:26px; font-weight:800; letter-spacing:2.4px; text-transform:uppercase;
+                  color:${key}; background:${alpha(plateScrimColor, 0.74)};
+                  box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.55)}; }
   .cine-lead { display:block; font-size:40px; font-weight:600; line-height:1.22; letter-spacing:0.8px;
                color:${ink}; margin-bottom:12px; ${light ? `text-shadow:0 2px 20px ${alpha(p.cardFace, 0.94)};` : `text-shadow:0 4px 26px ${alpha(p.backdropDeep, 0.85)};`} }
+  .sc-has-plate .cine-lead { color:${plateTextInk}; text-shadow:0 4px 28px ${alpha(plateScrimColor, 0.9)}; }
   .cine-key { font-weight:900; text-transform:uppercase; line-height:0.98; letter-spacing:-2px; color:${key};
               max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; ${light ? `text-shadow:0 2px 24px ${alpha(p.cardFace, 0.92)}, 0 8px 26px ${alpha(p.accent, 0.18)};` : `text-shadow:0 0 42px ${alpha(p.accent, 0.52)}, 0 6px 28px ${alpha(p.backdropDeep, 0.75)};`} }
+  .sc-has-plate .cine-key { text-shadow:0 0 40px ${alpha(p.accent, 0.5)}, 0 6px 30px ${alpha(plateScrimColor, 0.88)}; }
   .cine-letter { display:inline-block; }
   .cine-space { display:inline-block; width:0.3em; }
-  .cine-hook { position:absolute; left:130px; right:130px; top:252px; text-align:center; font-weight:800; line-height:1.15;
-               letter-spacing:-0.5px; font-family: Inter, system-ui, sans-serif; color:${ink};
-               ${light ? `text-shadow:0 2px 24px ${alpha(p.cardFace, 0.95)}, 0 0 10px ${alpha(p.cardFace, 0.9)};` : `text-shadow:0 4px 32px ${alpha(p.backdropDeep, 0.88)};`} }
-  .cine-hook .sc-word-emph { color:${key}; background:none; padding:0; ${light ? "" : `text-shadow:0 0 36px ${alpha(p.accent, 0.5)};`} }
+  .cine-hook { position:absolute; left:130px; right:130px; top:258px; text-align:center; font-weight:900; line-height:1.18;
+               letter-spacing:-0.8px; font-family: Inter, system-ui, sans-serif; color:${ink};
+               padding:32px 34px 28px; border-radius:30px;
+               background:${alpha(light ? p.cardFace : p.backdropDeep, light ? 0.88 : 0.72)};
+               box-shadow:0 28px 72px -20px ${p.cardShadow}, inset 0 0 0 1.5px ${alpha(p.accent, 0.36)};
+               ${light ? "" : `text-shadow:0 4px 24px ${alpha(p.backdropDeep, 0.9)};`} }
+  .sc-has-plate .cine-hook { color:${plateTextInk}; background:${alpha(plateScrimColor, 0.78)};
+                             backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+                             box-shadow:0 32px 84px -18px ${p.cardShadow}, inset 0 0 0 1.5px ${alpha(p.accent, 0.48)};
+                             text-shadow:0 4px 26px ${alpha(plateScrimColor, 0.94)}; }
+  .cine-hook-bar { width:84px; height:5px; border-radius:99px; background:${p.accent}; margin:0 auto 20px; }
+  .cine-hook-row { display:block; text-align:center; margin-bottom:4px; }
+  .cine-hook .sc-word { margin:0 0.12em 0.08em; }
+  .cine-hook .sc-word-emph { color:${key}; background:${alpha(p.accent, light ? 0.14 : 0.2)}; padding:2px 10px; border-radius:10px; font-size:1.06em; }
+  .sc-has-plate .cine-hook .sc-word-emph { color:${p.accent}; background:${alpha(p.accent, 0.22)}; box-shadow:inset 0 0 0 1px ${alpha(p.accent, 0.4)}; }
+  .cine-vec-backdrop { position:absolute; inset:0; pointer-events:none;
+                       background: radial-gradient(64% 42% at 50% 58%, ${alpha(p.accent, light ? 0.12 : 0.18)} 0%, transparent 72%); }
+  .cine-vec-wrap { position:absolute; left:180px; top:730px; width:720px; height:520px; pointer-events:none; }
+  .cine-vec-svg { display:block; width:100%; height:100%; overflow:visible; }
+  .vec-guide { stroke:${alpha(ink, 0.16)}; stroke-width:2; stroke-linecap:round; }
+  .vec-stroke-dim { stroke:${alpha(ink, 0.42)}; stroke-width:4.5; stroke-linecap:round; stroke-linejoin:round; }
+  .vec-stroke-accent { stroke:${p.accent}; stroke-width:6.5; stroke-linecap:round; stroke-linejoin:round; }
+  .vec-stroke-bright { stroke:${ink}; stroke-width:5; stroke-linecap:round; stroke-linejoin:round; }
+  .vec-node-dim { fill:${p.cardFace}; stroke:${alpha(ink, 0.55)}; stroke-width:4; transform-box:fill-box; transform-origin:center; }
+  .vec-node-accent { fill:${p.cardFace}; stroke:${p.accent}; stroke-width:5; transform-box:fill-box; transform-origin:center; }
+  .vec-node-core { fill:${p.accent}; stroke:${p.cardFace}; stroke-width:4; transform-box:fill-box; transform-origin:center; }
+
+  /* --- Ultra-Pro Creator Interactive Motion Models (pro-stage.ts) --------- */
+  .pro-stage { position:absolute; left:120px; top:646px; width:840px; height:690px;
+               display:flex; flex-direction:column; justify-content:center; gap:20px; pointer-events:none; }
+  .pro-card { width:100%; padding:30px 34px; border-radius:28px; background:${p.cardFace};
+              box-shadow:0 32px 76px -22px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}; }
+  .pro-card-hdr { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
+  .pro-kicker { font-size:22px; font-weight:800; letter-spacing:2.2px; text-transform:uppercase; color:${alpha(cardInk, 0.72)}; }
+  .pro-pill { padding:8px 18px; border-radius:999px; font-size:21px; font-weight:900; letter-spacing:1.4px; text-transform:uppercase;
+              background:${alpha(p.accent, 0.18)}; color:${p.accent}; box-shadow:inset 0 0 0 1.5px ${alpha(p.accent, 0.5)}; }
+  .pro-day-grid { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:12px; margin-bottom:24px; }
+  .pro-day { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
+             padding:16px 6px; border-radius:18px; background:${alpha(cardInk, 0.06)};
+             box-shadow:inset 0 0 0 1.5px ${alpha(cardInk, 0.16)}; color:${cardInk}; }
+  .pro-day-warn { background:${alpha(p.accent, 0.2)}; color:${p.accent}; box-shadow:inset 0 0 0 2px ${p.accent}; }
+  .pro-day-lbl { font-size:19px; font-weight:800; letter-spacing:1px; }
+  .pro-day-ico { display:flex; align-items:center; justify-content:center; width:36px; height:36px; }
+  .pro-meter-track { width:100%; height:16px; border-radius:999px; background:${alpha(cardInk, 0.12)}; overflow:hidden; margin-bottom:22px; }
+  .pro-meter-fill { height:100%; border-radius:999px; background:${p.accent}; transform:scaleX(0); transform-origin:left center; }
+  .pro-callout-row { display:flex; align-items:center; gap:16px; padding:14px 18px; border-radius:16px;
+                     background:${alpha(cardInk, 0.06)}; box-shadow:inset 0 0 0 1px ${alpha(cardInk, 0.14)}; }
+  .pro-tag-warn { flex:0 0 auto; padding:6px 14px; border-radius:10px; font-size:19px; font-weight:900; letter-spacing:1.2px;
+                  background:${p.accent}; color:${p.ctaFace}; text-transform:uppercase; }
+  .pro-callout-txt { font-size:26px; font-weight:700; line-height:1.2; color:${cardInk}; }
+  .pro-bento-row { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .pro-mini-card { display:flex; flex-direction:column; gap:6px; padding:20px 26px; border-radius:22px;
+                   background:${p.cardFace}; box-shadow:0 22px 54px -20px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}; }
+  .pro-mini-kicker { font-size:18px; font-weight:800; letter-spacing:2px; color:${p.accent}; text-transform:uppercase; }
+  .pro-mini-title { font-size:32px; font-weight:800; color:${cardInk}; }
+  .pro-route-svg { display:block; width:100%; height:auto; overflow:visible; }
+  .pro-svg-grid { stroke:${alpha(cardInk, 0.16)}; stroke-width:2; stroke-linecap:round; }
+  .pro-svg-muted-dash { stroke:${alpha(cardInk, 0.34)}; stroke-width:4; stroke-dasharray:10 10; stroke-linecap:round; }
+  .pro-svg-hero-line { stroke:${p.accent}; stroke-width:7; stroke-linecap:round; stroke-linejoin:round; }
+  .pro-svg-panel { fill:${alpha(cardInk, 0.07)}; stroke:${alpha(cardInk, 0.32)}; stroke-width:2.5; }
+  .pro-node-block { fill:${alpha(p.accent, 0.22)}; stroke:${p.accent}; stroke-width:3; }
+  .pro-node-ok { fill:${p.cardFace}; stroke:${cardInk}; stroke-width:5; }
+  .pro-node-warn { fill:${p.accent}; stroke:${p.cardFace}; stroke-width:4; }
+  .pro-node-goal { fill:${p.accent}; stroke:${p.cardFace}; stroke-width:5; }
+  .pro-svg-lbl { fill:${cardInk}; font-size:21px; font-weight:800; letter-spacing:1.4px; }
+  .pro-svg-lbl-warn { fill:${p.accent}; font-size:22px; font-weight:900; letter-spacing:1.5px; }
+  .pro-svg-lbl-ok { fill:${key}; font-size:22px; font-weight:900; letter-spacing:1.5px; }
+  .pro-svg-big { fill:${p.accent}; font-size:64px; font-weight:900; letter-spacing:-2px; }
+  .pro-svg-tag-warn { fill:${p.accent}; }
+  .pro-svg-tag-ok { fill:${p.accent}; }
+  .pro-svg-tag-txt { fill:${p.ctaFace}; font-size:18px; font-weight:900; letter-spacing:1.2px; }
+  .pro-crowd-dot { fill:${alpha(cardInk, 0.55)}; }
+  .pro-dossier-tl { position:relative; }
+  .pro-tl-thread { position:absolute; left:0; top:70px; width:240px; height:500px; pointer-events:none; }
+  .pro-ev-stack { display:flex; flex-direction:column; gap:20px; position:relative; }
+  .pro-ev-card { display:flex; align-items:center; gap:22px; padding:22px 26px; border-radius:20px;
+                 background:${p.cardFace}; box-shadow:0 24px 56px -22px ${p.cardShadow}, 0 0 0 1.5px ${p.cardEdge}; }
+  .pro-ev-pin { flex:0 0 auto; min-width:116px; text-align:center; padding:12px 16px; border-radius:12px;
+                background:${p.accent}; color:${p.ctaFace}; font-size:24px; font-weight:900; letter-spacing:1.6px; }
+  .pro-ev-body { display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .pro-ev-title { font-size:32px; font-weight:800; line-height:1.18; color:${cardInk}; }
+  .pro-ev-sub { font-size:24px; font-weight:600; line-height:1.24; color:${alpha(cardInk, 0.76)}; }
 `;
 }
 
