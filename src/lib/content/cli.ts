@@ -760,39 +760,51 @@ function imageMimeType(filePath: string): string {
   return "image/jpeg";
 }
 
-export const GEMINI_HTTP_ATTEMPT_TIMEOUT_MS = 45_000;
+export const GEMINI_HTTP_ATTEMPT_TIMEOUT_MS = 60_000;
 
 export const GEMINI_MODEL_POOL: readonly string[] = [
-  "gemini-3.6-flash",
   "gemini-3.5-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3.1-flash-lite",
-  "gemini-flash-lite-latest",
+  "gemini-3-flash-preview",
   "gemini-3.8-flash",
   "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-lite-latest",
   "gemini-4-argon",
-  "gemini-3.1-pro-preview",
+  "gemini-4-hydrogen",
+  "gemini-4-neon",
+  "gemini-4-carbon",
 ];
 
 const exhaustedGeminiModels = new Map<string, number>();
+const dailyExhaustedModels = new Map<string, number>();
 let lastGeminiApiKey: string | null = null;
 
 export function resetGeminiModelCooldowns(): void {
   exhaustedGeminiModels.clear();
+  dailyExhaustedModels.clear();
 }
 
 function orderedGeminiCandidates(primaryModel: string, apiKey: string): string[] {
   if (lastGeminiApiKey !== apiKey) {
     exhaustedGeminiModels.clear();
+    dailyExhaustedModels.clear();
     lastGeminiApiKey = apiKey;
   }
   const now = Date.now();
   for (const [m, until] of exhaustedGeminiModels.entries()) {
     if (until <= now) exhaustedGeminiModels.delete(m);
   }
+  for (const [m, until] of dailyExhaustedModels.entries()) {
+    if (until <= now) dailyExhaustedModels.delete(m);
+  }
   const all = [primaryModel, ...GEMINI_MODEL_POOL.filter((m) => m !== primaryModel)];
-  const active = all.filter((m) => !exhaustedGeminiModels.has(m));
-  const cooled = all.filter((m) => exhaustedGeminiModels.has(m));
+  const nonDaily = all.filter((m) => !dailyExhaustedModels.has(m));
+  const pool = nonDaily.length > 0 ? nonDaily : all;
+  const active = pool.filter((m) => !exhaustedGeminiModels.has(m));
+  const cooled = pool
+    .filter((m) => exhaustedGeminiModels.has(m))
+    .sort((a, b) => (exhaustedGeminiModels.get(a) ?? 0) - (exhaustedGeminiModels.get(b) ?? 0));
   return [...active, ...cooled];
 }
 
@@ -834,133 +846,158 @@ export async function runGemini(
       parts.push({ text: user });
 
       const wantsJson = Boolean(imagePaths?.length) || /JSON|json-schema|Respond with ONLY a JSON/i.test(system);
-      const baseUrl = (process.env.GEMINI_API_BASE_URL?.trim() || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
-      const candidateModels = orderedGeminiCandidates(geminiModel, apiKey);
+      const customBaseUrl = process.env.GEMINI_API_BASE_URL?.trim();
+      const baseUrl = (customBaseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
       let lastError: Error | null = null;
+      const maxWaves = customBaseUrl ? 1 : 3;
 
-      for (const candidateModel of candidateModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
+      for (let wave = 0; wave < maxWaves; wave++) {
+        if (wave > 0) {
           if (cancel.signal?.aborted || wasCancelled()) throw new CancelledError();
+          await new Promise((r) => setTimeout(r, wave * 4_500));
+        }
+        const candidateModels = orderedGeminiCandidates(geminiModel, apiKey);
+        let sawTransientCapacityError = false;
 
-          const url = `${baseUrl}/models/${encodeURIComponent(candidateModel)}:generateContent`;
-          const timeoutSignal = AbortSignal.timeout(Math.min(ceilingFor(kind), GEMINI_HTTP_ATTEMPT_TIMEOUT_MS));
-          const signal = cancel.signal ? AbortSignal.any([cancel.signal, timeoutSignal]) : timeoutSignal;
+        for (const candidateModel of candidateModels) {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            if (cancel.signal?.aborted || wasCancelled()) throw new CancelledError();
 
-          let res: Response;
-          try {
-            res = await fetch(url, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-goog-api-key": apiKey,
-              },
-              body: JSON.stringify({
-                systemInstruction: { parts: [{ text: system }] },
-                contents: [{ role: "user", parts }],
-                generationConfig: {
-                  temperature: 0.2,
-                  maxOutputTokens: 8192,
-                  ...(wantsJson ? { responseMimeType: "application/json" } : {}),
+            const url = `${baseUrl}/models/${encodeURIComponent(candidateModel)}:generateContent`;
+            const timeoutSignal = AbortSignal.timeout(Math.min(ceilingFor(kind), GEMINI_HTTP_ATTEMPT_TIMEOUT_MS));
+            const signal = cancel.signal ? AbortSignal.any([cancel.signal, timeoutSignal]) : timeoutSignal;
+
+            let res: Response;
+            try {
+              res = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-goog-api-key": apiKey,
                 },
-              }),
-              signal,
-            });
-          } catch (netErr) {
-            if (wasCancelled() || netErr instanceof CancelledError) throw new CancelledError();
-            const netMsg = netErr instanceof Error ? netErr.message : String(netErr);
-            const stalledAttempt = timeoutSignal.aborted || /timeout|aborted/i.test(netMsg);
-            lastError = new CliError(`Gemini request failed (${candidateModel}): ${netMsg.slice(0, 300)}`);
-            if (stalledAttempt) {
-              exhaustedGeminiModels.set(candidateModel, Date.now() + 15 * 60_000);
-              break;
-            }
-            if (attempt === 0) {
-              await new Promise((r) => setTimeout(r, 400));
-              continue;
-            }
-            exhaustedGeminiModels.set(candidateModel, Date.now() + 60_000);
-            break;
-          }
-
-          const rawBody = await res.text();
-          let parsedBody: {
-            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
-            usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-            error?: { code?: number; message?: string; status?: string };
-          } | null = null;
-          try {
-            parsedBody = JSON.parse(rawBody);
-          } catch {
-            /* handled below */
-          }
-
-          if (!res.ok) {
-            const errDetail = parsedBody?.error?.message || rawBody.slice(0, 240) || res.statusText;
-            if (res.status === 400 || res.status === 401 || res.status === 403) {
-              throw new CliError(`Gemini authentication failed (${res.status}): ${errDetail}`);
-            }
-            lastError = new CliError(`Gemini API failed (${res.status}): ${errDetail}`);
-            if (res.status === 429 || res.status === 404) {
-              const isDailyOrNotFound =
-                res.status === 404 || /per day|free_tier_requests|Please retry in \d+h/i.test(errDetail);
-              exhaustedGeminiModels.set(
-                candidateModel,
-                Date.now() + (isDailyOrNotFound ? 15 * 60_000 : 60_000),
-              );
-              break;
-            }
-            if (res.status >= 500) {
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: system }] },
+                  contents: [{ role: "user", parts }],
+                  generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 8192,
+                    ...(wantsJson ? { responseMimeType: "application/json" } : {}),
+                  },
+                }),
+                signal,
+              });
+            } catch (netErr) {
+              if (wasCancelled() || netErr instanceof CancelledError) throw new CancelledError();
+              const netMsg = netErr instanceof Error ? netErr.message : String(netErr);
+              const stalledAttempt = timeoutSignal.aborted || /timeout|aborted/i.test(netMsg);
+              lastError = new CliError(`Gemini request failed (${candidateModel}): ${netMsg.slice(0, 300)}`);
+              sawTransientCapacityError = true;
+              if (stalledAttempt) {
+                exhaustedGeminiModels.set(candidateModel, Date.now() + 15 * 60_000);
+                break;
+              }
               if (attempt === 0) {
-                await new Promise((r) => setTimeout(r, 500));
+                await new Promise((r) => setTimeout(r, 400));
                 continue;
               }
               exhaustedGeminiModels.set(candidateModel, Date.now() + 60_000);
               break;
             }
-            throw lastError;
-          }
 
-          const text = (parsedBody?.candidates?.[0]?.content?.parts ?? [])
-            .map((p) => p.text ?? "")
-            .join("")
-            .trim();
-
-          if (!text) {
-            const reason = parsedBody?.candidates?.[0]?.finishReason ?? "empty response";
-            lastError = new CliError(`Gemini returned no content (${reason}).`);
-            if (attempt === 0) {
-              await new Promise((r) => setTimeout(r, 400));
-              continue;
-            }
-            break;
-          }
-
-          if (wantsJson) {
+            const rawBody = await res.text();
+            let parsedBody: {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+              usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+              error?: { code?: number; message?: string; status?: string };
+            } | null = null;
             try {
-              extractJson(text);
-            } catch (jsonErr) {
-              lastError =
-                jsonErr instanceof Error
-                  ? jsonErr
-                  : new CliError(`Gemini returned malformed JSON (${parsedBody?.candidates?.[0]?.finishReason ?? "truncated"}).`);
+              parsedBody = JSON.parse(rawBody);
+            } catch {
+              /* handled below */
+            }
+
+            if (!res.ok) {
+              const errDetail = parsedBody?.error?.message || rawBody.slice(0, 240) || res.statusText;
+              if (res.status === 400 || res.status === 401 || res.status === 403) {
+                throw new CliError(`Gemini authentication failed (${res.status}): ${errDetail}`);
+              }
+              const isZeroLimit = res.status === 429 && /\blimit:\s*0\b/i.test(errDetail);
+              if (!isZeroLimit || !lastError) {
+                lastError = new CliError(`Gemini API failed (${res.status}): ${errDetail}`);
+              }
+              if (res.status === 429 || res.status === 404) {
+                if (isZeroLimit || res.status === 404) {
+                  dailyExhaustedModels.set(candidateModel, Date.now() + 60 * 60_000);
+                  break;
+                }
+                const isDailyQuota = /per day|PerDay|free_tier_requests|Please retry in \d+h/i.test(errDetail);
+                if (isDailyQuota) {
+                  dailyExhaustedModels.set(candidateModel, Date.now() + 30 * 60_000);
+                } else {
+                  exhaustedGeminiModels.set(candidateModel, Date.now() + 12_000);
+                  sawTransientCapacityError = true;
+                }
+                if (!customBaseUrl) {
+                  await new Promise((r) => setTimeout(r, 550));
+                }
+                break;
+              }
+              if (res.status >= 500) {
+                sawTransientCapacityError = true;
+                if (attempt === 0) {
+                  await new Promise((r) => setTimeout(r, customBaseUrl ? 300 : 1_500));
+                  continue;
+                }
+                exhaustedGeminiModels.set(candidateModel, Date.now() + 4_000);
+                break;
+              }
+              throw lastError;
+            }
+
+            const text = (parsedBody?.candidates?.[0]?.content?.parts ?? [])
+              .map((p) => p.text ?? "")
+              .join("")
+              .trim();
+
+            if (!text) {
+              const reason = parsedBody?.candidates?.[0]?.finishReason ?? "empty response";
+              lastError = new CliError(`Gemini returned no content (${reason}).`);
               if (attempt === 0) {
                 await new Promise((r) => setTimeout(r, 400));
                 continue;
               }
               break;
             }
-          }
 
-          await recordCall(kind, Date.now() - t0, {
-            result: text,
-            usage: {
-              input_tokens: parsedBody?.usageMetadata?.promptTokenCount,
-              output_tokens: parsedBody?.usageMetadata?.candidatesTokenCount,
-            },
-            modelUsage: { [candidateModel]: {} },
-          });
-          return text;
+            if (wantsJson) {
+              try {
+                extractJson(text);
+              } catch (jsonErr) {
+                lastError =
+                  jsonErr instanceof Error
+                    ? jsonErr
+                    : new CliError(`Gemini returned malformed JSON (${parsedBody?.candidates?.[0]?.finishReason ?? "truncated"}).`);
+                if (attempt === 0) {
+                  await new Promise((r) => setTimeout(r, 400));
+                  continue;
+                }
+                break;
+              }
+            }
+
+            await recordCall(kind, Date.now() - t0, {
+              result: text,
+              usage: {
+                input_tokens: parsedBody?.usageMetadata?.promptTokenCount,
+                output_tokens: parsedBody?.usageMetadata?.candidatesTokenCount,
+              },
+              modelUsage: { [candidateModel]: {} },
+            });
+            return text;
+          }
         }
+
+        if (!sawTransientCapacityError) break;
       }
 
       throw lastError ?? new CliError("Gemini API failed across all available Gemini models.");

@@ -1,19 +1,27 @@
 /**
  * Seek-Safe HyperFrames Geometric Vector Stage (`Dan Koe` / `Minimalist Mindset` style).
  *
- * Renders razor-sharp 1080×1920 inline SVG geometric motion diagrams driven
- * exclusively by BookReel's deterministic GSAP `draw` (`strokeDashoffset`) and
- * `pop` primitives — zero CSS `@keyframes`, zero raster blur, zero hardcoded
- * colour literals (uses `currentColor` + theme palette roles only).
+ * Ships 10 distinct razor-sharp 1080×1920 inline SVG geometric motion diagrams
+ * driven exclusively by BookReel's deterministic GSAP `draw` (`strokeDashoffset`)
+ * and `spring-card` primitives — zero CSS `@keyframes`, zero raster blur, zero
+ * hardcoded colour literals (uses `currentColor` + theme palette roles only).
  */
 import type { HeroId } from "./heroes";
 
-export type VectorDiagramKind =
-  | "split-forces"
-  | "focus-reticle"
-  | "balance-deadlock"
-  | "habit-loop"
-  | "trajectory-grid";
+export const ALL_VECTOR_DIAGRAM_KINDS = [
+  "split-forces",
+  "focus-reticle",
+  "balance-deadlock",
+  "habit-loop",
+  "trajectory-grid",
+  "pendulum-swing",
+  "network-constellation",
+  "hourglass-vectors",
+  "spiral-vortex",
+  "wave-resonance",
+] as const;
+
+export type VectorDiagramKind = (typeof ALL_VECTOR_DIAGRAM_KINDS)[number];
 
 export interface VectorDiagramOutput {
   markup: string;
@@ -22,28 +30,50 @@ export interface VectorDiagramOutput {
   pops: Array<{ el: number; delaySec: number; scaleFrom: number }>;
 }
 
-export function vectorKindForHero(hero: HeroId | undefined, narration = ""): VectorDiagramKind {
+export function vectorKindForHero(
+  hero: HeroId | undefined,
+  narration = "",
+  avoid: ReadonlySet<VectorDiagramKind> = new Set(),
+  seedOffset = 0,
+): VectorDiagramKind {
   const lower = narration.toLowerCase();
-  if (/different|two|versus|between|class|compare|both/.test(lower) || hero === "dialogue") {
-    return "split-forces";
+  const candidates: VectorDiagramKind[] = [];
+
+  if (/swing|pendulum|momentum|oscillat/.test(lower)) candidates.push("pendulum-swing");
+  if (/network|connect|crowd|system|web|group/.test(lower) || hero === "network") {
+    candidates.push("network-constellation");
   }
-  if (/equal|weigh|balance|swing|alternat|paralyz|hesitat/.test(lower) || hero === "scales") {
-    return "balance-deadlock";
+  if (/time|clock|hourglass|second|fast|delay|wait/.test(lower) || hero === "clock" || hero === "hourglass") {
+    candidates.push("hourglass-vectors");
+  }
+  if (/trap|spiral|deep|pull|gravity|obsess/.test(lower) || hero === "storm") {
+    candidates.push("spiral-vortex");
+  }
+  if (/wave|rhythm|signal|pulse|emotion|calm/.test(lower) || hero === "pulse" || hero === "heart") {
+    candidates.push("wave-resonance");
+  }
+  if (/different|two|versus|between|class|compare|both/.test(lower) || hero === "dialogue") {
+    candidates.push("split-forces");
+  }
+  if (/equal|weigh|balance|alternat|paralyz|hesitat/.test(lower) || hero === "scales") {
+    candidates.push("balance-deadlock");
   }
   if (/loop|habit|repeat|automat|cycle|orbit/.test(lower) || hero === "loop" || hero === "orbit") {
-    return "habit-loop";
+    candidates.push("habit-loop");
   }
   if (/attention|focus|volition|mind|willpower|eye|stare/.test(lower) || hero === "focus" || hero === "mind") {
-    return "focus-reticle";
+    candidates.push("focus-reticle");
   }
-  return "trajectory-grid";
+  candidates.push("trajectory-grid");
+
+  for (const c of candidates) {
+    if (!avoid.has(c)) return c;
+  }
+  const unused = ALL_VECTOR_DIAGRAM_KINDS.filter((k) => !avoid.has(k));
+  const pool = unused.length > 0 ? unused : ALL_VECTOR_DIAGRAM_KINDS;
+  return pool[Math.abs(seedOffset) % pool.length];
 }
 
-/**
- * Build a crisp geometric SVG diagram occupying the lower-center visual stage
- * (`y = 660..1360`, clear of top headlines and bottom captions).
- * `baseEl` is the starting `data-el` index so no element collides with text spans.
- */
 export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): VectorDiagramOutput {
   const draws: VectorDiagramOutput["draws"] = [];
   const pops: VectorDiagramOutput["pops"] = [];
@@ -64,7 +94,6 @@ export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): Vec
   let inner = "";
 
   if (kind === "split-forces") {
-    // Two distinct geometric force rings converging into one unified core axis
     inner = [
       addPath("M 90 260 L 630 260", "vec-guide", 560, 0.04, 0.55),
       addPath("M 360 70 L 360 450", "vec-guide", 400, 0.08, 0.55),
@@ -76,7 +105,6 @@ export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): Vec
       addNode(360, 260, 16, "vec-node-core", 0.68),
     ].join("");
   } else if (kind === "focus-reticle") {
-    // Precision concentric attention target locking onto a single volition core
     inner = [
       addPath("M 360 64 L 360 456", "vec-guide", 400, 0.04, 0.5),
       addPath("M 100 260 L 620 260", "vec-guide", 530, 0.08, 0.5),
@@ -88,7 +116,6 @@ export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): Vec
       addNode(360, 436, 7, "vec-node-accent", 0.68),
     ].join("");
   } else if (kind === "balance-deadlock") {
-    // Symmetrical fulcrum & twin equal loads locking a precision beam horizontally
     inner = [
       addPath("M 120 416 L 600 416", "vec-guide", 500, 0.04, 0.5),
       addPath("M 360 416 L 318 334 L 402 334 Z", "vec-stroke-bright", 300, 0.12, 0.6),
@@ -100,7 +127,6 @@ export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): Vec
       addNode(544, 296, 18, "vec-node-core", 0.62),
     ].join("");
   } else if (kind === "habit-loop") {
-    // Closed feedback loop with 3 directional lock nodes
     inner = [
       addPath("M 360 260 m -154 0 a 154 154 0 1 0 308 0 a 154 154 0 1 0 -308 0", "vec-stroke-accent", 980, 0.08, 0.88),
       addPath("M 360 260 m -92 0 a 92 92 0 1 0 184 0 a 92 92 0 1 0 -184 0", "vec-stroke-dim", 590, 0.22, 0.74),
@@ -110,8 +136,73 @@ export function buildVectorDiagram(kind: VectorDiagramKind, baseEl: number): Vec
       addNode(493, 337, 14, "vec-node-accent", 0.48),
       addNode(227, 337, 14, "vec-node-dim", 0.62),
     ].join("");
+  } else if (kind === "pendulum-swing") {
+    inner = [
+      addPath("M 200 86 L 520 86", "vec-guide", 340, 0.04, 0.45),
+      addPath("M 176 346 A 260 260 0 0 0 544 346", "vec-stroke-dim", 460, 0.12, 0.7),
+      addPath("M 360 86 L 214 338", "vec-guide", 310, 0.2, 0.5),
+      addPath("M 360 86 L 496 342", "vec-stroke-accent", 310, 0.34, 0.68),
+      addNode(360, 86, 12, "vec-node-bright" in ({} as never) ? "vec-node-core" : "vec-node-dim", 0.16),
+      addNode(214, 338, 16, "vec-node-dim", 0.42),
+      addNode(496, 342, 24, "vec-node-core", 0.66),
+    ].join("");
+  } else if (kind === "network-constellation") {
+    inner = [
+      addPath("M 360 92 L 542 196 L 542 348 L 360 436 L 178 348 L 178 196 Z", "vec-stroke-dim", 1180, 0.08, 0.85),
+      addPath("M 178 196 L 542 348 M 542 196 L 178 348 M 360 92 L 360 436", "vec-guide", 1160, 0.22, 0.75),
+      addPath("M 360 264 L 542 196 M 360 264 L 360 92 M 360 264 L 178 348", "vec-stroke-accent", 620, 0.4, 0.72),
+      addNode(360, 92, 12, "vec-node-accent", 0.3),
+      addNode(542, 196, 12, "vec-node-accent", 0.38),
+      addNode(178, 348, 12, "vec-node-dim", 0.46),
+      addNode(542, 348, 12, "vec-node-dim", 0.52),
+      addNode(360, 264, 22, "vec-node-core", 0.66),
+    ].join("");
+  } else if (kind === "hourglass-vectors") {
+    inner = [
+      addPath("M 190 96 L 530 96", "vec-stroke-bright", 350, 0.06, 0.45),
+      addPath("M 190 424 L 530 424", "vec-stroke-bright", 350, 0.1, 0.45),
+      addPath("M 210 96 L 510 424", "vec-stroke-accent", 460, 0.18, 0.72),
+      addPath("M 510 96 L 210 424", "vec-stroke-accent", 460, 0.24, 0.72),
+      addPath("M 360 96 L 360 424", "vec-guide", 340, 0.38, 0.6),
+      addNode(360, 260, 18, "vec-node-core", 0.52),
+      addNode(360, 384, 12, "vec-node-accent", 0.7),
+    ].join("");
+  } else if (kind === "spiral-vortex") {
+    inner = [
+      addPath(
+        "M 360 260 C 392 260, 412 224, 380 198 C 334 162, 268 198, 268 260 C 268 338, 356 382, 434 348 C 516 312, 536 196, 464 128 C 382 52, 232 82, 186 188",
+        "vec-stroke-accent",
+        1380,
+        0.08,
+        1.02,
+      ),
+      addPath("M 160 260 L 560 260 M 360 76 L 360 444", "vec-guide", 780, 0.16, 0.55),
+      addNode(186, 188, 11, "vec-node-dim", 0.34),
+      addNode(434, 348, 13, "vec-node-accent", 0.56),
+      addNode(360, 260, 20, "vec-node-core", 0.82),
+    ].join("");
+  } else if (kind === "wave-resonance") {
+    inner = [
+      addPath("M 86 260 L 634 260", "vec-guide", 560, 0.04, 0.45),
+      addPath(
+        "M 96 260 C 164 130, 232 130, 300 260 C 368 390, 436 390, 504 260 C 552 168, 594 168, 624 230",
+        "vec-stroke-accent",
+        780,
+        0.14,
+        0.88,
+      ),
+      addPath(
+        "M 96 260 C 164 336, 232 336, 300 260 C 368 184, 436 184, 504 260 C 552 314, 594 314, 624 278",
+        "vec-stroke-dim",
+        660,
+        0.24,
+        0.82,
+      ),
+      addNode(200, 162, 13, "vec-node-accent", 0.46),
+      addNode(402, 358, 13, "vec-node-dim", 0.58),
+      addNode(504, 260, 18, "vec-node-core", 0.74),
+    ].join("");
   } else {
-    // Architectural grid + ascending exponential clarity vector
     inner = [
       addPath("M 110 400 L 610 400", "vec-guide", 510, 0.04, 0.45),
       addPath("M 110 120 L 110 400", "vec-guide", 290, 0.08, 0.45),

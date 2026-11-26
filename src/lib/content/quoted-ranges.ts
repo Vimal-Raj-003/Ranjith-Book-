@@ -56,7 +56,7 @@ export function isPureClosingRequest(voiceover: string): boolean {
   const wordCount = clean.split(/\s+/).filter(Boolean).length;
   if (wordCount > 16) return false;
   const startsAsRequest =
-    /^(?:follow|subscribe|save|share|like|tap|hit|comment|drop\s+a\s+comment|leave\s+a\s+comment|watch\s+part)\b/i.test(
+    /^(?:follow|subscribe|save|share|send|bookmark|repost|like|tap|hit|comment|drop\s+a\s+comment|leave\s+a\s+comment|tag\s+someone|watch\s+part)\b/i.test(
       clean,
     );
   if (!startsAsRequest) return false;

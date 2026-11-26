@@ -5,6 +5,7 @@ import path from "node:path";
 import { ffmpeg, durationOf, concatWithGaps, masterVoice } from "./ffmpeg";
 import { synthPocket, DEFAULT_POCKET_VOICE } from "./pocket-tts";
 import { synthEdgeNeural, resolveEdgeTtsBin } from "./edge-tts";
+import { isGeminiStudioVoice, resolveGeminiTtsApiKey, synthGeminiStudioVoice } from "./gemini-tts";
 import { getSetting } from "../db";
 import { abortOpts, currentSignal, throwIfCancelled } from "../cancel";
 
@@ -147,6 +148,13 @@ export async function synthesizeVoiceover(
   const { provider, voiceId } = await resolveVoice(voiceOverride);
   const elevenKey = (await getSetting("elevenLabsApiKey")) ?? process.env.ELEVENLABS_API_KEY ?? "";
   const openaiKey = (await getSetting("openaiApiKey")) ?? process.env.OPENAI_API_KEY ?? "";
+  const geminiKey = await resolveGeminiTtsApiKey();
+
+  const useGeminiStudio =
+    provider === "pocket" &&
+    process.env.BOOKREEL_AUDIO_TESTS !== "1" &&
+    isGeminiStudioVoice(voiceId) &&
+    geminiKey.length > 0;
 
   const useStudioEdge =
     provider === "pocket" &&
@@ -183,7 +191,19 @@ export async function synthesizeVoiceover(
   };
 
   let files: string[];
-  if (useStudioEdge) {
+  if (useGeminiStudio) {
+    try {
+      files = await synthAllBeatsWith((text, spoken) => synthGeminiStudioVoice(text, spoken, voiceId, geminiKey));
+    } catch (geminiErr) {
+      throwIfCancelled();
+      void geminiErr;
+      if (useStudioEdge) {
+        files = await synthAllBeatsWith((text, spoken) => synthEdgeNeural(text, spoken, voiceId));
+      } else {
+        files = await synthAllBeatsWith((text, spoken) => synthPocket(text, spoken, DEFAULT_POCKET_VOICE));
+      }
+    }
+  } else if (useStudioEdge) {
     try {
       files = await synthAllBeatsWith(async (text, spoken, idx) => {
         if (idx > 0) {

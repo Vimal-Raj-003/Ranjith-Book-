@@ -3,6 +3,7 @@
 import { AUTO_REEL_MODEL_OPTION, REEL_MODELS, strings } from "@/lib/strings";
 import type { IdeaView } from "./types";
 import { Badge, Disclosure, StatusBadge } from "./ui";
+import { VoiceSampleDropdown } from "./VoiceSamplePicker";
 
 const ACTIVE_VIDEO_STATUSES = new Set(["QUEUED", "RUNNING", "DONE"]);
 
@@ -22,6 +23,8 @@ export default function IdeaCard({
   busy,
   reelModelValue = "",
   onChangeReelModel,
+  voiceValue = "",
+  onChangeVoice,
   onMakeVideo,
   makingVideo = false,
 }: {
@@ -30,6 +33,8 @@ export default function IdeaCard({
   busy: boolean;
   reelModelValue?: string;
   onChangeReelModel?: (nextModel: string) => void;
+  voiceValue?: string;
+  onChangeVoice?: (nextVoice: string) => void;
   onMakeVideo?: () => void;
   makingVideo?: boolean;
 }) {
@@ -109,6 +114,18 @@ export default function IdeaCard({
                 </option>
               ))}
             </select>
+            {onChangeVoice && (
+              <VoiceSampleDropdown
+                ariaLabel={strings.books.perIdeaVoiceLabel(idea.title)}
+                value={voiceValue}
+                disabled={busy || makingVideo || hasActiveOrDoneVideo}
+                onChange={onChangeVoice}
+                extraOptions={[
+                  { value: "", label: strings.books.perIdeaVoiceInherit },
+                  { value: "auto", label: strings.books.voiceAutoRotate },
+                ]}
+              />
+            )}
             {onMakeVideo && !hasActiveOrDoneVideo && (
               <button
                 type="button"

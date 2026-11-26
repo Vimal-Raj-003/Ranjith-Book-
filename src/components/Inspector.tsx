@@ -7,6 +7,7 @@ import { EMPTY_TRACK, displayed, stepTrack, type Track, type WriteEvent } from "
 import { Badge, Disclosure, EmptyState, Hint, RailToggle } from "./ui";
 import Thumbnails from "./Thumbnails";
 import ReleaseSlider from "./ReleaseSlider";
+import { VoiceAuditionList } from "./VoiceSamplePicker";
 import { TOAST_MAX_MS, useToast } from "./Toast";
 import {
   REMINDER_SYNC_EVENT,
@@ -833,6 +834,7 @@ export default function Inspector({
           <Hint id={voiceHintId}>{strings.voicePanel.hint}</Hint>
           <Hint id={previewHintId}>{strings.voicePanel.previewHint}</Hint>
         </div>
+        <VoiceAuditionList selectedVoiceId={voice?.id} onSelectVoice={(id) => save("voiceId", id)} />
       </Disclosure>
 
       {/* Every control here writes through `save()`, and the pipeline reads all four

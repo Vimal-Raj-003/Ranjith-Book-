@@ -2,18 +2,20 @@ import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { WORK_ROOT } from "../paths";
 import { POCKET_VOICES, synthPocket } from "./pocket-tts";
+import { resolveEdgeTtsBin, synthEdgeNeural } from "./edge-tts";
+import { isGeminiStudioVoice, resolveGeminiTtsApiKey, synthGeminiStudioVoice } from "./gemini-tts";
+import { masterVoice } from "./ffmpeg";
 
 /**
- * One short line, the same for every voice, so two previews differ only by
- * the thing being auditioned. Long enough to hear pacing and timbre, short
- * enough that a cold model load dominates the wait rather than the synthesis.
+ * A ~15-second viral narration sample, identical across all 12 voices so two
+ * previews differ only by the voice being auditioned — long enough to judge
+ * opening hook punch, contrast cadence, natural pauses, and closing warmth.
  *
- * Clips are cached by voice id alone, so editing this line means clearing the
- * `voice-preview` directory under the work root; until then the old line is
- * what plays.
+ * Clips are cached by voice id alone, so editing this line means clearing (or
+ * re-synthesising) the `voice-preview` directory under the work root.
  */
 export const PREVIEW_LINE =
-  "Every page you turn is a choice about who you are becoming.";
+  "Most people stay busy all day and still feel behind. Focus is not working longer hours. It is choosing one meaningful task and guarding your attention until it is done. Here is the shift: do less, finish deeper, and save this reminder for tomorrow morning.";
 
 const PREVIEW_DIR = path.join(WORK_ROOT, "voice-preview");
 
@@ -54,9 +56,51 @@ const inflight = new Map<string, Promise<PreviewResult>>();
  * produces the same audio, and auditioning twelve voices twice costs twelve
  * syntheses rather than twenty-four.
  */
+/**
+ * Default preview synthesizer: uses the exact same Studio Neural Edge-TTS +
+ * broadcast `-16 LUFS` mastering chain (`masterVoice`) that finished videos use
+ * in `tts.ts`, with automatic offline fallback to Pocket TTS.
+ */
+async function defaultPreviewSynth(text: string, out: string, voice: string): Promise<void> {
+  if (process.env.BOOKREEL_AUDIO_TESTS !== "1" && isGeminiStudioVoice(voice)) {
+    const geminiKey = await resolveGeminiTtsApiKey();
+    if (geminiKey) {
+      const raw = `${out}.gemini.raw.wav`;
+      const mastered = `${out}.gemini.master.wav`;
+      try {
+        await synthGeminiStudioVoice(text, raw, voice, geminiKey);
+        await masterVoice(raw, mastered);
+        await fs.rename(mastered, out);
+        return;
+      } catch {
+        /* fall through to Edge-TTS / Pocket TTS */
+      } finally {
+        await fs.rm(raw, { force: true }).catch(() => {});
+        await fs.rm(mastered, { force: true }).catch(() => {});
+      }
+    }
+  }
+  if (process.env.BOOKREEL_AUDIO_TESTS !== "1" && (await resolveEdgeTtsBin())) {
+    const raw = `${out}.raw.wav`;
+    const mastered = `${out}.master.wav`;
+    try {
+      await synthEdgeNeural(text, raw, voice);
+      await masterVoice(raw, mastered);
+      await fs.rename(mastered, out);
+      return;
+    } catch {
+      /* fall through to offline Pocket TTS */
+    } finally {
+      await fs.rm(raw, { force: true }).catch(() => {});
+      await fs.rm(mastered, { force: true }).catch(() => {});
+    }
+  }
+  await synthPocket(text, out, voice);
+}
+
 export async function previewVoice(
   voiceId: unknown,
-  synth: Synth = synthPocket,
+  synth: Synth = defaultPreviewSynth,
 ): Promise<PreviewResult> {
   // Checked against the catalogue before anything else: the id is joined into a
   // path below, and a voice this build does not have must never reach the TTS

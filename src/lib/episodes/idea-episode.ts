@@ -11,6 +11,7 @@
  *   - a script length chosen from the idea's content: 45, 60 or up to 90 seconds.
  */
 import { prisma, getSetting } from "../db";
+import { VOICES } from "../strings";
 import { isBookThemeId } from "../video/composition/themes";
 import { themeForTextSync } from "../video/composition/themes/choose";
 import {
@@ -140,6 +141,22 @@ export interface CreatedEpisode {
 
 const ACTIVE_OR_DONE = new Set(["QUEUED", "RUNNING", "DONE"]);
 
+/** All 32 studio narrator voices (20 Gemini 3.8 Studio + 12 Classic Studio) in rotation order for `"auto"` voice mode. */
+const STUDIO_VOICE_ROTATION = VOICES.map((v) => v.id);
+
+const VALID_STUDIO_VOICES = new Set<string>(STUDIO_VOICE_ROTATION);
+
+function pickAutoVoice(textSeed: string, usedVoices: string[], idx: number): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < textSeed.length; i++) {
+    h ^= textSeed.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  const available = STUDIO_VOICE_ROTATION.filter((v) => !usedVoices.includes(v));
+  const pool = available.length > 0 ? available : [...STUDIO_VOICE_ROTATION];
+  return pool[(h + idx * 7) % pool.length];
+}
+
 /**
  * One queued Episode per idea. An idea that already has a queued, running or
  * finished episode is returned as-is rather than duplicated — a second click
@@ -147,10 +164,14 @@ const ACTIVE_OR_DONE = new Set(["QUEUED", "RUNNING", "DONE"]);
  * does not count, so generating again after a failure starts a fresh run.
  */
 export interface CreateIdeaEpisodesOptions {
-  /** Batch-wide model override (`"auto"` or one of the 7 `ReelModelId`s). */
+  /** Batch-wide model override (`"auto"` or one of the `ReelModelId`s). */
   reelModel?: string | null;
   /** Optional per-idea model override (`ideaId -> "auto" | ReelModelId`). */
   perIdeaModels?: Record<string, string> | null;
+  /** Batch-wide voice mode (`"auto"`, `"inspector"`, or a specific voice id). */
+  voiceMode?: string | null;
+  /** Optional per-idea voice override (`ideaId -> "auto" | voiceId`). */
+  perIdeaVoices?: Record<string, string> | null;
 }
 
 export async function createIdeaEpisodes(
@@ -172,16 +193,20 @@ export async function createIdeaEpisodes(
       ? settingReelModel
       : REEL_MODEL_AUTO;
 
-  // Seed `usedModels` with the most recently created episode's `reelStyle` so
-  // consecutive single-video `"auto"` runs never repeat the exact same model twice in a row.
-  const recentWithStyle = await prisma.episode.findFirst({
-    where: { reelStyle: { not: null } },
+  // Seed `usedModels` and `usedVoices` with the most recently created episode so
+  // consecutive single-video `"auto"` runs never repeat the exact same model or voice twice in a row.
+  const recentEpisode = await prisma.episode.findFirst({
+    where: { OR: [{ reelStyle: { not: null } }, { voiceId: { not: null } }] },
     orderBy: { createdAt: "desc" },
-    select: { reelStyle: true },
+    select: { reelStyle: true, voiceId: true },
   });
   const usedModels: ReelModelId[] = [];
-  if (recentWithStyle?.reelStyle && isReelModelId(recentWithStyle.reelStyle)) {
-    usedModels.push(recentWithStyle.reelStyle);
+  if (recentEpisode?.reelStyle && isReelModelId(recentEpisode.reelStyle)) {
+    usedModels.push(recentEpisode.reelStyle);
+  }
+  const usedVoices: string[] = [];
+  if (recentEpisode?.voiceId && VALID_STUDIO_VOICES.has(recentEpisode.voiceId)) {
+    usedVoices.push(recentEpisode.voiceId);
   }
 
   const out: CreatedEpisode[] = [];
@@ -202,8 +227,24 @@ export async function createIdeaEpisodes(
       ? requestedModel
       : chooseAutoReelModel(textForChoice, usedModels, createdIdx);
 
-    if (usedModels.length >= 7) usedModels.length = 0;
+    if (usedModels.length >= 10) usedModels.length = 0;
     if (!usedModels.includes(chosenModel)) usedModels.push(chosenModel);
+
+    // Resolve per-episode voice (`perIdeaVoices` -> `voiceMode` -> null = Inspector setting)
+    const perVoiceRaw = opts?.perIdeaVoices?.[id]?.trim();
+    const batchVoiceRaw = opts?.voiceMode?.trim();
+    const effectiveVoicePref = perVoiceRaw || batchVoiceRaw || null;
+    let chosenVoiceId: string | null = null;
+    if (effectiveVoicePref && VALID_STUDIO_VOICES.has(effectiveVoicePref)) {
+      chosenVoiceId = effectiveVoicePref;
+    } else if (effectiveVoicePref === "auto") {
+      chosenVoiceId = pickAutoVoice(textForChoice, usedVoices, createdIdx);
+    }
+    if (chosenVoiceId) {
+      if (usedVoices.length >= STUDIO_VOICE_ROTATION.length) usedVoices.length = 0;
+      if (!usedVoices.includes(chosenVoiceId)) usedVoices.push(chosenVoiceId);
+    }
+
     createdIdx += 1;
 
     const chosenTheme =
@@ -222,6 +263,7 @@ export async function createIdeaEpisodes(
         title: idea.title,
         theme: chosenTheme,
         reelStyle: chosenModel,
+        ...(chosenVoiceId ? { voiceId: chosenVoiceId } : {}),
         status: "QUEUED",
         step: "Queued",
       },

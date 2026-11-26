@@ -187,9 +187,30 @@ function longRules(spec: LengthSpec = LENGTHS.long): string {
 THIS IS A ${spec.seconds.replace(/-/g, " ").toUpperCase()} VIDEO. The finished video must never run past ${VIDEO_MAX_SECONDS} seconds, and it is never padded: say what this idea needs in the room it has, and stop.
 - Write between ${spec.minBeats} and ${spec.maxBeats} beats.
 - The voiceover of all beats together must be between ${spec.minWords} and ${spec.maxWords} words — aim for about ${aim}. Count them. A script outside that range is sent back, and no script may ever exceed ${Math.min(spec.maxWords!, hardWords)} words.
-- Shape: open on the hook, set up why it matters, develop the ONE idea you were given with the book's own example or argument, show what it looks like in practice, land a clear takeaway, then the call to action. Every beat moves the idea forward; no beat restates the one before it.
-- The idea you were given is the spine of the episode. Stay on it — do not drift into other ideas from the same pages.`;
+- Shape: open on a 0–2s scroll-stopping hook, raise the personal stakes, hit a sharp mid-video twist/re-hook around the middle beat so viewers never drop off at 50%, prove the ONE idea using the book's own example or mechanism in plain modern English, land an unforgettable takeaway in the second-to-last beat, then close on a crisp Save/Share/Comment/Follow call to action. Every beat escalates tension or clarity; zero beats restate the beat before it.
+- The idea you were given is the spine of the episode. Stay locked on it — do not drift into side topics from the same pages.`;
 }
+
+const VIRAL_RETENTION_RULES = `VIRAL RETENTION & CADENCE RULES (HOW TO HOLD VIEWERS FROM 0s TO 100%):
+1. SCROLL-STOPPER OPENING (Beat 0 — first 2 seconds, max 12 words):
+   Never warm up, introduce the topic, or summarise. Open Beat 0 immediately using ONE of these 5 viral hook formulas backed by the page:
+   - Contrarian Myth-Buster: flip a common belief ("Working longer isn't why top performers win — cutting half the list is.")
+   - Pain-Mirror: call out a mistake the viewer just made ("You reread the same page three times and still blank out.")
+   - Sharp Contrast: pit two ideas head-to-head ("Busy looks productive. Focused actually changes your life.")
+   - Hidden Trap: expose how a good intention backfires ("Rewarding yourself right after effort quietly kills the habit.")
+   - 2-Second Self-Test: make the viewer check themselves right now ("Notice what your mind reaches for the second work gets boring.")
+   - STRICT FORWARD PAGE ORDER EVEN ON HOOKS: Your Beat 0 hook MUST cite the EARLIEST sentence of your chosen passage on that page (framing the sharp tension around how that passage begins), so Beat 1, Beat 2, and every following beat on the same page move strictly forward (startWord >= previous beat's endWord). NEVER point Beat 0 at words near the middle or bottom of a page (e.g. words 180–220) and then jump backward to earlier words (e.g. words 20–80) in Beat 1!
+
+2. MICRO-PUNCHLINE CADENCE ("Not X — it's Y."):
+   - Keep sentences crisp (5 to 11 words on average), conversational, and rhythmic.
+   - Use clean binary contrasts ("Clarity isn't a nice-to-have — it's leverage.", "Stop managing time. Start guarding attention.").
+   - NEVER open beats with dry book-report filler ("The page reveals that...", "The book explains...", "Furthermore, this passage shows..."). Speak the truth directly to "you".
+
+3. MID-VIDEO PATTERN INTERRUPT / RE-HOOK (around the middle beat):
+   - Halfway through the script, use a brief rhetorical turn ("Here is the detail almost everyone misses.", "Look closely at what happens next.", "And here is why that matters.") before stating the next grounded point from the page — never invent a new factual claim or consequence that is not printed on the page.
+
+4. PLAIN-ENGLISH TRANSLATION (ZERO ACADEMIC JARGON):
+   - Even if the book is old, formal, or technical, translate its concepts into vivid, everyday modern spoken English a 20-year-old scrolling Reels understands on the first listen — while keeping 100% factual fidelity to what is printed on the page (never inventing modern objects, scenes, examples, or physical metaphors like "gears", "batteries", or "wires" unless the page itself uses them; use plain direct verbs like "switching", "pausing", or "losing focus" instead).`;
 
 export function buildSystemPrompt(opts: { hasAuthor: boolean; length?: ScriptLength; spec?: LengthSpec }): string {
   const length = opts.length ?? "short";
@@ -203,8 +224,10 @@ ${INDEX_RULE}
 Voice: sharp, human, punchy, magnetic. One idea, argued with real tension and stakes. No
 throat-clearing, no "in this video", no "let's dive in", no textbook essay tone ("Making
 healthy habits is important..."). Open on the sharpest contradiction, painful mistake, or
-counter-intuitive truth on the page — spoken directly to "you" in under 14 words so a
+counter-intuitive truth on the page — spoken directly to "you" in under 12 words so a
 viewer scrolling past stops on word three.
+
+${VIRAL_RETENTION_RULES}
 
 SPOKEN, NOT WRITTEN. Every beat's voiceover is read aloud by a neural speech
 engine, one beat at a time, with nothing else on the page:
@@ -213,9 +236,9 @@ engine, one beat at a time, with nothing else on the page:
   "(laughs)", no "(beat)", no "(sighs)". If a pause matters, end the
   sentence instead.
 - No emoji, no URLs, no hashtags inside voiceover.
-- Write the way a captivating storyteller talks to one person across a table:
-  contractions, crisp 6–14 word sentences, active verbs, concrete contrasts
-  ("not X, but Y"), and commas/full stops placed where a breath goes.
+- Write the way a captivating creator talks to one person across a table:
+  contractions, crisp 5–11 word micro-sentences, active verbs, sharp contrasts
+  ("not X — it's Y"), and commas/full stops placed exactly where a breath lands.
 
 ${
   opts.hasAuthor
@@ -251,7 +274,7 @@ Rules that are not negotiable:
   no statistics, no study, no biographical detail, no anecdote that is not printed
   on the page.
 - ${CONCRETE_DETAIL_RULE}
-- onScreen is a label, not a subtitle. Six words at most.
+- onScreen is a label, not a subtitle. Six words at most — write it as a bold 2 to 5 word kinetic motion-card headline (e.g. "Busy vs Focused", "The Reward Trap", "Cut Half The List") that hits visually on screen.
 - emoji is optional, and at most ONE emoji character per beat. It stands for
   what that beat is actually about — the object, the act, the feeling under
   discussion — and it is shown on screen beside the label. Never decorative
@@ -265,10 +288,13 @@ Rules that are not negotiable:
   be bought is added afterwards, in code, from a link the operator typed
   themselves. A link you compose is a link you invented, and a wrong one
   published under someone else's name is worse than no link at all.
-- The call to action is the last beat, and it asks for one crisp viewer action
-  in 4 to 9 words (e.g. "Save this before your next excuse." or "Follow for the
-  next page.") with zero book facts bundled in, so the outro feels sharp and
-  replayable rather than padded.
+- The call to action is the last beat, and it asks for one high-signal viewer
+  action in 4 to 9 words — pick the natural algorithm trigger that best fits this
+  topic: a Save trigger ("Save this before your next excuse."), a Share trigger
+  ("Send this to someone drowning in busywork."), a Comment trigger ("Comment the
+  one habit you're cutting today."), or a Follow trigger ("Follow BookReel for
+  the next sharp idea.") — always a pure viewer request with zero book facts
+  bundled in, so the outro lands fast and satisfies the last-beat index rule.
 - ideaKey is the single angle this episode takes, in kebab-case.
 - hook is the first thing on screen and the line the thumbnail is built from.
   It has under two seconds to stop someone scrolling, so make it a sharp
@@ -292,7 +318,10 @@ ${PUBLISHING_COPY_RULES}${length === "long" ? longRules(spec) : ""}`;
  * applies exactly as it does to any other script.
  */
 export function ideaBriefBlock(brief: IdeaBrief): string {
-  const quotes = brief.quotes
+  const sortedQuotes = [...brief.quotes].sort(
+    (a, b) => a.pageIndex - b.pageIndex || a.startWord - b.startWord || a.endWord - b.endWord,
+  );
+  const quotes = sortedQuotes
     .map((q) => `- PAGE ${q.pageIndex}, words ${q.startWord}–${q.endWord}: "${q.text}"`)
     .join("\n");
   return [

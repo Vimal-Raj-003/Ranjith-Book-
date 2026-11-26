@@ -22,6 +22,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       ideaIds?: unknown;
       reelModel?: unknown;
       perIdeaModels?: unknown;
+      voiceMode?: unknown;
+      perIdeaVoices?: unknown;
     } | null;
     const ideaIds = Array.isArray(body?.ideaIds)
       ? [...new Set(body.ideaIds.filter((v): v is string => typeof v === "string"))]
@@ -31,6 +33,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (body?.perIdeaModels && typeof body.perIdeaModels === "object" && !Array.isArray(body.perIdeaModels)) {
       for (const [k, v] of Object.entries(body.perIdeaModels as Record<string, unknown>)) {
         if (typeof v === "string") perIdeaModels[k] = v;
+      }
+    }
+    const voiceMode = typeof body?.voiceMode === "string" ? body.voiceMode : null;
+    const perIdeaVoices: Record<string, string> = {};
+    if (body?.perIdeaVoices && typeof body.perIdeaVoices === "object" && !Array.isArray(body.perIdeaVoices)) {
+      for (const [k, v] of Object.entries(body.perIdeaVoices as Record<string, unknown>)) {
+        if (typeof v === "string") perIdeaVoices[k] = v;
       }
     }
     if (ideaIds.length === 0) {
@@ -48,7 +57,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return NextResponse.json({ error: "This book is still being analysed.", code: "not_ready" }, { status: 409 });
     }
 
-    const episodes = await createIdeaEpisodes(id, ideaIds, user.id, { reelModel, perIdeaModels });
+    const episodes = await createIdeaEpisodes(id, ideaIds, user.id, {
+      reelModel,
+      perIdeaModels,
+      voiceMode,
+      perIdeaVoices,
+    });
     if (episodes.length === 0) {
       return NextResponse.json({ error: "None of those ideas belong to this book.", code: "not_found" }, { status: 404 });
     }

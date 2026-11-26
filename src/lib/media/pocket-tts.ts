@@ -24,18 +24,42 @@ export interface PocketVoice {
 
 /** Curated English voices from the Pocket TTS catalog, labelled by gender. */
 export const POCKET_VOICES: PocketVoice[] = [
-  { id: "alba", label: "Alba", gender: "female", note: "warm, casual" },
-  { id: "cosette", label: "Cosette", gender: "female", note: "expressive, animated" },
-  { id: "vera", label: "Vera", gender: "female", note: "clear, even-paced" },
-  { id: "jane", label: "Jane", gender: "female", note: "bright, friendly" },
-  { id: "eve", label: "Eve", gender: "female", note: "calm, measured" },
-  { id: "caro_davy", label: "Caro", gender: "female", note: "conversational" },
-  { id: "michael", label: "Michael", gender: "male", note: "steady, documentary" },
-  { id: "charles", label: "Charles", gender: "male", note: "deep, deliberate — the default" },
-  { id: "paul", label: "Paul", gender: "male", note: "natural, everyday" },
-  { id: "george", label: "George", gender: "male", note: "crisp, energetic" },
-  { id: "stuart_bell", label: "Stuart", gender: "male", note: "narrator tone" },
-  { id: "peter_yearsley", label: "Peter", gender: "male", note: "mature, warm" },
+  // 10 Gemini 3.8 Studio Female Voices (F01 – F10)
+  { id: "kore", label: "Kore (F01)", gender: "female", note: "sharp magnetic authority · Gemini Studio US" },
+  { id: "sulafat", label: "Sulafat (F02)", gender: "female", note: "warm velvety storyteller · Gemini Studio US" },
+  { id: "aoede", label: "Aoede (F03)", gender: "female", note: "natural modern creator · Gemini Studio US" },
+  { id: "zephyr", label: "Zephyr (F04)", gender: "female", note: "bright high-retention Reels · Gemini Studio US" },
+  { id: "despina", label: "Despina (F05)", gender: "female", note: "smooth luxury editorial · Gemini Studio US" },
+  { id: "laomedeia", label: "Laomedeia (F06)", gender: "female", note: "upbeat vibrant creator · Gemini Studio US" },
+  { id: "leda", label: "Leda (F07)", gender: "female", note: "youthful crisp energy · Gemini Studio US" },
+  { id: "achernar", label: "Achernar (F08)", gender: "female", note: "calm soothing reflection · Gemini Studio US" },
+  { id: "clara_uk", label: "Clara (F09)", gender: "female", note: "polished British podcast · Gemini Studio UK" },
+  { id: "ananya_in", label: "Ananya (F10)", gender: "female", note: "velvety Indian-English · Gemini Studio IN" },
+  // 6 Classic Studio Female Voices
+  { id: "alba", label: "Alba", gender: "female", note: "magnetic viral creator (US)" },
+  { id: "cosette", label: "Cosette", gender: "female", note: "bright, upbeat Reels (US)" },
+  { id: "vera", label: "Vera", gender: "female", note: "sharp, confident clarity (US)" },
+  { id: "jane", label: "Jane", gender: "female", note: "warm podcast host (US)" },
+  { id: "eve", label: "Eve", gender: "female", note: "polished British studio (UK)" },
+  { id: "caro_davy", label: "Caro", gender: "female", note: "expressive Indian-English (IN)" },
+  // 10 Gemini 3.8 Studio Male Voices (M01 – M10)
+  { id: "algenib", label: "Algenib (M01)", gender: "male", note: "deep gravelly cinema · Gemini Studio US" },
+  { id: "puck", label: "Puck (M02)", gender: "male", note: "charismatic podcast creator · Gemini Studio US" },
+  { id: "fenrir", label: "Fenrir (M03)", gender: "male", note: "high-energy viral motivator · Gemini Studio US" },
+  { id: "enceladus", label: "Enceladus (M04)", gender: "male", note: "intimate late-night narrator · Gemini Studio US" },
+  { id: "charon", label: "Charon (M05)", gender: "male", note: "steady documentary authority · Gemini Studio US" },
+  { id: "sadachbia", label: "Sadachbia (M06)", gender: "male", note: "lively dynamic host · Gemini Studio US" },
+  { id: "algieba", label: "Algieba (M07)", gender: "male", note: "smooth velvety advisor · Gemini Studio US" },
+  { id: "achird", label: "Achird (M08)", gender: "male", note: "warm friendly creator · Gemini Studio US" },
+  { id: "arthur_uk", label: "Arthur (M09)", gender: "male", note: "deep British documentary · Gemini Studio UK" },
+  { id: "vikram_in", label: "Vikram (M10)", gender: "male", note: "confident Indian-English podcast · Gemini Studio IN" },
+  // 6 Classic Studio Male Voices
+  { id: "michael", label: "Michael", gender: "male", note: "smooth creator podcast (US)" },
+  { id: "charles", label: "Charles", gender: "male", note: "deep viral storyteller (US) — default" },
+  { id: "paul", label: "Paul", gender: "male", note: "bold cinema baritone (US)" },
+  { id: "george", label: "George", gender: "male", note: "high-energy motivator (US)" },
+  { id: "stuart_bell", label: "Stuart", gender: "male", note: "crisp British narrator (UK)" },
+  { id: "peter_yearsley", label: "Peter", gender: "male", note: "clear Indian-English studio (IN)" },
 ];
 
 // BookReel content targets motivation and business audiences, and the operator

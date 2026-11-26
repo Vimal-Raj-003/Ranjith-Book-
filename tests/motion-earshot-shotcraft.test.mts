@@ -8,10 +8,12 @@ import {
 } from "../src/lib/video/motionmaxxing";
 import {
   applyVoiceAwareDucking,
+  generateSfxTrack,
   planSfxCues,
   renderSfxBuffer,
   verifyEarshotSync,
 } from "../src/lib/media/sfx-synth";
+import { loadProjectSfxLibrary, planSelectiveLibrarySfx } from "../src/lib/media/sfx-library";
 import { buildComposition, cardCineMoves, CARD_X, CARD_Y, CARD_W, CARD_H } from "../src/lib/video/composition/build";
 import { overlappingAnims, renderScene, sceneCss } from "../src/lib/video/scenes/render";
 import { EDGE_VOICE_MAP } from "../src/lib/media/edge-tts";
@@ -22,6 +24,9 @@ import {
   chooseAutoReelModel,
   REEL_MODEL_AUTO,
 } from "../src/lib/video/reel-models";
+import { buildProMotionComposition } from "../src/lib/video/pro-motion-engine";
+import { ALL_PRO_MODEL_KINDS } from "../src/lib/video/scenes/pro-stage";
+import { ALL_VECTOR_DIAGRAM_KINDS } from "../src/lib/video/scenes/vector-stage";
 import { AUTO_REEL_MODEL_OPTION, REEL_MODELS } from "../src/lib/strings";
 import { validateSetting } from "../src/lib/settings/keys";
 import fs from "node:fs/promises";
@@ -239,16 +244,8 @@ test("Viral HyperFrames 3-style stage + Reels Foley: seek-safe SVG vectorMode, 2
   assert.equal(sync.ok, true, `Earshot sync failed: ${JSON.stringify(sync)}`);
   assert.ok(sync.peakDb <= -6, `Peak headroom exceeded: ${sync.peakDb} dB`);
 
-  const proModels = [
-    "streak-shield",
-    "obstacle-radar",
-    "compound-blip",
-    "crowd-asymmetry",
-    "barcelona-timeline",
-    "lab-apparatus",
-    "hand-swerve-arc",
-  ] as const;
-  for (const pm of proModels) {
+  assert.equal(ALL_PRO_MODEL_KINDS.length, 21, "All 21 interactive Pro & Glassmorphism rigs registered");
+  for (const pm of ALL_PRO_MODEL_KINDS) {
     const proScene = makeScene(0, "cinematic", 2, 8, {
       cine: { hero: "focus", keyword: "target", lead: "Lab test", proModel: pm },
     });
@@ -257,8 +254,19 @@ test("Viral HyperFrames 3-style stage + Reels Foley: seek-safe SVG vectorMode, 2
     assert.deepEqual(overlappingAnims(out.anims), [], `${pm} has zero overlapping GSAP tweens`);
   }
 
-  // 7-Model + Auto UI/Backend selector contract
-  assert.equal(REEL_MODELS.length, 7, "UI exposes all 7 video models");
+  assert.equal(ALL_VECTOR_DIAGRAM_KINDS.length, 10, "All 10 geometric vector diagrams registered");
+  for (const vk of ALL_VECTOR_DIAGRAM_KINDS) {
+    const vecDiagramScene = makeScene(0, "cinematic", 2, 8, {
+      cine: { hero: "focus", keyword: "target", lead: "Vector test", vectorMode: true, vectorKind: vk },
+    });
+    const out = renderScene(vecDiagramScene, rect, bookThemeById("blueprint").palette.accent)!;
+    assert.match(out.markup, /vec-stroke-/, `${vk} renders vector SVG strokes`);
+    assert.deepEqual(overlappingAnims(out.anims), [], `${vk} has zero overlapping GSAP tweens`);
+  }
+
+  // 10-Model Pro Motion + Auto UI/Backend selector contract
+  assert.equal(ALL_REEL_MODEL_IDS.length, 10, "Exactly 10 Pro Motion models registered");
+  assert.equal(REEL_MODELS.length, ALL_REEL_MODEL_IDS.length, "UI exposes all 10 Pro Motion models");
   assert.equal(AUTO_REEL_MODEL_OPTION.id, REEL_MODEL_AUTO, "Auto option matches REEL_MODEL_AUTO");
   assert.deepEqual(
     REEL_MODELS.map((m) => m.id),
@@ -271,23 +279,24 @@ test("Viral HyperFrames 3-style stage + Reels Foley: seek-safe SVG vectorMode, 2
   }
   assert.equal(validateSetting("reelModel", "unknown-model"), null);
 
-  // Auto rotation across 7 ideas produces all 7 distinct models without duplicates
+  // Auto rotation across 10 ideas produces all 10 distinct models without duplicates
   const pickedAuto: string[] = [];
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 10; i++) {
     const chosen = chooseAutoReelModel(`Book idea number ${i} about psychology and habits`, pickedAuto, i);
     pickedAuto.push(chosen);
   }
-  assert.equal(new Set(pickedAuto).size, 7, "Auto mode rotates cleanly across all 7 distinct video models");
+  assert.equal(new Set(pickedAuto).size, 10, "Auto mode rotates cleanly across all 10 distinct Pro Motion models");
 
-  // applyReelModelToScenes produces seek-safe scenes for every one of the 7 models
+  // applyReelModelToScenes + buildProMotionComposition produce valid compositions for all 10 models
   const samplePkg = {
     ideaKey: "k",
     title: "Test Idea",
     hook: "Test Hook",
     beats: [
-      { id: "b0", voiceover: "Missing one planned workout does not mean failure.", onScreen: "", sourcePage: 0, startWord: 0, endWord: 5 },
-      { id: "b1", voiceover: " Fifty people shifted a crowd of 500,000.", onScreen: "", sourcePage: 0, startWord: 6, endWord: 12 },
-      { id: "b2", voiceover: "Follow BookReel for more ideas.", onScreen: "", sourcePage: 0, startWord: 13, endWord: 18 },
+      { id: "b0", voiceover: "Missing one planned workout does not mean failure.", onScreen: "One missed workout", sourcePage: 0, startWord: 0, endWord: 5 },
+      { id: "b1", voiceover: "Fifty people shifted a crowd of 500,000 through unified direction.", onScreen: "Unified direction", sourcePage: 0, startWord: 6, endWord: 12 },
+      { id: "b2", voiceover: "Filter out daily friction and focus on what matters most.", onScreen: "Zero friction", sourcePage: 1, startWord: 0, endWord: 8 },
+      { id: "b3", voiceover: "Follow BookReel for more ideas from great books.", onScreen: "Follow BookReel", sourcePage: 1, startWord: 9, endWord: 16 },
     ],
     takeaway: ["Takeaway"],
     cta: "Follow BookReel",
@@ -299,6 +308,12 @@ test("Viral HyperFrames 3-style stage + Reels Foley: seek-safe SVG vectorMode, 2
     makeScene(1, "cinematic", 4, 9, { beatIndex: 1, cine: { hero: "scales", keyword: "crowd", lead: "Fifty shifted" } }),
     makeScene(2, "cinematic", 9, 13, { beatIndex: 2, cine: { hero: "clock", keyword: "BookReel", lead: "Follow" } }),
   ];
+  const sampleTimedBeats = [
+    { index: 0, text: samplePkg.beats[0].voiceover, file: "b0.wav", start: 0, end: 5, duration: 5, speechStart: 0.1, speechEnd: 4.8 },
+    { index: 1, text: samplePkg.beats[1].voiceover, file: "b1.wav", start: 5, end: 11, duration: 6, speechStart: 5.1, speechEnd: 10.8 },
+    { index: 2, text: samplePkg.beats[2].voiceover, file: "b2.wav", start: 11, end: 17, duration: 6, speechStart: 11.1, speechEnd: 16.8 },
+    { index: 3, text: samplePkg.beats[3].voiceover, file: "b3.wav", start: 17, end: 21, duration: 4, speechStart: 17.1, speechEnd: 20.8 },
+  ];
   for (const modelId of ALL_REEL_MODEL_IDS) {
     const styled = applyReelModelToScenes(modelId, basePlan, samplePkg);
     for (const sc of styled) {
@@ -306,5 +321,112 @@ test("Viral HyperFrames 3-style stage + Reels Foley: seek-safe SVG vectorMode, 2
       assert.ok(r, `${modelId} scene ${sc.index} renders`);
       assert.deepEqual(overlappingAnims(r!.anims), [], `${modelId} scene ${sc.index} is seek-safe`);
     }
+    const pm = buildProMotionComposition({
+      model: modelId,
+      pkg: samplePkg,
+      beats: sampleTimedBeats,
+      words: [],
+      totalDuration: 21,
+      bookTitle: "Test Book",
+      author: "Test Author",
+      bookLink: "https://example.com/book",
+      music: true,
+      sfx: true,
+    });
+    assert.match(pm.html, /data-composition-id="main"/, `${modelId} emits HyperFrames root`);
+    assert.match(pm.html, /window\.__timelines\["main"\] = tl;/, `${modelId} registers master GSAP timeline`);
+    assert.ok(pm.sfxMoments.length >= 2, `${modelId} schedules matched studio SFX cues`);
   }
+});
+
+test("Real sfx/ folder library: loads all 18 studio files, places cues selectively (>=5.2s gap), matches models, and varies across videos", async () => {
+  const lib = await loadProjectSfxLibrary();
+  assert.ok(lib.length >= 18, `Expected >= 18 real SFX files in sfx/, loaded ${lib.length}`);
+
+  const nineScenes: Scene[] = [
+    makeScene(0, "cinematic", 0, 6.5, {
+      sceneModel: "magnates-cinema",
+      cine: {
+        hero: "clock",
+        keyword: "act",
+        lead: "",
+        hook: true,
+        plate: {
+          imageSrc: "a.jpg",
+          depthSrc: "d.png",
+          cameraMove: "push-in",
+          atmosphere: "still",
+          dominantHex: "#0f172a",
+          accentHex: "#7dd3fc",
+          shadowHex: "#04070f",
+        },
+      },
+    }),
+    makeScene(1, "book-crop", 6.5, 13.3, { sceneModel: "trifecta-viral", crop: { x0: 0, y0: 0, x1: 500, y1: 200 } }),
+    makeScene(2, "cinematic", 13.3, 20.9, { sceneModel: "neuro-lab", cine: { hero: "mind", keyword: "timer", lead: "wired", proModel: "lab-apparatus" } }),
+    makeScene(3, "cinematic", 20.9, 29.4, { sceneModel: "vision-bento", cine: { hero: "focus", keyword: "locked", lead: "ms", proModel: "obstacle-radar" } }),
+    makeScene(4, "quote", 29.4, 36.2, { sceneModel: "investigative-dossier", quote: { text: "Choose at once.", page: 70 } }),
+    makeScene(5, "steps", 36.2, 48.6, { sceneModel: "vox-explainer", steps: ["One", "Two", "Three"] }),
+    makeScene(6, "cinematic", 48.6, 51.5, { sceneModel: "dankoe-vector", cine: { hero: "path", keyword: "volition", lead: "map", vectorMode: true } }),
+    makeScene(7, "comparison", 51.5, 54.5, { sceneModel: "trifecta-viral", left: "A", right: "B" }),
+    makeScene(8, "cinematic", 54.5, 58.0, { sceneModel: "magnates-cinema", cine: { hero: "clock", keyword: "excuse", lead: "Save" } }),
+  ];
+
+  const planA = planSelectiveLibrarySfx({
+    durationSec: 59.1,
+    audioOffsetSec: 0.7,
+    scenes: nineScenes,
+    library: lib,
+    reelModel: "omni-7-ultra",
+    seedKey: "episode-alpha",
+  });
+  const planB = planSelectiveLibrarySfx({
+    durationSec: 59.1,
+    audioOffsetSec: 0.7,
+    scenes: nineScenes,
+    library: lib,
+    reelModel: "omni-7-ultra",
+    seedKey: "episode-beta",
+  });
+
+  assert.ok(planA.length >= 5 && planA.length <= 7, `Sparse natural count (got ${planA.length}, never wall-to-wall)`);
+  for (let i = 1; i < planA.length; i++) {
+    assert.ok(planA[i].timeSec - planA[i - 1].timeSec >= 5.2, "At least 5.2s clean breathing room between SFX cues");
+    assert.notEqual(planA[i].fileName, planA[i - 1].fileName, "Never repeats the same SFX file back-to-back");
+  }
+  assert.notDeepEqual(
+    planA.map((p) => p.fileName),
+    planB.map((p) => p.fileName),
+    "Different videos pick varied SFX combinations instead of identical files",
+  );
+
+  // Plain narration / book-page scenes stay 100% free of SFX spam
+  const plainReadingScenes: Scene[] = [
+    makeScene(0, "book-page", 0, 8),
+    makeScene(1, "kinetic-text", 8, 16),
+    makeScene(2, "book-page", 16, 24),
+  ];
+  const plainPlan = planSelectiveLibrarySfx({
+    durationSec: 25,
+    audioOffsetSec: 0.7,
+    scenes: plainReadingScenes,
+    library: lib,
+    reelModel: "vox-explainer",
+    seedKey: "plain-ep",
+  });
+  assert.equal(plainPlan.length, 0, "Plain reading/narration scenes without visual rigs do not force unnecessary SFX");
+
+  const osTmp = path.join(process.cwd(), ".bookreel", "work", "test-selective-sfx.wav");
+  const track = await generateSfxTrack({
+    durationSec: 59.1,
+    audioOffsetSec: 0.7,
+    scenes: nineScenes,
+    speechSpans: [{ start: 1, end: 5 }, { start: 13.5, end: 18 }],
+    reelModel: "omni-7-ultra",
+    seedKey: "episode-alpha",
+    outPath: osTmp,
+  });
+  assert.equal(track.syncReport.ok, true, JSON.stringify(track.syncReport));
+  assert.ok((track.usedFiles?.length ?? 0) >= 5);
+  await fs.rm(osTmp, { force: true }).catch(() => {});
 });

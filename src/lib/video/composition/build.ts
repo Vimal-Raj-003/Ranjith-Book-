@@ -357,7 +357,9 @@ export interface CompositionInput {
     | "trifecta-viral"
     | "vision-bento"
     | "investigative-dossier"
-    | "neuro-lab";
+    | "neuro-lab"
+    | "omni-7-ultra"
+    | "glassmorphism-ui";
 }
 
 /** How the backdrop glow sits for each scene tone: quiet, lifted, or wide. */
@@ -1113,6 +1115,323 @@ function sharedCss(theme: BookTheme): string {
     background:rgba(34,211,238,0.2) !important; color:#67e8f9 !important;
     box-shadow:inset 0 0 0 1.5px rgba(34,211,238,0.6) !important;
   }
+
+  /* --- TRUE SPATIAL GLASSMORPHISM MULTI-MOTION SKINS (Sapphire / Emerald / Amethyst) --- */
+  .stage-glassmorphism-ui .backdrop,
+  .sc[data-model="glassmorphism-ui"] > .sc-scene-skin,
+  .sc[data-model="glass-sapphire"] > .sc-scene-skin {
+    background:
+      radial-gradient(46% 32% at 24% 38%, rgba(56,189,248,0.34) 0%, transparent 72%),
+      radial-gradient(48% 34% at 78% 64%, rgba(99,102,241,0.32) 0%, transparent 74%),
+      radial-gradient(38% 26% at 52% 82%, rgba(20,184,166,0.18) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      linear-gradient(180deg, #060d1f 0%, #030712 100%) !important;
+  }
+  .sc[data-model="glass-emerald"] > .sc-scene-skin {
+    background:
+      radial-gradient(46% 32% at 26% 36%, rgba(16,185,129,0.34) 0%, transparent 72%),
+      radial-gradient(48% 34% at 76% 66%, rgba(14,165,233,0.3) 0%, transparent 74%),
+      radial-gradient(38% 26% at 48% 80%, rgba(52,211,153,0.18) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      linear-gradient(180deg, #041317 0%, #02090d 100%);
+  }
+  .sc[data-model="glass-amethyst"] > .sc-scene-skin {
+    background:
+      radial-gradient(46% 32% at 28% 36%, rgba(139,92,246,0.32) 0%, transparent 72%),
+      radial-gradient(48% 34% at 76% 64%, rgba(56,189,248,0.28) 0%, transparent 74%),
+      radial-gradient(36% 24% at 50% 80%, rgba(234,179,8,0.14) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      linear-gradient(180deg, #0b0820 0%, #04030e 100%);
+  }
+  .stage-glassmorphism-ui .byline {
+    background:linear-gradient(135deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.05) 100%) !important;
+    backdrop-filter:blur(20px) saturate(160%); -webkit-backdrop-filter:blur(20px) saturate(160%);
+    color:#f8fafc !important; padding:7px 22px; border-radius:999px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.38), 0 0 0 1px rgba(255,255,255,0.18), 0 10px 28px rgba(0,0,0,0.45);
+    font-weight:800 !important; letter-spacing:1.6px !important; text-transform:uppercase;
+  }
+  .stage-glassmorphism-ui .card {
+    border-radius:26px !important;
+    box-shadow:0 48px 110px -18px rgba(0,0,0,0.88), 0 0 0 2px rgba(255,255,255,0.28), 0 0 42px rgba(56,189,248,0.22) !important;
+  }
+  .stage-glassmorphism-ui .pro-card,
+  .stage-glassmorphism-ui .pro-mini-card,
+  .stage-glassmorphism-ui .pro-ev-card,
+  .stage-glassmorphism-ui .cine-hook,
+  .stage-glassmorphism-ui .sc-side,
+  .stage-glassmorphism-ui .sc-step,
+  .stage-glassmorphism-ui .sc-quote-card,
+  .sc[data-model^="glass"] .pro-card,
+  .sc[data-model^="glass"] .pro-mini-card,
+  .sc[data-model^="glass"] .pro-ev-card,
+  .sc[data-model^="glass"] .cine-hook,
+  .sc[data-model^="glass"] .sc-side,
+  .sc[data-model^="glass"] .sc-step,
+  .sc[data-model^="glass"] .sc-quote-card {
+    background:linear-gradient(145deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.04) 55%, rgba(15,23,42,0.42) 100%) !important;
+    backdrop-filter:blur(26px) saturate(165%); -webkit-backdrop-filter:blur(26px) saturate(165%);
+    border-radius:30px !important;
+    color:#f8fafc !important;
+    box-shadow:
+      inset 0 1.5px 0 rgba(255,255,255,0.38),
+      inset 1px 0 0 rgba(255,255,255,0.18),
+      inset 0 -1px 0 rgba(255,255,255,0.08),
+      0 0 0 1px rgba(255,255,255,0.16),
+      0 36px 90px -16px rgba(0,0,0,0.78) !important;
+  }
+  .stage-glassmorphism-ui .pro-kicker,
+  .sc[data-model^="glass"] .pro-kicker { color:rgba(226,232,240,0.86) !important; }
+  .stage-glassmorphism-ui .pro-mini-title,
+  .stage-glassmorphism-ui .pro-callout-txt,
+  .stage-glassmorphism-ui .pro-bar-meta,
+  .stage-glassmorphism-ui .pro-ev-title,
+  .stage-glassmorphism-ui .sc-side-label,
+  .stage-glassmorphism-ui .sc-step-t,
+  .stage-glassmorphism-ui .sc-quote-text,
+  .sc[data-model^="glass"] .pro-mini-title,
+  .sc[data-model^="glass"] .pro-callout-txt,
+  .sc[data-model^="glass"] .pro-bar-meta,
+  .sc[data-model^="glass"] .pro-ev-title,
+  .sc[data-model^="glass"] .sc-side-label,
+  .sc[data-model^="glass"] .sc-step-t,
+  .sc[data-model^="glass"] .sc-quote-text { color:#f8fafc !important; }
+  .stage-glassmorphism-ui .pro-ev-sub,
+  .sc[data-model^="glass"] .pro-ev-sub { color:rgba(203,213,225,0.84) !important; }
+  .stage-glassmorphism-ui .pro-svg-panel,
+  .sc[data-model^="glass"] .pro-svg-panel {
+    fill:rgba(255,255,255,0.09) !important;
+    stroke:rgba(255,255,255,0.28) !important;
+    stroke-width:2 !important;
+  }
+  .stage-glassmorphism-ui .pro-node-block,
+  .sc[data-model="glassmorphism-ui"] .pro-node-block,
+  .sc[data-model="glass-sapphire"] .pro-node-block {
+    fill:rgba(56,189,248,0.24) !important;
+    stroke:#7dd3fc !important;
+    stroke-width:2.5 !important;
+  }
+  .sc[data-model="glass-emerald"] .pro-node-block {
+    fill:rgba(16,185,129,0.24) !important;
+    stroke:#6ee7b7 !important;
+    stroke-width:2.5 !important;
+  }
+  .sc[data-model="glass-amethyst"] .pro-node-block {
+    fill:rgba(167,139,250,0.24) !important;
+    stroke:#c4b5fd !important;
+    stroke-width:2.5 !important;
+  }
+  .stage-glassmorphism-ui .pro-svg-hero-line,
+  .sc[data-model="glassmorphism-ui"] .pro-svg-hero-line,
+  .sc[data-model="glass-sapphire"] .pro-svg-hero-line {
+    stroke:#7dd3fc !important; filter:drop-shadow(0 0 14px rgba(56,189,248,0.65));
+  }
+  .sc[data-model="glass-emerald"] .pro-svg-hero-line {
+    stroke:#34d399 !important; filter:drop-shadow(0 0 14px rgba(52,211,153,0.65));
+  }
+  .sc[data-model="glass-amethyst"] .pro-svg-hero-line {
+    stroke:#c4b5fd !important; filter:drop-shadow(0 0 14px rgba(167,139,250,0.65));
+  }
+  .stage-glassmorphism-ui .pro-svg-lbl,
+  .sc[data-model^="glass"] .pro-svg-lbl { fill:#e2e8f0 !important; }
+  .stage-glassmorphism-ui .pro-svg-lbl-ok,
+  .stage-glassmorphism-ui .pro-svg-big,
+  .sc[data-model^="glass"] .pro-svg-lbl-ok,
+  .sc[data-model^="glass"] .pro-svg-big { fill:#ffffff !important; }
+  .sc[data-model="glass-sapphire"] .cine-key,
+  .sc[data-model="glassmorphism-ui"] .cine-key { color:#7dd3fc !important; }
+  .sc[data-model="glass-emerald"] .cine-key { color:#6ee7b7 !important; }
+  .sc[data-model="glass-amethyst"] .cine-key { color:#ddd6fe !important; }
+  .sc[data-model="glass-emerald"] .pro-pill-ok,
+  .sc[data-model="glass-emerald"] .pro-pill-warn,
+  .sc[data-model="glass-emerald"] .pro-tag-warn {
+    background:rgba(16,185,129,0.26) !important; color:#a7f3d0 !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.28), 0 0 0 1px rgba(110,231,183,0.5) !important;
+  }
+  .sc[data-model="glass-amethyst"] .pro-pill-ok,
+  .sc[data-model="glass-amethyst"] .pro-pill-warn,
+  .sc[data-model="glass-amethyst"] .pro-tag-warn {
+    background:rgba(139,92,246,0.28) !important; color:#ede9fe !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.28), 0 0 0 1px rgba(196,181,253,0.5) !important;
+  }
+  .sc[data-model="glass-sapphire"] .pro-pill-ok,
+  .sc[data-model="glass-sapphire"] .pro-pill-warn,
+  .sc[data-model="glass-sapphire"] .pro-tag-warn,
+  .stage-glassmorphism-ui .pro-pill-ok,
+  .stage-glassmorphism-ui .pro-pill-warn {
+    background:rgba(56,189,248,0.24) !important; color:#e0f2fe !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.3), 0 0 0 1px rgba(125,211,252,0.5) !important;
+  }
+
+  /* --- 7-IN-1 OMNI ULTRA MASTER (per-scene data-model skinning) --- */
+  .stage-omni-7-ultra .byline {
+    background:rgba(9,14,26,0.86); color:#f1f5f9 !important; padding:7px 20px; border-radius:999px;
+    box-shadow:inset 0 0 0 1.5px rgba(125,211,252,0.42), 0 8px 24px rgba(0,0,0,0.6);
+    font-weight:800 !important; letter-spacing:1.6px !important; text-transform:uppercase;
+  }
+  .stage-omni-7-ultra .card {
+    box-shadow:0 50px 120px -20px rgba(0,0,0,0.92), 0 0 0 2px rgba(125,211,252,0.42) !important;
+  }
+
+  /* Per-scene Magnates 2.5D Calm Midnight-Sapphire Cinema */
+  .sc[data-model="magnates-cinema"] > .sc-scene-skin {
+    background:
+      radial-gradient(64% 44% at 50% 48%, rgba(56,189,248,0.14) 0%, rgba(15,23,42,0.42) 52%, transparent 78%),
+      linear-gradient(180deg, #070d19 0%, #03060c 100%);
+  }
+  .sc[data-model="magnates-cinema"] .cine-hook {
+    background:linear-gradient(165deg, rgba(11,18,32,0.84) 0%, rgba(6,10,19,0.9) 100%) !important;
+    backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+    box-shadow:0 32px 84px -18px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 0 0 1.5px rgba(125,211,252,0.34) !important;
+  }
+  .sc[data-model="magnates-cinema"] .cine-hook-bar {
+    background:linear-gradient(90deg, #38bdf8 0%, #818cf8 100%) !important;
+  }
+  .sc[data-model="magnates-cinema"] .cine-hook .sc-word-emph {
+    color:#7dd3fc !important;
+    background:rgba(56,189,248,0.16) !important;
+    box-shadow:inset 0 0 0 1px rgba(125,211,252,0.36) !important;
+  }
+  .sc[data-model="magnates-cinema"] .cine-key {
+    color:#7dd3fc !important;
+    text-shadow:0 0 34px rgba(56,189,248,0.38), 0 6px 26px rgba(3,6,12,0.85) !important;
+  }
+
+  /* Per-scene VisionOS Bento */
+  .sc[data-model="vision-bento"] > .sc-scene-skin {
+    background:
+      radial-gradient(65% 42% at 50% 28%, rgba(16,185,129,0.24) 0%, transparent 72%),
+      radial-gradient(75% 48% at 82% 68%, rgba(56,189,248,0.18) 0%, transparent 74%),
+      repeating-linear-gradient(0deg, rgba(148,163,184,0.045) 0px, rgba(148,163,184,0.045) 1px, transparent 1px, transparent 60px),
+      repeating-linear-gradient(90deg, rgba(148,163,184,0.045) 0px, rgba(148,163,184,0.045) 1px, transparent 1px, transparent 60px),
+      linear-gradient(180deg, #060b16 0%, #03060d 100%);
+  }
+  .sc[data-model="vision-bento"] .pro-card,
+  .sc[data-model="vision-bento"] .pro-mini-card,
+  .sc[data-model="vision-bento"] .sc-side,
+  .sc[data-model="vision-bento"] .sc-step {
+    background:linear-gradient(160deg, rgba(18,28,48,0.9) 0%, rgba(9,15,28,0.94) 100%) !important;
+    backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+    border-radius:28px !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.22), 0 0 0 1.5px rgba(52,211,153,0.4), 0 34px 80px rgba(0,0,0,0.78) !important;
+  }
+  .sc[data-model="vision-bento"] .pro-pill-ok,
+  .sc[data-model="vision-bento"] .pro-day-ok {
+    background:rgba(16,185,129,0.24) !important; color:#34d399 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(52,211,153,0.6) !important;
+  }
+  .sc[data-model="vision-bento"] .pro-svg-hero-line { stroke:#34d399 !important; filter:drop-shadow(0 0 14px rgba(52,211,153,0.65)); }
+  .sc[data-model="vision-bento"] .cine-key { color:#34d399 !important; }
+
+  /* Per-scene Investigative Dossier (calm dark-slate archival map room — zero harsh red/orange glare) */
+  .sc[data-model="investigative-dossier"] > .sc-scene-skin {
+    background:
+      radial-gradient(72% 48% at 50% 42%, rgba(71,85,105,0.24) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(226,232,240,0.04) 0px, rgba(226,232,240,0.04) 1px, transparent 1px, transparent 54px),
+      repeating-linear-gradient(90deg, rgba(226,232,240,0.04) 0px, rgba(226,232,240,0.04) 1px, transparent 1px, transparent 54px),
+      linear-gradient(180deg, #0b101b 0%, #05070d 100%);
+  }
+  .sc[data-model="investigative-dossier"] .pro-card,
+  .sc[data-model="investigative-dossier"] .pro-ev-card,
+  .sc[data-model="investigative-dossier"] .sc-quote-card,
+  .sc[data-model="investigative-dossier"] .sc-side {
+    background:#f6efe0 !important; color:#181412 !important; border-radius:14px !important;
+    box-shadow:12px 14px 0px rgba(3,5,10,0.92), 0 0 0 2.5px #1e293b !important;
+  }
+  .sc[data-model="investigative-dossier"] .sc-quote-text,
+  .sc[data-model="investigative-dossier"] .pro-kicker,
+  .sc[data-model="investigative-dossier"] .pro-callout-txt,
+  .sc[data-model="investigative-dossier"] .pro-ev-title,
+  .sc[data-model="investigative-dossier"] .sc-side-label { color:#181412 !important; }
+  .sc[data-model="investigative-dossier"] .pro-ev-sub { color:#475569 !important; }
+  .sc[data-model="investigative-dossier"] .sc-side-a .sc-icon { color:#334155 !important; }
+  .sc[data-model="investigative-dossier"] .sc-side-icon-ring-a { background:rgba(15,23,42,0.08) !important; box-shadow:inset 0 0 0 1.5px rgba(15,23,42,0.22) !important; }
+  .sc[data-model="investigative-dossier"] .sc-quote-cite,
+  .sc[data-model="investigative-dossier"] .pro-ev-pin,
+  .sc[data-model="investigative-dossier"] .pro-pill-warn,
+  .sc[data-model="investigative-dossier"] .pro-tag-warn {
+    background:#1e293b !important; color:#f8fafc !important;
+    padding:6px 16px !important; border-radius:8px !important;
+    box-shadow:3px 4px 0px #0f172a !important;
+  }
+  .sc[data-model="investigative-dossier"] .sc-quote-bar { background:#0f172a !important; }
+  .sc[data-model="investigative-dossier"] .sc-quote-mark { color:#334155 !important; }
+
+  /* Per-scene Neon Neuro Lab */
+  .sc[data-model="neuro-lab"] > .sc-scene-skin {
+    background:
+      radial-gradient(68% 46% at 50% 34%, rgba(34,211,238,0.22) 0%, transparent 70%),
+      radial-gradient(64% 44% at 24% 72%, rgba(168,85,247,0.24) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(56,189,248,0.05) 0px, rgba(56,189,248,0.05) 1px, transparent 1px, transparent 56px),
+      repeating-linear-gradient(90deg, rgba(56,189,248,0.05) 0px, rgba(56,189,248,0.05) 1px, transparent 1px, transparent 56px),
+      linear-gradient(180deg, #0d0722 0%, #050310 100%);
+  }
+  .sc[data-model="neuro-lab"] .pro-card {
+    background:linear-gradient(165deg, rgba(22,14,52,0.92) 0%, rgba(11,7,28,0.95) 100%) !important;
+    border-radius:28px !important;
+    box-shadow:0 0 0 2px rgba(34,211,238,0.45), 0 0 48px rgba(139,92,246,0.26), 0 32px 80px rgba(0,0,0,0.82) !important;
+  }
+  .sc[data-model="neuro-lab"] .pro-pill-ok {
+    background:rgba(34,211,238,0.22) !important; color:#67e8f9 !important;
+    box-shadow:inset 0 0 0 1.5px rgba(34,211,238,0.65) !important;
+  }
+  .sc[data-model="neuro-lab"] .cine-key { color:#67e8f9 !important; }
+
+  /* Per-scene Dan Koe Minimalist Vector */
+  .sc[data-model="dankoe-vector"] > .sc-scene-skin {
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 72px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 72px),
+      radial-gradient(90% 60% at 50% 45%, #0c121e 0%, #04060a 100%);
+  }
+  .sc[data-model="dankoe-vector"] .vec-stroke-accent { stroke:#38bdf8 !important; }
+  .sc[data-model="dankoe-vector"] .vec-node-core { fill:#38bdf8 !important; }
+  .sc[data-model="dankoe-vector"] .cine-key { color:#f8fafc !important; }
+
+  /* Per-scene Vox Cream Paper-Cutout Explainer */
+  .sc[data-model="vox-explainer"] > .sc-scene-skin {
+    background:
+      repeating-linear-gradient(0deg, rgba(24,21,18,0.055) 0px, rgba(24,21,18,0.055) 1px, transparent 1px, transparent 48px),
+      repeating-linear-gradient(90deg, rgba(24,21,18,0.055) 0px, rgba(24,21,18,0.055) 1px, transparent 1px, transparent 48px),
+      radial-gradient(110% 80% at 50% 35%, #faf6ec 0%, #ebe3d1 100%);
+  }
+  .sc[data-model="vox-explainer"] .sc-step,
+  .sc[data-model="vox-explainer"] .sc-side {
+    background:#ffffff !important; border-radius:14px !important;
+    box-shadow:10px 12px 0px rgba(24,21,18,0.9), 0 0 0 2.5px #181512 !important;
+  }
+  .sc[data-model="vox-explainer"] .sc-step-t,
+  .sc[data-model="vox-explainer"] .sc-side-label { color:#181512 !important; }
+  .sc[data-model="vox-explainer"] .sc-heading { color:#b91c1c !important; }
+  .sc[data-model="vox-explainer"] .sc-step-n { background:#b91c1c !important; color:#ffffff !important; }
+  .sc[data-model="vox-explainer"] .sc-step-connector { background:#b91c1c !important; }
+
+  /* Per-scene Trifecta Tactile Ivory Cards over Calm Midnight-Slate Cinema */
+  .sc[data-model="trifecta-viral"] > .sc-scene-skin {
+    background:
+      radial-gradient(70% 48% at 50% 44%, rgba(56,189,248,0.14) 0%, transparent 72%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 64px),
+      linear-gradient(180deg, #0b1120 0%, #04070e 100%);
+  }
+  .sc[data-model="trifecta-viral"] .sc-side,
+  .sc[data-model="trifecta-viral"] .sc-step {
+    background:#faf6ec !important; border-radius:16px !important;
+    box-shadow:10px 12px 0px rgba(8,8,12,0.92), 0 0 0 2.5px #181512, 0 28px 68px rgba(0,0,0,0.72) !important;
+  }
+  .sc[data-model="trifecta-viral"] .sc-side-label,
+  .sc[data-model="trifecta-viral"] .sc-step-t { color:#181512 !important; }
+  .sc[data-model="trifecta-viral"] .sc-side-icon-ring-a {
+    background:rgba(24,21,18,0.08) !important;
+    box-shadow:inset 0 0 0 1.5px rgba(24,21,18,0.24) !important;
+  }
+  .sc[data-model="trifecta-viral"] .sc-side-a .sc-icon { color:#3b342d !important; }
+  .sc[data-model="trifecta-viral"] .sc-vs-badge {
+    background:#181512 !important;
+    box-shadow:0 0 0 2.5px #faf6ec, 0 8px 24px rgba(0,0,0,0.7) !important;
+  }
 `;
 }
 
@@ -1695,7 +2014,7 @@ const TIMELINE_JS = `
     canvasEl.style.visibility = "visible";
     if (bloomEl && !data.cineLight) {
       var isDocInit = inst.plateSpec && inst.plateSpec.treatment === "documentary";
-      bloomEl.style.opacity = inst.plateKey ? (isDocInit ? "0.10" : "0.22") : "0.7";
+      bloomEl.style.opacity = inst.plateKey ? (isDocInit ? "0.08" : "0.16") : "0.22";
       bloomEl.style.visibility = "visible";
     }
     var fb = parent ? parent.querySelector(".cine-fallback") : null;

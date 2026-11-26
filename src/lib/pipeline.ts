@@ -31,7 +31,9 @@ import { synthesizeVoiceover } from "./media/tts";
 import { voiceFields } from "./episode-view";
 import { generateMusicBed } from "./media/ffmpeg";
 import { generateCinematicScoreWav } from "./media/cinematic-score";
-import { generateSfxTrack } from "./media/sfx-synth";
+import { toWav } from "./media/music-synth";
+import { loadProjectSfxLibrary, renderSelectiveLibrarySfxBuffer, type SelectiveLibrarySfxPlanItem } from "./media/sfx-library";
+import { generateSfxTrack, renderProMotionSfxBuffer } from "./media/sfx-synth";
 import { readMusicSettings, bedStyle } from "./settings/music";
 import { toSrt } from "./media/captions";
 import { timeNarration, serializeTiming } from "./media/narration-timing";
@@ -46,7 +48,8 @@ import {
   isReelModelId,
   type ReelModelId,
 } from "./video/reel-models";
-import { buildComposition, AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
+import { buildProMotionComposition } from "./video/pro-motion-engine";
+import { AUDIO_OFFSET, OUTRO_TAIL, cardViewportHeight } from "./video/composition/build";
 import { generateThumbnails, thumbsDir, serializeThumbnails, type ThumbFocus } from "./thumbnails";
 import { bookThemeById, isBookThemeId } from "./video/composition/themes";
 import { themeRanker } from "./video/composition/themes/choose";
@@ -249,11 +252,11 @@ const PLAN_SCHEMA = {
   },
 } as const;
 
-const PLAN_SYSTEM = `You split a photographed batch of book pages into one or more short-form video episodes, each covering a single, distinct idea from the pages.
+const PLAN_SYSTEM = `You split a photographed batch of book pages into one or more high-retention short-form video episodes (YouTube Shorts & Reels), each built around a single scroll-stopping idea from the pages.
 
 Rules:
-- Prefer ONE episode covering the whole batch unless the pages clearly contain more than one genuinely separate, video-worthy idea.
-- Every episode needs a unique, kebab-case ideaKey naming its angle (lowercase letters, digits and hyphens only).
+- Prefer ONE strong episode covering the whole batch unless the pages clearly contain more than one genuinely separate, viral-worthy angle (a counter-intuitive truth, painful everyday mistake, sharp contrast, or 1-step shift).
+- Every episode needs a unique, kebab-case ideaKey naming its angle (lowercase letters, digits and hyphens only) and a punchy, plain-English curiosity title (never a dry textbook heading like "Chapter 2 Summary").
 - startPage/endPage are the page numbers (labelled "PAGE n") the episode covers; startWord/endWord are word indices on those pages, using the exact numbers shown.
 - Episodes must not overlap, and together should not skip meaningful content.
 - If in doubt, return a single episode covering every page from 0 to the last page shown.`;
@@ -763,7 +766,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
   let speculative: { texts: string[]; sceneKey: string; job: Promise<Prepared> } | null = null;
   const prepareAudio = (candidate: Awaited<ReturnType<typeof generateContent>>["pkg"], dir: string): Promise<Prepared> =>
     (async () => {
-      const voice = await synthesizeVoiceover(beatTexts(candidate), dir);
+      const voice = await synthesizeVoiceover(beatTexts(candidate), dir, episode.voiceId ?? undefined);
       const timing = await timeNarration(voice, dir);
       const scenes = callContext
         .run({ ...callCtx, step: EPISODE_STEPS[6] }, () => planScenesFor(candidate, timing.words))
@@ -956,7 +959,7 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       scenesPlannedEarly = spec.sceneKey === sceneInputKey(pkg);
       if (prepared) await appendNotes(episodeId, ["The voice was recorded and timed while the grounding check ran, from the exact script it approved."]);
     }
-    const voice = prepared?.voice ?? (await synthesizeVoiceover(approvedTexts, workDir));
+    const voice = prepared?.voice ?? (await synthesizeVoiceover(approvedTexts, workDir, episode.voiceId ?? undefined));
     // Settle audio AND nested scene planning before removing rejected drafts.
     const usedDir = prepared ? path.dirname(prepared.voice.audioPath) : null;
     await attempt.discardExcept(usedDir).catch(async (err) => {
@@ -1146,99 +1149,107 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     if (scenePlan.notes.length) await appendNotes(episodeId, scenePlan.notes);
     await appendNotes(episodeId, [describePlan(scenePlan)]);
 
-    // --- Intelligent Hybrid Cinematic Visual System (post-grounding, $0 local) --
-    // Default engine is `hybrid-cinematic`: classifies each scene into its best
-    // visual treatment (`hybrid-cinematic`, `documentary`, `3d-animation`, or
-    // `motion-graphics`), builds a structured pre-generation visual plan, generates
-    // 9:16 plates locally via ComfyUI (or resumes from SHA-256 disk cache), builds
-    // 2.5D depth-parallax maps, and routes conceptual/data scenes to Three.js 3D
-    // heroes and grounded motion graphics. Never runs during speculative attempts.
+    // --- 10-Model Pro Motion Visual System ($0 local, 1080×1920) ------------
     await startStep(EPISODE_STEPS[7]); // Generating cinematic visuals
     throwIfCancelled();
-    const configuredVisualEngine = (await getSetting("visualEngine")) ?? DEFAULT_VISUAL_ENGINE;
-    const visualOut = await callContext.run({ ...callCtx, step: EPISODE_STEPS[7] }, () =>
-      generateEpisodeVisuals({
-        episodeId,
-        bookTitle: episode.book.title,
-        author: episode.book.authorVerified ? episode.book.author : null,
-        archetype: episode.book.archetype,
-        pkg,
-        scenes: scenePlan.scenes,
-        theme,
-        pageWords,
-        engine: configuredVisualEngine,
-        previousManifestJson: episode.visualManifest,
-        onPartialManifest: async (partial) => {
-          await prisma.episode
-            .update({
-              where: { id: episodeId },
-              data: {
-                visualEngine: partial.engine,
-                visualManifest: JSON.stringify(partial),
-              },
-            })
-            .catch(() => {});
-        },
-      }),
-    );
-    if (visualOut.notes.length) await appendNotes(episodeId, visualOut.notes);
-
     const configuredReelModel = await getSetting("reelModel");
     const activeReelModel: ReelModelId = isReelModelId(episode.reelStyle)
       ? episode.reelStyle
       : isReelModelId(configuredReelModel)
         ? configuredReelModel
         : chooseAutoReelModel(`${episode.book.title} ${pkg.title} ${pkg.hook}`);
-    const styledScenes = applyReelModelToScenes(activeReelModel, visualOut.scenes, pkg);
+    const styledScenes = applyReelModelToScenes(activeReelModel, scenePlan.scenes, pkg);
+    await appendNotes(episodeId, [`10-Model Pro Motion Engine: selected model "${activeReelModel}".`]);
+
+    const proPreview = buildProMotionComposition({
+      model: activeReelModel,
+      pkg,
+      beats: timedBeats,
+      words: timing.words,
+      totalDuration: voice.totalDuration,
+      audioOffsetSec: AUDIO_OFFSET,
+      outroTailSec: OUTRO_TAIL,
+      bookTitle: episode.book.title,
+      author: episode.book.authorVerified ? episode.book.author : null,
+      bookLink: episode.book.bookLink,
+      pageWords,
+      music: true,
+      sfx: true,
+    });
 
     const hasMusic = await musicJob;
     const sfxPath = path.join(workDir, "sfx.wav");
-    const hasSfx = await generateSfxTrack({
-      durationSec: compositionDuration,
-      audioOffsetSec: AUDIO_OFFSET,
-      scenes: styledScenes,
-      strokes: columnSteps.map((st) => ({ start: st.start, end: st.end })),
-      speechSpans: timing.words.map((w) => ({ start: w.start, end: w.end })),
-      outPath: sfxPath,
-    }).then(
-      ({ cues }) => cues.length > 0,
-      async (err: unknown) => {
-        await appendNotes(episodeId, [`SFX track generation failed (${message(err)}) — rendering without SFX.`]);
-        return false;
-      },
-    );
+    const speechSpans = timing.words.map((w) => ({ start: w.start, end: w.end }));
+    const hasSfx = await (async () => {
+      const lib = await loadProjectSfxLibrary();
+      if (lib.length > 0 && proPreview.sfxMoments.length > 0) {
+        const byName = new Map(lib.map((s) => [s.fileName, s]));
+        let lastFileName = "";
+        const plan = proPreview.sfxMoments.map((m, idx) => {
+          const rolePool = lib.filter((s) => s.roles.includes(m.role) && s.fileName !== lastFileName);
+          const exact = byName.get(m.preferredFile);
+          const chosen =
+            exact && exact.fileName !== lastFileName
+              ? exact
+              : rolePool.length > 0
+                ? rolePool[idx % rolePool.length]
+                : lib[idx % lib.length];
+          lastFileName = chosen.fileName;
+          return {
+            timeSec: m.timeSec,
+            kind: m.kind,
+            role: m.role,
+            modelId: activeReelModel,
+            fileName: chosen.fileName,
+            gainScale: m.gainScale ?? 1.95,
+            transientWeight: m.transientWeight ?? 0.95,
+            sceneIndex: m.sceneIndex,
+          };
+        });
+        const buf = renderProMotionSfxBuffer({
+          durationSec: compositionDuration,
+          plan,
+          library: lib,
+          speechSpans,
+          audioOffsetSec: AUDIO_OFFSET,
+        });
+        await fs.writeFile(sfxPath, toWav(buf));
+        await appendNotes(episodeId, [
+          `SFX studio choreography (${activeReelModel}): synced ${plan.length} per-motion cues across ${new Set(plan.map((p) => p.fileName)).size} studio foley assets.`,
+        ]);
+        return true;
+      }
+      const fallback = await generateSfxTrack({
+        durationSec: compositionDuration,
+        audioOffsetSec: AUDIO_OFFSET,
+        scenes: styledScenes,
+        strokes: columnSteps.map((st) => ({ start: st.start, end: st.end })),
+        speechSpans,
+        reelModel: activeReelModel,
+        seedKey: `${episodeId}::${pkg.title}`,
+        outPath: sfxPath,
+      });
+      return fallback.cues.length > 0;
+    })().catch(async (err: unknown) => {
+      await appendNotes(episodeId, [`SFX track generation failed (${message(err)}) — rendering without SFX.`]);
+      return false;
+    });
 
     await startStep(EPISODE_STEPS[8]); // Building the composition
-    const html = buildComposition({
+    const { html } = buildProMotionComposition({
+      model: activeReelModel,
       pkg,
       beats: timedBeats,
-      captions,
-      // `pageIndex`: the book's own page numbers, which is what a beat's `sourcePage` is.
-      pages: compPages.map((p) => ({
-        src: p.src,
-        width: p.width,
-        height: p.height,
-        pageIndex: p.pageIndex,
-        ...(hiByPageIndex.has(p.pageIndex) ? { hiSrc: `assets/${path.basename(hiByPageIndex.get(p.pageIndex)!)}` } : {}),
-      })),
-      sweeps,
-      camera,
-      theme,
+      words: timing.words,
       totalDuration: voice.totalDuration,
+      audioOffsetSec: AUDIO_OFFSET,
+      outroTailSec: OUTRO_TAIL,
+      bookTitle: episode.book.title,
+      author: episode.book.authorVerified ? episode.book.author : null,
+      bookLink: episode.book.bookLink,
+      pageWords,
       music: hasMusic,
       sfx: hasSfx,
-      viralCaptions: true,
-      reelStyle: activeReelModel,
-      bookTitle: episode.book.title,
-      // The byline shows a name ONLY when the four-link verification chain
-      // established one. `authorVerified` is that chain's verdict; an
-      // unverified author is passed as null and the byline renders the title
-      // alone -- no placeholder, no "Unknown", no guess. Same rule the content
-      // writer is held to (it is never handed an unverified name either).
-      author: episode.book.authorVerified ? episode.book.author : null,
-      // Null unless the operator typed one. No link, no purchase card.
-      bookLink: episode.book.bookLink,
-      scenes: styledScenes,
     });
 
     await prisma.episode.update({
@@ -1251,15 +1262,10 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
         timingSource: timing.source,
         scenePlan: JSON.stringify(styledScenes),
         reelStyle: activeReelModel,
-        visualEngine: visualOut.engine,
-        visualManifest: JSON.stringify(visualOut.manifest),
+        visualEngine: "pro-motion-10",
+        visualManifest: JSON.stringify({ engine: "pro-motion-10", model: activeReelModel, beats: pkg.beats.length }),
         durationSec: voice.totalDuration,
         audioPath: voice.audioPath,
-        // What narrated THIS video, from the recording itself rather than the
-        // setting as it reads later: the operator can change the voice the
-        // moment the run starts, and an episode must state what it was made with.
-        // Through `voiceFields` because a provider with no stored voice resolves
-        // to "", which is "not recorded" and must be stored as NULL.
         ...voiceFields({ voiceId: voice.voiceId, voiceProvider: voice.provider }),
         visualPlan: JSON.stringify({ ...range, sweeps, camera }),
       },
@@ -1331,7 +1337,6 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
       assets: [
         ...compPages.map((p) => ({ from: p.from, to: p.to })),
         ...[...hiByPageIndex.values()].map((f) => ({ from: f, to: path.basename(f) })),
-        ...visualOut.projectAssets,
       ],
     });
     await prisma.episode.update({ where: { id: episodeId }, data: { projectPath: projectDir } });
@@ -1346,9 +1351,9 @@ export async function runEpisode(episodeId: string, opts: { approvedScript?: App
     checking.catch(() => {}); // a render that fails first must not leave this unhandled
 
     await startStep(EPISODE_STEPS[10]); // Rendering the video
-    const quality = ((await getSetting("renderQuality")) as "draft" | "high" | null) ?? "draft";
+    const quality = ((await getSetting("renderQuality")) as "draft" | "high" | null) ?? "high";
     const rawMode = ((await getSetting("renderMode")) as "local" | "cloud" | null) ?? "local";
-    const mode = isHybridVisualEngine(visualOut.engine) ? enforceFreeRenderMode(rawMode) : rawMode;
+    const mode = enforceFreeRenderMode(rawMode);
     const outputAbs = path.join(RENDER_DIR, `${episodeId}.mp4`);
     const recordCheck = async () => {
       const check = await checking;

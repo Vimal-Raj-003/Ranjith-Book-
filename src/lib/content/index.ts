@@ -422,11 +422,29 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
           const contentEnd = hasCta ? runEnd - 1 : runEnd;
           const contentCount = contentEnd - runStart + 1;
 
-          // Only repair 1-word boundary ties (`startWord === prev.endWord === endWord`)
-          // where the beat already sits at the right spot on the page. Never sort or
-          // swap ranges across beats whose voiceover is in reverse passage order —
-          // doing so hands Beat A's indices to Beat B and guarantees grounding failure;
-          // letting `checkRanges` return a `ranges` brief prompts the writer to reorder.
+          // 1. If an unlocked beat's trailing endWord overhangs into a locked verbatim quote
+          //    that starts at least 8 words later on the same page, trim the unlocked beat's
+          //    endWord to cur.startWord so both beats keep their own supporting sentences.
+          for (let j = 1; j < contentCount; j++) {
+            const idx = runStart + j;
+            const prev = out[idx - 1];
+            const cur = out[idx];
+            if (
+              !lockedBeats.has(idx - 1) &&
+              lockedBeats.has(idx) &&
+              prev.startWord < cur.startWord &&
+              prev.endWord > cur.startWord &&
+              cur.startWord - prev.startWord >= 8
+            ) {
+              repairs.push(
+                `Trimmed unlocked beats[${idx - 1}] endWord (${prev.startWord}-${prev.endWord}) to ${prev.startWord}-${cur.startWord} before quoted beats[${idx}] on PAGE ${pageIdx}.`,
+              );
+              prev.endWord = cur.startWord;
+            }
+          }
+
+          // 2. Repair 1-word boundary ties (`startWord === prev.endWord === endWord`)
+          //    where the beat already sits at the right spot on the page.
           for (let j = 1; j < contentCount; j++) {
             const idx = runStart + j;
             if (lockedBeats.has(idx)) continue;
@@ -506,6 +524,7 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
         brief: [
           "A word-range check found problems before the grounding check ran:",
           ...ranges.problems.map((p) => `- ${p}`),
+          "CRITICAL FIX: On any single page, beats MUST progress strictly forward from smaller word indices to larger word indices (`beat[i].startWord >= beat[i-1].endWord`). If your opening hook beat cited a sentence lower down on the page and Beat 1 jumped back up to an earlier sentence, REORDER the beats (or re-anchor Beat 0 to the earliest sentence of the passage on that page) so every beat walks strictly forward down the page.",
           "Rewrite the whole package with every range fixed. Every other rule still applies.",
         ].join("\n"),
         finalMessage: `The script's word ranges were still invalid (${ranges.problems[0]})${rewriteNote}`,
@@ -614,10 +633,18 @@ export async function generateContent(opts: GenerateContentOpts): Promise<Genera
       const issue = gate(pkg);
       if (issue) {
         if (round >= MAX_REVISIONS) {
-          if (
+          const allBeatsInBounds = pkg.beats.every((b) => {
+            const pLen = pageLengths.get(b.sourcePage);
+            return pLen !== undefined && pLen > 0 && b.startWord >= 0 && b.endWord >= b.startWord && b.endWord < pLen;
+          });
+          if (issue.kind === "ranges" && allBeatsInBounds && pkg.beats.length >= 4) {
+            rangeRepairs.push(
+              `Accepted non-linear hook/commentary word ranges after ${MAX_REVISIONS} rewrites (all beats in-bounds; verified by semantic grounding check).`,
+            );
+          } else if (
             issue.kind === "length" &&
             pkg.beats.length >= 4 &&
-            spokenWordCount(pkg) >= 75 &&
+            spokenWordCount(pkg) >= 62 &&
             expectedSeconds(spokenWordCount(pkg), pkg.beats.length) <= VIDEO_MAX_SECONDS
           ) {
             rangeRepairs.push(

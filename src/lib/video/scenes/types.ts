@@ -14,6 +14,7 @@
 import type { SourceRef } from "../../analysis/types";
 import type { HeroId } from "./heroes";
 import type { ProModelKind, ProModelMeta } from "./pro-stage";
+import type { VectorDiagramKind } from "./vector-stage";
 import type {
   AtmosphereKind,
   CameraMoveKind,
@@ -211,6 +212,8 @@ export interface Scene {
   transitionIn?: SceneTransitionKind;
   /** Optional blurred cinematic plate backdrop behind non-book motion-graphics scenes so cards never float on an empty grid. */
   bgImageSrc?: string;
+  /** Optional per-scene model skin (`vision-bento`, `investigative-dossier`, `neuro-lab`, `trifecta-viral`, `dankoe-vector`, `vox-explainer`, `magnates-cinema`) for 7-in-1 Omni Ultra compositions. */
+  sceneModel?: string;
 
   // --- per-template content, all resolved and checked ---------------------
   /** `quote`: the words as the book prints them, plus the page they are on. */
@@ -250,6 +253,8 @@ export interface Scene {
     plate?: CinePlateSpec;
     /** When true, renders crisp 1080p SVG geometric vector motion diagrams instead of WebGL raster/3D canvas. */
     vectorMode?: boolean;
+    /** Optional explicit geometric vector diagram kind (`vector-stage.ts`) to prevent repeats across scenes. */
+    vectorKind?: VectorDiagramKind;
     /** Optional Ultra-Pro Creator bespoke interactive metaphor/example rig (`pro-stage.ts`). */
     proModel?: ProModelKind;
     /** Optional episode-grounded dynamic labels for `proModel`. */

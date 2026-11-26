@@ -102,9 +102,9 @@ export interface RenderedScene {
  */
 export const FULL_FRAME: SceneRect = { x: 0, y: 0, w: 1080, h: 1920 };
 
-/** Internal render-buffer sizes of a hero canvas and its bloom (native 1080x1920 Full HD for crisp plates). */
+/** Internal render-buffer sizes of a hero canvas and its bloom (native 1080x1920 Full HD + smooth 270x480 blurred bloom). */
 export const CINE_BUFFER = { w: 1080, h: 1920 };
-export const CINE_BLOOM = { w: 90, h: 160 };
+export const CINE_BLOOM = { w: 270, h: 480 };
 
 let cineSource: string | null = null;
 /**
@@ -407,6 +407,8 @@ function cinematic(scene: Scene, i: number): RenderedScene {
         anims.push({ s: i, e: spec.el, k: "draw", t, d, v: spec.val ?? 300 });
       } else if (spec.kind === "wipe") {
         anims.push({ s: i, e: spec.el, k: "wipe", t, d });
+      } else if (spec.kind === "grow") {
+        anims.push({ s: i, e: spec.el, k: "grow", t, d });
       } else if (spec.kind === "whip-pan") {
         anims.push({ s: i, e: spec.el, k: "whip-pan", t, d, v: spec.val ?? -36 });
       } else {
@@ -425,7 +427,8 @@ function cinematic(scene: Scene, i: number): RenderedScene {
   if (cine.vectorMode) {
     const narration = words.map((w) => w.word).join(" ") || cine.keyword || cine.lead;
     const vecBaseEl = 400 + words.length + Array.from(cine.keyword ?? "").length;
-    const vec = buildVectorDiagram(vectorKindForHero(cine.hero, narration), vecBaseEl);
+    const chosenVecKind = cine.vectorKind ?? vectorKindForHero(cine.hero, narration);
+    const vec = buildVectorDiagram(chosenVecKind, vecBaseEl);
     const sceneSpan = Math.max(0.8, scene.end - scene.start);
     for (const dr of vec.draws) {
       const t = Math.min(scene.start + sceneSpan - 0.25, scene.start + dr.delaySec);
@@ -922,9 +925,14 @@ export function renderScene(scene: Scene, rect: SceneRect, accent: string): Rend
     !cine && scene.bgImageSrc
       ? `<div class="sc-bg-plate" style="left:${-r.x}px;top:${-r.y}px;width:1080px;height:1920px"><img src="${esc(scene.bgImageSrc)}" alt="" /><div class="sc-bg-scrim"></div></div>`
       : "";
+  const skinBackdrop =
+    scene.sceneModel && !hasPlate
+      ? `<div class="sc-scene-skin" style="left:${-r.x}px;top:${-r.y}px;width:1080px;height:1920px"></div>`
+      : "";
+  const modelAttr = scene.sceneModel ? ` data-model="${esc(scene.sceneModel)}"` : "";
 
   return {
-    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}${hasPlate ? " sc-has-plate" : ""}" data-scene="${i}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${bgPlateMarkup}${body.markup}</div>`,
+    markup: `<div class="sc${cine ? " sc-cine" : ""}${first ? " sc-first" : ""}${hasPlate ? " sc-has-plate" : ""}" data-scene="${i}"${modelAttr} style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px">${skinBackdrop}${bgPlateMarkup}${body.markup}</div>`,
     anims: [...layerAnims, ...body.anims],
   };
 }
@@ -981,9 +989,9 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
         display:flex; align-items:center; justify-content:center;
         font-family: Inter, system-ui, sans-serif; color:${p.hookInk}; }
   .sc > * { width:100%; position:relative; }
-  .sc > .sc-bg-plate { position:absolute; pointer-events:none; overflow:hidden; }
-  .sc-bg-plate img { display:block; width:100%; height:100%; object-fit:cover; filter:blur(5px) saturate(1.28) contrast(1.12); transform:scale(1.06); opacity:0.88; }
-  .sc-bg-scrim { position:absolute; inset:0; background:radial-gradient(95% 78% at 50% 45%, ${alpha(plateScrimColor, 0.36)} 0%, ${alpha(plateScrimColor, 0.78)} 100%); }
+  .sc > .sc-bg-plate, .sc > .sc-scene-skin { position:absolute; pointer-events:none; overflow:hidden; }
+  .sc-bg-plate img { display:block; width:100%; height:100%; object-fit:cover; filter:blur(9px) saturate(0.92) contrast(1.03); transform:scale(1.06); opacity:0.84; }
+  .sc-bg-scrim { position:absolute; inset:0; background:radial-gradient(95% 78% at 50% 45%, ${alpha(plateScrimColor, 0.48)} 0%, ${alpha(plateScrimColor, 0.86)} 100%); }
   .sc [data-el] { opacity:0; visibility:hidden; }
 
   /* The content-aware glow: one element, one colour tween per scene, sitting
@@ -1132,8 +1140,8 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   /* The opening hook rests visible: it owns frame zero, like the hook card did. */
   .sc.sc-first { opacity:1; visibility:visible; }
   .cine-canvas, .cine-bloom { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; }
-  .cine-canvas { filter:contrast(1.1) saturate(1.24) brightness(1.06); }
-  .cine-bloom { mix-blend-mode:${light ? "multiply" : "screen"}; }
+  .cine-canvas { filter:contrast(1.04) saturate(1.04) brightness(1.02); }
+  .cine-bloom { mix-blend-mode:${light ? "multiply" : "screen"}; filter:blur(28px); }
   .cine-plate-src { position:absolute; left:0; top:0; width:1px; height:1px; opacity:0; pointer-events:none; }
   .cine-video { position:absolute; left:0; top:0; width:${1080}px; height:${1920}px; object-fit:cover; filter:contrast(1.08) saturate(1.18) brightness(1.04); }
   .cine-plate-scrim { position:absolute; inset:0; pointer-events:none;
@@ -1236,6 +1244,16 @@ export function sceneCss(theme: BookTheme, rect: SceneRect): string {
   .pro-ev-body { display:flex; flex-direction:column; gap:4px; min-width:0; }
   .pro-ev-title { font-size:32px; font-weight:800; line-height:1.18; color:${cardInk}; }
   .pro-ev-sub { font-size:24px; font-weight:600; line-height:1.24; color:${alpha(cardInk, 0.76)}; }
+  .pro-batt-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:14px; margin-bottom:24px; }
+  .pro-batt-bar { width:72%; height:44px; border-radius:10px; background:${alpha(cardInk, 0.14)}; }
+  .pro-batt-on { background:${p.accent}; box-shadow:0 0 18px ${alpha(p.accent, 0.45)}; }
+  .pro-bars-stack { display:flex; flex-direction:column; gap:24px; margin:12px 0 26px; }
+  .pro-bar-group { display:flex; flex-direction:column; gap:10px; }
+  .pro-bar-meta { display:flex; align-items:center; justify-content:space-between; font-size:26px; font-weight:800; color:${cardInk}; }
+  .pro-bar-pct { font-variant-numeric:tabular-nums; color:${alpha(cardInk, 0.68)}; }
+  .pro-bar-pct-hi { color:${key}; }
+  .pro-meter-muted { background:${alpha(cardInk, 0.34)}; }
+  .pro-step-pillar { transform-box:fill-box; transform-origin:bottom center; }
 `;
 }
 
@@ -1295,10 +1313,10 @@ export function environmentCss(theme: BookTheme): string {
       repeating-linear-gradient(74deg, ${alpha(p.ink, w(0.16, 0.1))} 0px, ${alpha(p.ink, w(0.16, 0.1))} 1px, transparent 1px, transparent 13px),
       radial-gradient(140% 110% at 70% 8%, ${alpha(p.backdropDeep, w(0.9, 0.34))} 0%, ${alpha(p.backdropDeep, w(0.5, 0.14))} 54%, transparent 84%); }
 
-  /* deep — a tunnel closing in on a faint pool of light, rings spreading from the centre. */
+  /* deep — a tunnel closing in on a faint pool of light, smooth atmospheric falloff. */
   .env-deep { background:
-      radial-gradient(42% 30% at 50% 46%, ${alpha(p.bloomA, w(0.34, 0.3))} 0%, transparent 70%),
-      repeating-radial-gradient(circle at 50% 46%, transparent 0px, transparent 54px, ${alpha(p.accent, w(0.1, 0.08))} 54px, transparent 56px),
+      radial-gradient(46% 34% at 50% 46%, ${alpha(p.bloomA, w(0.32, 0.28))} 0%, transparent 72%),
+      radial-gradient(76% 58% at 50% 46%, ${alpha(p.accent, w(0.12, 0.08))} 0%, transparent 74%),
       radial-gradient(118% 92% at 50% 46%, transparent 24%, ${alpha(p.backdropDeep, w(0.86, 0.3))} 72%, ${alpha(p.vignette, w(0.94, 0.4))} 100%); }
 
   /* warm — a wide, soft, enveloping glow lit from the middle of the frame. */

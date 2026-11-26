@@ -10,6 +10,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { SAMPLE_RATE, toWav } from "./music-synth";
+import {
+  loadProjectSfxLibrary,
+  planItemsToSfxCues,
+  planSelectiveLibrarySfx,
+  renderSelectiveLibrarySfxBuffer,
+  type LoadedSfxSample,
+  type SelectiveLibrarySfxPlanItem,
+} from "./sfx-library";
 import type { Scene } from "../video/scenes/types";
 
 export type SfxKind =
@@ -28,6 +36,10 @@ export type SfxKind =
 export interface SfxCue {
   timeSec: number;
   kind: SfxKind;
+  /** Real audio filename from `<workspace>/sfx/` when backed by the studio SFX library. */
+  fileName?: string;
+  /** Visual model this SFX cue was matched to. */
+  modelId?: string;
 }
 
 export interface SpeechSpan {
@@ -53,6 +65,14 @@ export interface GenerateSfxOptions {
   strokes?: SpeechSpan[];
   /** Optional spoken word spans (in voice clock seconds) for voice-aware sidechain ducking. */
   speechSpans?: SpeechSpan[];
+  /** Active video model (`vision-bento`, `neuro-lab`, `omni-7-ultra`, etc.) for model-matched SFX selection. */
+  reelModel?: string;
+  /** Episode / title seed so different videos pick varied SFX combinations instead of repeating one clip. */
+  seedKey?: string;
+  /** Optional custom SFX directory (defaults to `<workspace>/sfx/`). */
+  sfxDir?: string;
+  /** Defaults to `true` (uses real files from `sfx/` selectively; falls back to procedural if `sfx/` is empty). */
+  preferLibrary?: boolean;
 }
 
 const MOTION_POP_KINDS = new Set<Scene["kind"]>([
@@ -595,15 +615,167 @@ export function renderSfxBuffer(
   return buf;
 }
 
+/**
+ * Studio Hybrid Per-Motion SFX Renderer for `pro-motion-engine`:
+ * Layers real studio recordings from `<workspace>/sfx/` with frame-accurate
+ * procedural transients (`ui-click`, `card-pop`, `marker-swish`, `counter-tick`,
+ * `clock-tick`, `shutter-snap`, `hook-hit`, `scene-whoosh`, `payoff-riser`)
+ * so every motion-graphic reveal, slash, draw, counter, and camera pan has
+ * unmistakable, tactile studio presence under speech.
+ */
+export function renderProMotionSfxBuffer(opts: {
+  durationSec: number;
+  plan: Array<SelectiveLibrarySfxPlanItem & { transientWeight?: number }>;
+  library: LoadedSfxSample[];
+  speechSpans?: SpeechSpan[];
+  audioOffsetSec?: number;
+}): Float32Array {
+  const totalSamples = Math.max(1, Math.round(opts.durationSec * SAMPLE_RATE));
+  const libBus = new Float32Array(totalSamples);
+  const transientDry = new Float32Array(totalSamples);
+  const byName = new Map(opts.library.map((s) => [s.fileName, s]));
+
+  opts.plan.forEach((item, idx) => {
+    const sample = byName.get(item.fileName);
+    if (sample) {
+      const startSec = item.timeSec - sample.anchorOffsetSec;
+      const startSample = Math.round(startSec * SAMPLE_RATE);
+      const gain = sample.baseGain * item.gainScale;
+      const pcm = sample.pcm;
+      for (let i = 0; i < pcm.length; i++) {
+        const dst = startSample + i;
+        if (dst < 0) continue;
+        if (dst >= totalSamples) break;
+        libBus[dst] += pcm[i] * gain;
+      }
+    }
+
+    const tw = item.transientWeight ?? 0.92;
+    if (tw > 0.05) {
+      const temp = new Float32Array(Math.min(totalSamples, Math.round(1.4 * SAMPLE_RATE)));
+      switch (item.kind) {
+        case "hook-hit":
+          addHookHit(temp, 0.02);
+          break;
+        case "scene-whoosh":
+          addSceneWhoosh(temp, 0.02, idx);
+          break;
+        case "page-turn":
+          addPageTurn(temp, 0.02, idx);
+          break;
+        case "marker-swish":
+          addMarkerSwish(temp, 0.02, idx);
+          break;
+        case "counter-tick":
+          addCounterTick(temp, 0.02);
+          break;
+        case "sub-drop":
+          addSubDrop(temp, 0.02);
+          break;
+        case "card-pop":
+          addCardPop(temp, 0.02);
+          break;
+        case "payoff-riser":
+          addPayoffRiser(temp, 0.02);
+          break;
+        case "ui-click":
+          addUiClick(temp, 0.02);
+          break;
+        case "shutter-snap":
+          addShutterSnap(temp, 0.02, idx);
+          break;
+        case "clock-tick":
+          addClockTick(temp, 0.02);
+          break;
+      }
+      const baseDst = Math.round((item.timeSec - 0.02) * SAMPLE_RATE);
+      for (let i = 0; i < temp.length; i++) {
+        const dst = baseDst + i;
+        if (dst < 0) continue;
+        if (dst >= totalSamples) break;
+        transientDry[dst] += temp[i] * tw;
+      }
+    }
+  });
+
+  const transientWet = applyRoomGlue(transientDry);
+  const out = new Float32Array(totalSamples);
+  for (let i = 0; i < totalSamples; i++) {
+    out[i] = libBus[i] + transientWet[i] * 0.95;
+  }
+
+  // Gentle Reels-grade ducking (0.78x during spoken words, 1.0x in breath gaps)
+  // so motion-graphic SFX stay crisp and clearly audible without masking voiceover.
+  if (opts.speechSpans && opts.speechSpans.length > 0) {
+    const audioOffset = opts.audioOffsetSec ?? 0;
+    const gate = new Uint8Array(out.length);
+    for (const sp of opts.speechSpans) {
+      const sIdx = Math.max(0, Math.round((audioOffset + sp.start) * SAMPLE_RATE));
+      const eIdx = Math.min(out.length, Math.round((audioOffset + sp.end) * SAMPLE_RATE));
+      for (let i = sIdx; i < eIdx; i++) gate[i] = 1;
+    }
+    const attackCoeff = 1 - Math.exp(-1 / (0.015 * SAMPLE_RATE));
+    const releaseCoeff = 1 - Math.exp(-1 / (0.11 * SAMPLE_RATE));
+    let g = 1.0;
+    for (let i = 0; i < out.length; i++) {
+      const target = gate[i] ? 0.78 : 1.0;
+      const coeff = target < g ? attackCoeff : releaseCoeff;
+      g += coeff * (target - g);
+      out[i] *= g;
+    }
+  }
+
+  // Punchy studio limiter (-4.7 dBFS = 0.58 linear ceiling)
+  const ceiling = 0.58;
+  for (let i = 0; i < out.length; i++) {
+    const x = out[i];
+    if (Math.abs(x) > ceiling) {
+      out[i] = Math.tanh(x / ceiling) * ceiling;
+    }
+  }
+  return out;
+}
+
 export async function generateSfxTrack(
   opts: GenerateSfxOptions,
-): Promise<{ cues: SfxCue[]; syncReport: EarshotSyncReport }> {
+): Promise<{ cues: SfxCue[]; syncReport: EarshotSyncReport; usedFiles?: string[] }> {
+  const voiceDucked = Boolean(opts.speechSpans && opts.speechSpans.length > 0);
+
+  if (opts.preferLibrary !== false) {
+    const library = await loadProjectSfxLibrary(opts.sfxDir);
+    if (library.length > 0) {
+      const plan = planSelectiveLibrarySfx({
+        durationSec: opts.durationSec,
+        audioOffsetSec: opts.audioOffsetSec,
+        scenes: opts.scenes,
+        library,
+        reelModel: opts.reelModel,
+        seedKey: opts.seedKey,
+      });
+      const cues = planItemsToSfxCues(plan);
+      const buf = renderSelectiveLibrarySfxBuffer({
+        durationSec: opts.durationSec,
+        plan,
+        library,
+        speechSpans: opts.speechSpans,
+        audioOffsetSec: opts.audioOffsetSec,
+      });
+      const syncReport = verifyEarshotSync(buf, cues, voiceDucked);
+      await fs.mkdir(path.dirname(opts.outPath), { recursive: true });
+      await fs.writeFile(opts.outPath, toWav(buf, SAMPLE_RATE));
+      return {
+        cues,
+        syncReport,
+        usedFiles: plan.map((p) => p.fileName),
+      };
+    }
+  }
+
   const cues = planSfxCues(opts);
   const buf = renderSfxBuffer(opts.durationSec, cues, {
     speechSpans: opts.speechSpans,
     audioOffsetSec: opts.audioOffsetSec,
   });
-  const voiceDucked = Boolean(opts.speechSpans && opts.speechSpans.length > 0);
   const syncReport = verifyEarshotSync(buf, cues, voiceDucked);
   await fs.mkdir(path.dirname(opts.outPath), { recursive: true });
   await fs.writeFile(opts.outPath, toWav(buf, SAMPLE_RATE));

@@ -337,32 +337,45 @@
 
   function ease(x) { x = clamp(x, 0, 1); return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; }
 
-  /* -- clock: urgency, routine, the day, deadlines (a clock inside a vortex of light) -- */
+  /* -- clock: urgency, routine, the day, deadlines (a precision chronometer) -- */
   HEROES.clock = function (E) {
     var T = E.T, g = new T.Group();
-    var rim = new T.Mesh(new T.TorusGeometry(1.0, 0.055, 14, 72), std(E, E.light ? 0x2a2622 : 0xd9b36a, { metal: 0.9, rough: 0.28, emissive: E.acc, ei: E.light ? 0 : 0.25 }));
+    var rim = new T.Mesh(new T.TorusGeometry(1.0, 0.052, 24, 128), std(E, E.light ? 0x2a303c : 0xdbe7f6, { metal: 0.88, rough: 0.24, emissive: E.acc, ei: E.light ? 0 : 0.16 }));
     g.add(rim);
-    var face = new T.Mesh(new T.CircleGeometry(0.96, 64), std(E, E.light ? 0xf4ecda : 0x0b0d14, { metal: 0.1, rough: 0.8 }));
+    var innerRing = new T.Mesh(new T.TorusGeometry(0.74, 0.008, 12, 96), new T.MeshBasicMaterial({ color: E.light ? 0x475569 : E.acc, transparent: true, opacity: 0.42 }));
+    innerRing.position.z = 0.006; g.add(innerRing);
+    var face = new T.Mesh(new T.CircleGeometry(0.965, 96), std(E, E.light ? 0xf4f6fa : 0x09111f, { metal: 0.14, rough: 0.76 }));
+    face.geometry.clearGroups();
     face.position.z = -0.02; g.add(face);
+    // 60 anti-aliased 3D polygon tick bars (single ungrouped BufferGeometry — never 1px gl.LINES that alias/stair-step).
     var ticks = new T.BufferGeometry(), tp = [];
     for (var i = 0; i < 60; i++) {
-      var a = (i / 60) * Math.PI * 2, big = i % 5 === 0, r0 = big ? 0.78 : 0.88, r1 = 0.94;
-      tp.push(Math.sin(a) * r0, Math.cos(a) * r0, 0.0, Math.sin(a) * r1, Math.cos(a) * r1, 0.0);
+      var a = (i / 60) * Math.PI * 2, big = i % 5 === 0;
+      var r0 = big ? 0.785 : 0.868, r1 = 0.936, hw = big ? 0.013 : 0.0052;
+      var ux = Math.sin(a), uy = Math.cos(a), px = uy * hw, py = -ux * hw;
+      var x0a = ux * r0 - px, y0a = uy * r0 - py;
+      var x0b = ux * r0 + px, y0b = uy * r0 + py;
+      var x1b = ux * r1 + px, y1b = uy * r1 + py;
+      var x1a = ux * r1 - px, y1a = uy * r1 - py;
+      tp.push(x0a, y0a, 0.008, x0b, y0b, 0.008, x1b, y1b, 0.008);
+      tp.push(x0a, y0a, 0.008, x1b, y1b, 0.008, x1a, y1a, 0.008);
     }
     ticks.setAttribute("position", new T.BufferAttribute(new Float32Array(tp), 3));
-    g.add(new T.LineSegments(ticks, lineMat(E, E.light ? 0x2a2622 : 0xf0d9a0, 0.95)));
-    var hourH = new T.Mesh(poly(T, [[-0.035, -0.05], [0.035, -0.05], [0.02, 0.5], [-0.02, 0.5]]), std(E, E.light ? 0x2a2622 : 0xf6e3b0, { metal: 0.6, rough: 0.35, double: true }));
-    var minH = new T.Mesh(poly(T, [[-0.026, -0.07], [0.026, -0.07], [0.012, 0.8], [-0.012, 0.8]]), std(E, E.light ? 0x2a2622 : 0xf6e3b0, { metal: 0.6, rough: 0.35, double: true }));
-    var secH = new T.Mesh(poly(T, [[-0.008, -0.16], [0.008, -0.16], [0.004, 0.88], [-0.004, 0.88]]), new T.MeshBasicMaterial({ color: E.acc, side: T.DoubleSide }));
+    ticks.computeVertexNormals();
+    g.add(new T.Mesh(ticks, new T.MeshBasicMaterial({ color: E.light ? 0x1e293b : 0xe2e8f0, side: T.DoubleSide })));
+    var hourH = new T.Mesh(poly(T, [[-0.034, -0.06], [0.034, -0.06], [0.018, 0.5], [-0.018, 0.5]]), std(E, E.light ? 0x1e293b : 0xf1f5f9, { metal: 0.65, rough: 0.3, double: true }));
+    var minH = new T.Mesh(poly(T, [[-0.025, -0.08], [0.025, -0.08], [0.011, 0.8], [-0.011, 0.8]]), std(E, E.light ? 0x1e293b : 0xf1f5f9, { metal: 0.65, rough: 0.3, double: true }));
+    var secH = new T.Mesh(poly(T, [[-0.009, -0.16], [0.009, -0.16], [0.004, 0.88], [-0.004, 0.88]]), new T.MeshBasicMaterial({ color: E.acc, side: T.DoubleSide }));
     hourH.position.z = 0.03; minH.position.z = 0.05; secH.position.z = 0.07;
     g.add(hourH, minH, secH);
-    g.add(new T.Mesh(new T.SphereGeometry(0.06, 16, 12), std(E, E.acc, { emissive: E.acc, ei: 0.6 }))).position.z = 0.08;
-    // The vortex: golden-angle spiral arms that rotate and slowly draw in.
+    var capPin = new T.Mesh(new T.SphereGeometry(0.058, 24, 18), std(E, E.acc, { emissive: E.acc, ei: 0.45 }));
+    capPin.position.z = 0.08; g.add(capPin);
+    // The vortex: golden-angle spiral arms (auto-hidden when E.noParticles is active).
     var N = 900, vort = points(E, N, 0.05, E.acc, E.light ? 0.7 : 0.9), vort2 = points(E, 500, 0.06, E.acc2, E.light ? 0.5 : 0.7);
     var rnd = mulberry(5), seeds = [];
     for (i = 0; i < N; i++) seeds.push([rnd(), rnd(), rnd()]);
     g.add(vort, vort2);
-    var halo = sprite(E, E.acc, 4.2, E.light ? 0 : 0.28); halo.position.z = -0.6; g.add(halo);
+    var halo = sprite(E, E.acc, 3.8, E.light ? 0 : 0.18); halo.position.z = -0.6; g.add(halo);
     g.add(contactShadow(E, 3.2, -1.7));
     return {
       group: g,
@@ -385,9 +398,9 @@
         secH.rotation.z = -tt * 6.2832 / 6;
         minH.rotation.z = -tt * 6.2832 / 72;
         hourH.rotation.z = -tt * 6.2832 / 864 + 0.9;
-        g.rotation.y = Math.sin(t * 0.35) * 0.18; g.rotation.x = Math.sin(t * 0.27) * 0.06;
+        g.rotation.y = Math.sin(t * 0.35) * 0.16; g.rotation.x = Math.sin(t * 0.27) * 0.05;
       },
-      cam: function (t, p, cam) { var d = lerp(8.6, 6.6, ease(p)); cam.position.set(0, 0.1, d); cam.lookAt(0, 0, 0); },
+      cam: function (t, p, cam) { var d = lerp(8.4, 6.6, ease(p)); cam.position.set(0, 0.1, d); cam.lookAt(0, 0, 0); },
     };
   };
 

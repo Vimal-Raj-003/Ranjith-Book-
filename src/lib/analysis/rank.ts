@@ -10,17 +10,17 @@
  */
 import { SCORE_KEYS, type Candidate, type IdeaScores, type ScoredCandidate } from "./types";
 
-/** How much each dimension counts toward the overall score. */
+/** How much each dimension counts toward the overall viral & retention score. */
 export const WEIGHTS: IdeaScores = {
   viewerUsefulness: 1.2,
-  educationalValue: 1.0,
-  hookPotential: 1.3,
-  storyPotential: 0.9,
-  practicalValue: 1.0,
-  emotionalInterest: 0.9,
-  uniqueness: 1.1,
-  youtubeSuitability: 1.3,
-  visualPotential: 0.8,
+  educationalValue: 0.9,
+  hookPotential: 1.6,
+  storyPotential: 1.0,
+  practicalValue: 1.1,
+  emotionalInterest: 1.3,
+  uniqueness: 1.3,
+  youtubeSuitability: 1.5,
+  visualPotential: 1.0,
 };
 
 export const RANK_SCHEMA = {
@@ -44,22 +44,25 @@ export const RANK_SCHEMA = {
   },
 } as const;
 
-export const RANK_SYSTEM = `You are the commissioning editor for a channel of 1-2 minute educational videos (YouTube Shorts / Reels), each built on one idea from a single book.
+export const RANK_SYSTEM = `You are the commissioning editor for a high-reach channel of 60-120 second vertical videos (YouTube Shorts & Instagram Reels), each built on one sharp idea from a single book.
 
-You are given every candidate idea found in the book. Score EACH candidate from 1 to 10 on:
-- viewerUsefulness: does a viewer walk away better off?
-- educationalValue: does it teach something real?
-- hookPotential: would the first line stop someone scrolling?
-- storyPotential: is there a narrative, example or scene to tell?
-- practicalValue: can a viewer act on it?
-- emotionalInterest: does it make someone feel something?
-- uniqueness: is it fresh, or a cliché every other channel covers?
-- youtubeSuitability: does it fit a 60-120 second video, and would it be shared?
-- visualPotential: can it be SHOWN, not only told?
+You are given every candidate idea found in the book. Score EACH candidate ruthlessly from 1 to 10 on:
+- viewerUsefulness: does a viewer walk away with a clear shift in how they act or think today?
+- educationalValue: does it teach a real mechanism or insight rather than an empty platitude?
+- hookPotential: would the opening hook stop a cold stranger scrolling within 2 seconds?
+- storyPotential: is there a concrete example, tension arc, or human stakes to hold attention past the midpoint?
+- practicalValue: can a viewer immediately test or apply it in real life?
+- emotionalInterest: does it hit a real nerve — relief, recognition ("that's me"), urgency, or surprise?
+- uniqueness: is it a counter-intuitive angle or hidden truth, rather than generic self-help advice every channel repeats?
+- youtubeSuitability: does it build naturally in 60-120 seconds AND trigger a strong Save ("I need to remember this") or Share ("my friend needs to hear this") impulse?
+- visualPotential: can its contrast, steps, or payoff be SHOWN crisply on kinetic motion cards?
 
-Use the whole scale and compare candidates against each other: most should NOT score 8+.
+Calibration rules:
+- Use the full 1-10 scale and compare candidates head-to-head.
+- Reserve 8-10 strictly for scroll-stopping, counter-intuitive, highly shareable/saveable topics in plain modern English.
+- Cap dry textbook definitions, broad chapter summaries, or obvious clichés ("work hard", "sleep enough", "stay focused" with no fresh mechanism) at 5 or below.
 
-duplicateOf: if a candidate makes essentially the same point as another candidate, set duplicateOf to the id of the STRONGER of the two (and leave the stronger one's duplicateOf null). Ideas that are related but make genuinely different points are not duplicates. Otherwise null.
+duplicateOf: if a candidate makes essentially the same point as another candidate, set duplicateOf to the id of the STRONGER, punchier one (and leave the stronger one's duplicateOf null). Ideas that are related but make genuinely different points are not duplicates. Otherwise null.
 
 Score every id you are given, exactly once.`;
 

@@ -8,6 +8,7 @@ import PipelineRail from "./PipelineRail";
 import AnalysisElapsed from "./AnalysisElapsed";
 import IdeaCard from "./IdeaCard";
 import VideoPreview from "./VideoPreview";
+import { VoiceSampleDropdown } from "./VoiceSamplePicker";
 import { Disclosure, EmptyState, Panel } from "./ui";
 import EpisodeCard, { POLL_MS } from "./EpisodeCard";
 import { useToast } from "./Toast";
@@ -51,6 +52,8 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   const [savingRights, setSavingRights] = useState(false);
   const [reelModel, setReelModel] = useState<string>(AUTO_REEL_MODEL_OPTION.id);
   const [perIdeaModels, setPerIdeaModels] = useState<Record<string, string>>({});
+  const [batchVoice, setBatchVoice] = useState<string>("auto");
+  const [perIdeaVoices, setPerIdeaVoices] = useState<Record<string, string>>({});
   const [makingIdeaId, setMakingIdeaId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -77,6 +80,17 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
     }).catch(() => {});
   }
 
+  async function updateToolbarVoice(next: string) {
+    setBatchVoice(next);
+    if (next !== "auto" && next !== "inspector") {
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ voiceId: next }),
+      }).catch(() => {});
+    }
+  }
+
   // One EpisodeCard per video polls it and reports here; the preview reads
   // the same snapshot, exactly as the photo Studio does.
   const handleEpisodeState = useCallback((state: EpisodeState) => {
@@ -90,13 +104,21 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
   async function generateForIdeas(ideaIds: string[]) {
     if (!view || !ideaIds.length) return;
     const scopedOverrides: Record<string, string> = {};
+    const scopedVoices: Record<string, string> = {};
     for (const id of ideaIds) {
       if (perIdeaModels[id]) scopedOverrides[id] = perIdeaModels[id];
+      if (perIdeaVoices[id]) scopedVoices[id] = perIdeaVoices[id];
     }
     const res = await fetch(`/api/books/${uploadId}/videos`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ideaIds, reelModel, perIdeaModels: scopedOverrides }),
+      body: JSON.stringify({
+        ideaIds,
+        reelModel,
+        perIdeaModels: scopedOverrides,
+        voiceMode: batchVoice,
+        perIdeaVoices: scopedVoices,
+      }),
     });
     const body = await res.json().catch(() => null);
     if (!res.ok || !body?.episodes) throw new Error(body?.error || strings.books.generateError);
@@ -456,6 +478,19 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
                 ))}
               </select>
             </label>
+            <div className="flex items-center gap-1.5 text-[12px]" style={{ color: "var(--mute)" }}>
+              <span className="font-mono text-[11px] uppercase tracking-wider">{strings.books.voiceLabel}</span>
+              <VoiceSampleDropdown
+                ariaLabel={strings.books.voiceLabel}
+                value={batchVoice}
+                disabled={generating}
+                onChange={(next) => void updateToolbarVoice(next)}
+                extraOptions={[
+                  { value: "auto", label: strings.books.voiceAutoRotate },
+                  { value: "inspector", label: strings.books.voiceFollowInspector },
+                ]}
+              />
+            </div>
             <button
               type="button"
               onClick={generate}
@@ -485,6 +520,15 @@ export default function BookAnalysis({ uploadId, onChanged }: { uploadId: string
                         const copy = { ...prev };
                         if (!nextModel) delete copy[idea.id];
                         else copy[idea.id] = nextModel;
+                        return copy;
+                      })
+                    }
+                    voiceValue={perIdeaVoices[idea.id] ?? ""}
+                    onChangeVoice={(nextVoice) =>
+                      setPerIdeaVoices((prev) => {
+                        const copy = { ...prev };
+                        if (!nextVoice) delete copy[idea.id];
+                        else copy[idea.id] = nextVoice;
                         return copy;
                       })
                     }

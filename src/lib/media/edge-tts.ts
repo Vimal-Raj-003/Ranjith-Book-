@@ -14,21 +14,43 @@ import { abortOpts } from "../cancel";
 
 const exec = promisify(execFile);
 
-/** Map BookReel's voice catalog IDs to rock-steady monolingual studio neural narrator voices (never MultilingualNeural, which shifts persona across short isolated beats). */
+/** Map BookReel's 6 male + 6 female voice catalog IDs to flagship Studio Neural Creator voices (monolingual neural voices for 100% consistent persona across every beat). */
 export const EDGE_VOICE_MAP: Readonly<Record<string, { voice: string; rate: string; pitch: string }>> = {
-  // Flagship deep, warm, magnetic documentary storyteller — 100% consistent timbre across every sentence
-  charles: { voice: "en-US-ChristopherNeural", rate: "+4%", pitch: "-2Hz" },
-  michael: { voice: "en-US-EricNeural", rate: "+4%", pitch: "-2Hz" },
-  george: { voice: "en-US-GuyNeural", rate: "+5%", pitch: "+0Hz" },
-  paul: { voice: "en-US-RogerNeural", rate: "+4%", pitch: "-1Hz" },
+  // 6 Classic Studio Male Voices
+  charles: { voice: "en-US-AndrewNeural", rate: "+3%", pitch: "-2Hz" },
+  michael: { voice: "en-US-BrianNeural", rate: "+4%", pitch: "-1Hz" },
+  paul: { voice: "en-US-ChristopherNeural", rate: "+3%", pitch: "-2Hz" },
+  george: { voice: "en-US-GuyNeural", rate: "+6%", pitch: "+0Hz" },
   stuart_bell: { voice: "en-GB-RyanNeural", rate: "+4%", pitch: "-1Hz" },
-  peter_yearsley: { voice: "en-US-SteffanNeural", rate: "+3%", pitch: "-2Hz" },
-  alba: { voice: "en-US-AriaNeural", rate: "+4%", pitch: "+0Hz" },
-  cosette: { voice: "en-GB-LibbyNeural", rate: "+5%", pitch: "+0Hz" },
-  vera: { voice: "en-US-JennyNeural", rate: "+4%", pitch: "+0Hz" },
-  jane: { voice: "en-US-MichelleNeural", rate: "+4%", pitch: "+0Hz" },
+  peter_yearsley: { voice: "en-IN-PrabhatNeural", rate: "+5%", pitch: "-1Hz" },
+  // 6 Classic Studio Female Voices
+  alba: { voice: "en-US-AvaNeural", rate: "+4%", pitch: "+0Hz" },
+  cosette: { voice: "en-US-EmmaNeural", rate: "+5%", pitch: "+0Hz" },
+  vera: { voice: "en-US-AriaNeural", rate: "+4%", pitch: "+0Hz" },
+  jane: { voice: "en-US-JennyNeural", rate: "+4%", pitch: "+0Hz" },
   eve: { voice: "en-GB-SoniaNeural", rate: "+4%", pitch: "+0Hz" },
-  caro_davy: { voice: "en-AU-NatashaNeural", rate: "+5%", pitch: "+0Hz" },
+  caro_davy: { voice: "en-IN-NeerjaExpressiveNeural", rate: "+4%", pitch: "+0Hz" },
+  // Offline fallback mappings for the 20 Gemini Studio voice IDs when no Gemini key is set
+  algenib: { voice: "en-US-ChristopherNeural", rate: "+2%", pitch: "-3Hz" },
+  puck: { voice: "en-US-BrianNeural", rate: "+5%", pitch: "+0Hz" },
+  fenrir: { voice: "en-US-GuyNeural", rate: "+6%", pitch: "+0Hz" },
+  enceladus: { voice: "en-US-AndrewNeural", rate: "+1%", pitch: "-3Hz" },
+  charon: { voice: "en-US-EricNeural", rate: "+3%", pitch: "-2Hz" },
+  sadachbia: { voice: "en-US-RogerNeural", rate: "+5%", pitch: "+0Hz" },
+  algieba: { voice: "en-US-SteffanNeural", rate: "+3%", pitch: "-2Hz" },
+  achird: { voice: "en-US-BrianNeural", rate: "+3%", pitch: "-1Hz" },
+  arthur_uk: { voice: "en-GB-ThomasNeural", rate: "+3%", pitch: "-2Hz" },
+  vikram_in: { voice: "en-IN-PrabhatNeural", rate: "+4%", pitch: "-1Hz" },
+  kore: { voice: "en-US-AriaNeural", rate: "+4%", pitch: "+0Hz" },
+  sulafat: { voice: "en-US-AvaNeural", rate: "+3%", pitch: "-1Hz" },
+  aoede: { voice: "en-US-EmmaNeural", rate: "+4%", pitch: "+0Hz" },
+  zephyr: { voice: "en-US-AvaNeural", rate: "+5%", pitch: "+1Hz" },
+  despina: { voice: "en-US-MichelleNeural", rate: "+3%", pitch: "-1Hz" },
+  laomedeia: { voice: "en-US-EmmaNeural", rate: "+6%", pitch: "+1Hz" },
+  leda: { voice: "en-GB-LibbyNeural", rate: "+5%", pitch: "+0Hz" },
+  achernar: { voice: "en-US-JennyNeural", rate: "+2%", pitch: "+0Hz" },
+  clara_uk: { voice: "en-GB-SoniaNeural", rate: "+4%", pitch: "+0Hz" },
+  ananya_in: { voice: "en-IN-NeerjaExpressiveNeural", rate: "+4%", pitch: "-1Hz" },
 };
 
 let cachedBin: string | null | undefined;

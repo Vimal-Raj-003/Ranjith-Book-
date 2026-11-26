@@ -34,10 +34,10 @@ export const DESCRIPTION_MAX = 5000;
  */
 export const DESCRIPTION_ASK = { target: "about 900–2,200 characters", ceiling: 4500 } as const;
 
-export const TITLE_RULE = `TITLE — the YouTube title. Make it compelling, accurate and search-friendly, drawn from what this video is actually about, in natural, readable language.
+export const TITLE_RULE = `TITLE — the YouTube title. Make it scroll-stopping, curiosity-driven, accurate and search-friendly, drawn from what this video is actually about, in plain everyday spoken language (frame around a sharp contrast, costly mistake, or specific "Why / How" payoff rather than dry textbook nouns).
 - Exactly ONE relevant emoji at the very start, then a space, then the title text, then a space and ONE OR TWO relevant emojis at the very end. Nothing follows the closing emojis and no emoji sits in the middle.
 - Every emoji is chosen for THIS video's subject — the object, the act or the feeling the title is about. Never random, never decorative filler (no sparkles, fire or rocket unless the video is genuinely about them).
-- At most ${TITLE_MAX} characters INCLUDING the emojis and the spaces around them — count them, and aim for 60–90 so it never nears the limit.
+- At most ${TITLE_MAX} characters INCLUDING the emojis and the spaces around them — count them, and aim for 55–85 so it reads fast on mobile and never nears the limit.
 - Read it aloud: it must be a complete, grammatical phrase, not two clauses run together ("Why Habits Fail Is Underrated" is wrong; "Why Habits Fail" and "Why Habit Failure Is Underrated" are right). No clickbait, no ALL CAPS, no trailing hashtags, and no "<" or ">". Keep the video's meaning: promise nothing the video does not deliver.`;
 
 /**
